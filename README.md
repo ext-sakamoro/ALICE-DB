@@ -226,7 +226,15 @@ All projects share the core philosophy: **encode the generation process, not the
 
 ## License
 
-MIT License
+**Open Core License**
+
+| Component | License | Description |
+|-----------|---------|-------------|
+| Core Library | MIT | Free and open source |
+| Server | BSL 1.1 | Free for non-DBaaS use |
+| Enterprise | Commercial | HA, clustering, support |
+
+See [LICENSE](LICENSE) for full details.
 
 ## Author
 

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "alice-db"
+version = "0.1.0"
+description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Moroya Sakamoto" }
+]
+keywords = ["database", "compression", "time-series", "procedural-generation", "lsm-tree"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Archiving :: Compression",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-benchmark>=4.0",
+    "pandas>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ext-sakamoro/ALICE-DB"
+Repository = "https://github.com/ext-sakamoro/ALICE-DB"
+Documentation = "https://github.com/ext-sakamoro/ALICE-DB#readme"
+
+[tool.maturin]
+features = ["python"]
+python-source = "python"
+module-name = "alice_db"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

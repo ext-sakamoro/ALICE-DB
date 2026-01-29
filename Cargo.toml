@@ -1,0 +1,72 @@
+[package]
+name = "alice-db"
+version = "0.1.0"
+edition = "2021"
+authors = ["Moroya Sakamoto"]
+description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
+license-file = "LICENSE"
+repository = "https://github.com/ext-sakamoro/ALICE-DB"
+keywords = ["database", "compression", "procedural-generation", "time-series"]
+categories = ["database", "compression"]
+
+[lib]
+name = "alice_db"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# ALICE-Zip core (local path)
+alice_core = { package = "alice-zip", path = "../ALICE-Zip/libalice" }
+
+# Zero-Copy Serialization (Phase 1)
+rkyv = { version = "0.7", features = ["validation", "std"] }
+memmap2 = "0.9"
+
+# Legacy Serialization (for compatibility)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+
+# Compression
+lzma-rs = "0.3"
+
+# Async channels (for future use)
+crossbeam-channel = "0.5"
+
+# SIMD Acceleration (Phase 3)
+wide = "0.7"
+
+# Python bindings
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+numpy = { version = "0.22", optional = true }
+ndarray = { version = "0.16", optional = true }
+
+# Async/Parallel
+rayon = "1.10"
+parking_lot = "0.12"
+
+# Utilities
+thiserror = "1.0"
+log = "0.4"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.10"
+rand = "0.8"
+
+[features]
+default = []
+python = ["pyo3", "numpy", "ndarray"]
+
+[[bench]]
+name = "db_benchmark"
+harness = false
+
+[[bench]]
+name = "main"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

@@ -1,0 +1,241 @@
+ALICE-DB Open Core License
+===========================
+
+Copyright (c) 2024-2026 Moroya Sakamoto
+
+================================================================================
+Open Core Strategy
+================================================================================
+
+ALICE-DB uses an Open Core licensing model with hybrid strategy:
+
+| Product                | License        | Description                          |
+|------------------------|----------------|--------------------------------------|
+| ALICE-DB Core          | MIT            | Free and open source                 |
+| ALICE-DB Server        | BSL 1.1        | Source available, DBaaS restricted   |
+| ALICE-DB Enterprise    | Commercial     | Annual contract                      |
+
+================================================================================
+PART 1: MIT License (Core)
+================================================================================
+
+The following components are licensed under the MIT License:
+
+- alice-db core library (compression/generation algorithms)
+- Model types and fitting algorithms
+- Query engine basics
+- Python bindings
+- .alice-db file format specification
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+PART 2: Business Source License 1.1 (Server)
+================================================================================
+
+The following components are licensed under the Business Source License 1.1:
+
+- ALICE-DB Server (network protocol, storage engine, query parser)
+- Persistence layer
+- WAL (Write-Ahead Log)
+- Segment management
+
+Licensor:             Moroya Sakamoto
+Licensed Work:        ALICE-DB Server
+Change Date:          Four years from the date the Licensed Work is published
+Change License:       Apache License, Version 2.0
+
+Terms:
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work.
+
+Additional Use Grant:
+
+You may make production use of the Licensed Work, provided such use does not
+include offering the Licensed Work to third parties on a hosted or embedded
+basis which is competitive with Licensor's products.
+
+"Competitive" means a product or service that provides database-as-a-service
+(DBaaS) functionality substantially similar to the Licensed Work.
+
+For clarity, the following uses are permitted WITHOUT a commercial license:
+- Internal use within your organization
+- Building applications that use ALICE-DB as a dependency
+- Offering applications (not databases) that happen to use ALICE-DB internally
+- Research and educational purposes
+- Personal projects
+
+The following uses REQUIRE a commercial license:
+- Offering ALICE-DB as a managed database service (DBaaS)
+- Embedding ALICE-DB in a product sold as a database solution
+- Cloud providers offering ALICE-DB as a service option
+
+================================================================================
+PART 3: Commercial License (Enterprise)
+================================================================================
+
+The following products require a commercial license:
+
+ALICE-DB Enterprise
+-------------------
+- Automatic S3 Tiering (cold data offloading)
+- Advanced Clustering (Raft consensus, auto-sharding)
+- Audit & Security (RBAC, LDAP/SSO integration)
+- Visual Dashboard (GUI management)
+- Priority support
+- Annual contract
+
+Target: Large enterprises, data centers
+Pricing: Contact for details
+
+For commercial licensing inquiries:
+  https://extoria.co.jp/en
+
+================================================================================
+Summary
+================================================================================
+
+| Use Case                        | Core (Free) | Server     | Enterprise  |
+|---------------------------------|-------------|------------|-------------|
+| Personal / Educational          | MIT         | BSL (Free) | -           |
+| Internal business use           | MIT         | BSL (Free) | Optional    |
+| Building applications           | MIT         | BSL (Free) | Optional    |
+| Offering as DBaaS               | MIT         | Commercial | Required    |
+| Enterprise (HA, Clustering)     | MIT         | BSL (Free) | Required    |
+
+The Core library is always FREE under MIT license.
+The Server is FREE for non-competitive use under BSL 1.1.
+Enterprise features provide additional value for large-scale operations.
+
+================================================================================
+
+ALICE-DB オープンコアライセンス（日本語）
+==========================================
+
+Copyright (c) 2024-2026 坂本師哉
+
+================================================================================
+オープンコア戦略
+================================================================================
+
+ALICE-DBはハイブリッド型オープンコアライセンスモデルを採用しています：
+
+| 製品                   | ライセンス   | 説明                           |
+|-----------------------|-------------|--------------------------------|
+| ALICE-DB Core         | MIT         | 無料・オープンソース             |
+| ALICE-DB Server       | BSL 1.1     | ソース公開・DBaaS制限           |
+| ALICE-DB Enterprise   | 商用        | 年間契約                        |
+
+================================================================================
+パート1: MITライセンス（Core）
+================================================================================
+
+以下のコンポーネントはMITライセンスの下で提供されます：
+
+- alice-db コアライブラリ（圧縮・生成アルゴリズム）
+- モデル型とフィッティングアルゴリズム
+- クエリエンジン基本機能
+- Pythonバインディング
+- .alice-db ファイルフォーマット仕様
+
+上記の著作権表示および本許諾表示を、ソフトウェアのすべての複製または
+重要な部分に記載するものとします。
+
+本ソフトウェアは「現状のまま」で提供され、明示または黙示を問わず、
+商品性、特定目的への適合性、権利非侵害についての保証を含め、
+いかなる保証も行いません。
+
+================================================================================
+パート2: Business Source License 1.1（Server）
+================================================================================
+
+以下のコンポーネントはBusiness Source License 1.1の下で提供されます：
+
+- ALICE-DB Server（ネットワークプロトコル、ストレージエンジン、クエリパーサ）
+- 永続化レイヤー
+- WAL（Write-Ahead Log）
+- セグメント管理
+
+ライセンサー:         坂本師哉
+対象製品:            ALICE-DB Server
+変更日:              Licensed Work公開日から4年後
+変更後ライセンス:     Apache License, Version 2.0
+
+条件:
+
+ライセンサーは、Licensed Workのコピー、変更、派生物の作成、再配布、
+および非本番環境での使用の権利を付与します。
+
+追加使用許諾:
+
+Licensed Workの本番環境での使用は、ライセンサーの製品と競合する形で
+第三者にホスト型またはエンベデッド型で提供しない限り、許可されます。
+
+「競合」とは、Licensed Workと実質的に類似したデータベース・アズ・ア・
+サービス（DBaaS）機能を提供する製品またはサービスを意味します。
+
+明確化のため、以下の用途は商用ライセンス不要で許可されます：
+- 組織内での内部使用
+- ALICE-DBを依存関係として使用するアプリケーションの構築
+- 内部的にALICE-DBを使用するアプリケーション（データベースではない）の提供
+- 研究および教育目的
+- 個人プロジェクト
+
+以下の用途には商用ライセンスが必要です：
+- ALICE-DBをマネージドデータベースサービス（DBaaS）として提供
+- データベースソリューションとして販売する製品へのALICE-DB組み込み
+- クラウドプロバイダーがサービスオプションとしてALICE-DBを提供
+
+================================================================================
+パート3: 商用ライセンス（Enterprise）
+================================================================================
+
+以下の製品には商用ライセンスが必要です：
+
+ALICE-DB Enterprise
+-------------------
+- 自動S3階層化（コールドデータのオフロード）
+- 高度なクラスタリング（Raft合意形成、自動シャーディング）
+- 監査とセキュリティ（RBAC、LDAP/SSO連携）
+- ビジュアルダッシュボード（GUI管理）
+- 優先サポート
+- 年間契約
+
+対象: 大企業、データセンター
+価格: お問い合わせください
+
+商用ライセンスに関するお問い合わせ：
+  https://extoria.co.jp/ja
+
+================================================================================
+サマリー
+================================================================================
+
+| ユースケース                    | Core（無料）| Server     | Enterprise  |
+|-------------------------------|------------|------------|-------------|
+| 個人・教育利用                  | MIT        | BSL（無料） | -           |
+| 社内業務利用                   | MIT        | BSL（無料） | オプション   |
+| アプリケーション構築            | MIT        | BSL（無料） | オプション   |
+| DBaaSとして提供                | MIT        | 商用       | 必要        |
+| エンタープライズ（HA、クラスター）| MIT        | BSL（無料） | 必要        |
+
+Coreライブラリは常にMITライセンスで無料です。
+ServerはBSL 1.1の下、競合しない用途で無料です。
+Enterprise機能は大規模運用向けの付加価値を提供します。

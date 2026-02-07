@@ -251,14 +251,17 @@ mod python {
         }
 
         /// Insert multiple values from lists
-        fn put_batch(&self, timestamps: Vec<i64>, values: Vec<f32>) -> PyResult<()> {
+        fn put_batch(&self, py: Python<'_>, timestamps: Vec<i64>, values: Vec<f32>) -> PyResult<()> {
             if timestamps.len() != values.len() {
                 return Err(PyValueError::new_err("timestamps and values must have same length"));
             }
             let data: Vec<(i64, f32)> = timestamps.into_iter().zip(values).collect();
-            let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
-            db.put_batch(&data).map_err(io_to_py)
+            let inner = self.inner.clone();
+            py.allow_threads(move || {
+                let guard = inner.lock();
+                let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+                db.put_batch(&data).map_err(io_to_py)
+            })
         }
 
         /// Insert from numpy arrays (zero-copy)
@@ -287,10 +290,13 @@ mod python {
         }
 
         /// Query a time range, returns list of (timestamp, value) tuples
-        fn scan(&self, start: i64, end: i64) -> PyResult<Vec<(i64, f32)>> {
-            let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
-            db.scan(start, end).map_err(io_to_py)
+        fn scan(&self, py: Python<'_>, start: i64, end: i64) -> PyResult<Vec<(i64, f32)>> {
+            let inner = self.inner.clone();
+            py.allow_threads(move || {
+                let guard = inner.lock();
+                let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+                db.scan(start, end).map_err(io_to_py)
+            })
         }
 
         /// Query a time range, returns numpy array (N, 2)
@@ -318,7 +324,7 @@ mod python {
 
         /// Aggregation query
         #[pyo3(signature = (start, end, agg="avg"))]
-        fn aggregate(&self, start: i64, end: i64, agg: &str) -> PyResult<f64> {
+        fn aggregate(&self, py: Python<'_>, start: i64, end: i64, agg: &str) -> PyResult<f64> {
             let aggregation = match agg.to_lowercase().as_str() {
                 "sum" => Aggregation::Sum,
                 "avg" | "average" | "mean" => Aggregation::Avg,
@@ -331,14 +337,17 @@ mod python {
                 "variance" | "var" => Aggregation::Variance,
                 _ => return Err(PyValueError::new_err(format!("Unknown aggregation: {}", agg))),
             };
-            let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
-            db.aggregate(start, end, aggregation).map_err(io_to_py)
+            let inner = self.inner.clone();
+            py.allow_threads(move || {
+                let guard = inner.lock();
+                let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+                db.aggregate(start, end, aggregation).map_err(io_to_py)
+            })
         }
 
         /// Downsampling query
         #[pyo3(signature = (start, end, interval, agg="avg"))]
-        fn downsample(&self, start: i64, end: i64, interval: i64, agg: &str) -> PyResult<Vec<(i64, f64)>> {
+        fn downsample(&self, py: Python<'_>, start: i64, end: i64, interval: i64, agg: &str) -> PyResult<Vec<(i64, f64)>> {
             let aggregation = match agg.to_lowercase().as_str() {
                 "sum" => Aggregation::Sum,
                 "avg" | "average" | "mean" => Aggregation::Avg,
@@ -349,9 +358,12 @@ mod python {
                 "last" => Aggregation::Last,
                 _ => return Err(PyValueError::new_err(format!("Unknown aggregation: {}", agg))),
             };
-            let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
-            db.downsample(start, end, interval, aggregation).map_err(io_to_py)
+            let inner = self.inner.clone();
+            py.allow_threads(move || {
+                let guard = inner.lock();
+                let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+                db.downsample(start, end, interval, aggregation).map_err(io_to_py)
+            })
         }
 
         /// Force flush to disk

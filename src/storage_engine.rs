@@ -581,7 +581,7 @@ impl StorageEngine {
 
     /// Persist a segment to disk (rkyv format for Zero-Copy)
     ///
-    /// # Performance: Zero-Copy Path (カリカリ化)
+    /// # Performance: Zero-Copy Path
     ///
     /// 1. Serialize to rkyv bytes (in memory)
     /// 2. Create SegmentView from bytes IMMEDIATELY (no disk I/O wait)

@@ -683,7 +683,7 @@ impl DataSegment {
 }
 
 // =============================================================================
-// SegmentView: Unified Zero-Copy Access (Phase 1 + カリカリ化)
+// SegmentView: Unified Zero-Copy Access (Phase 1)
 // =============================================================================
 
 /// Backing storage for Zero-Copy access

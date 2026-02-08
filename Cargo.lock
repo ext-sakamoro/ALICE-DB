@@ -29,9 +29,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "alice-analytics"
+version = "0.1.0"
+
+[[package]]
 name = "alice-db"
 version = "0.1.0"
 dependencies = [
+ "alice-analytics",
  "alice-zip",
  "bincode",
  "bytemuck",

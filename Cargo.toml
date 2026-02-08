@@ -44,6 +44,9 @@ ndarray = { version = "0.16", optional = true }
 rayon = "1.10"
 parking_lot = "0.12"
 
+# ALICE-Analytics bridge (optional)
+alice-analytics = { path = "../ALICE-Analytics", optional = true }
+
 # Utilities
 thiserror = "1.0"
 log = "0.4"
@@ -57,6 +60,7 @@ rand = "0.8"
 [features]
 default = []
 python = ["pyo3", "numpy", "ndarray"]
+analytics = ["alice-analytics"]  # ALICE-Analytics bridge (MetricPipeline → DB persistence)
 
 [[bench]]
 name = "db_benchmark"

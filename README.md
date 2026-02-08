@@ -213,6 +213,68 @@ pytest tests/
 cargo bench
 ```
 
+## ALICE-Analytics Integration (Data Pipeline)
+
+Enable with `--features analytics` to bridge ALICE-Analytics streaming aggregation with ALICE-DB persistent storage.
+
+```toml
+[dependencies]
+alice-db = { path = "../ALICE-DB", features = ["analytics"] }
+```
+
+### Architecture
+
+```
+Sensor/Event ──► ALICE-Queue (SPSC + WAL)
+                       ↓
+                 ALICE-Analytics (HLL++, DDSketch streaming)
+                       ↓  flush_metrics_to_db
+                 ALICE-DB (Model-Based LSM-Tree)
+                       ↓
+                 Long-term trend storage + O(1) queries
+```
+
+### Usage
+
+```rust
+use alice_db::AnalyticsSink;
+use alice_analytics::{MetricEvent, FnvHasher};
+
+// Create combined analytics + DB sink
+let mut sink = AnalyticsSink::<128, 512>::open("./metrics", 0.05)?;
+
+// Submit streaming metrics
+let hash = FnvHasher::hash_bytes(b"cpu.usage");
+sink.pipeline.submit(MetricEvent::gauge(hash, 72.5));
+sink.pipeline.submit(MetricEvent::gauge(hash, 75.0));
+
+// Persist aggregated metrics to DB (per-window flush)
+let written = sink.persist(timestamp)?;
+
+// Or persist and reset for next aggregation window
+let written = sink.persist_and_reset(next_timestamp)?;
+```
+
+### Storage Schema
+
+Each metric slot produces up to 6 entries per flush, using a packed key:
+
+| Variant | Value | Description |
+|---------|-------|-------------|
+| 0 | counter | Aggregated counter |
+| 1 | gauge | Last gauge value |
+| 2 | cardinality | HLL++ unique count |
+| 3 | p50 | DDSketch median |
+| 4 | p90 | DDSketch 90th percentile |
+| 5 | p99 | DDSketch 99th percentile |
+
+### Cargo Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `python` | No | Python bindings (PyO3 + NumPy) |
+| `analytics` | No | ALICE-Analytics bridge (MetricPipeline → DB) |
+
 ## Related Projects
 
 | Project | Description |

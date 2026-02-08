@@ -109,6 +109,8 @@ pub mod segment;
 pub mod memtable;
 pub mod storage_engine;
 pub mod query_engine;
+#[cfg(feature = "analytics")]
+pub mod analytics_bridge;
 
 // Re-exports for convenience
 pub use model::{DataType, FitResult, ModelType};
@@ -116,6 +118,10 @@ pub use segment::DataSegment;
 pub use memtable::{FitConfig, MemTable};
 pub use storage_engine::{StorageConfig, StorageEngine, StorageStats};
 pub use query_engine::{Aggregation, QueryBuilder, QueryInterface, QueryResult};
+#[cfg(feature = "analytics")]
+pub use analytics_bridge::{
+    flush_metrics_to_db, metric_key, AnalyticsSink, VARIANTS_PER_METRIC,
+};
 
 use std::io;
 use std::path::Path;

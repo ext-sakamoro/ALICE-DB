@@ -183,6 +183,33 @@ ALICE-DB automatically selects the best model for your data:
 | Polynomial trend | **50-150x** |
 | Random noise | 2-5x (LZMA fallback) |
 
+## Cross-Crate Bridges
+
+### Crypto Bridge (feature: `crypto`)
+
+Encryption at rest for ALICE-DB via [ALICE-Crypto](../ALICE-Crypto). Wraps the `AliceDB` engine with XChaCha20-Poly1305 authenticated encryption, keeping timestamps in cleartext for indexing while encrypting stored values.
+
+```toml
+[dependencies]
+alice-db = { path = "../ALICE-DB", features = ["crypto"] }
+```
+
+```rust
+use alice_db::crypto_bridge::{EncryptedDB, derive_db_key, seal_blob, open_blob};
+
+// Derive key from passphrase
+let key = derive_db_key(b"my-passphrase");
+
+// Open encrypted database
+let db = EncryptedDB::open("./encrypted_data", key)?;
+db.put(1000, 42.0)?;
+db.flush()?;
+
+// Encrypt/decrypt arbitrary blobs
+let sealed = seal_blob(&key, b"sensitive record")?;
+let plain = open_blob(&key, &sealed)?;
+```
+
 ## Building from Source
 
 ### Requirements

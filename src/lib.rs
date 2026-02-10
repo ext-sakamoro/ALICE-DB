@@ -111,6 +111,8 @@ pub mod storage_engine;
 pub mod query_engine;
 #[cfg(feature = "analytics")]
 pub mod analytics_bridge;
+#[cfg(feature = "crypto")]
+pub mod crypto_bridge;
 
 // Re-exports for convenience
 pub use model::{DataType, FitResult, ModelType};

@@ -47,6 +47,9 @@ parking_lot = "0.12"
 # ALICE-Analytics bridge (optional)
 alice-analytics = { path = "../ALICE-Analytics", optional = true }
 
+# ALICE-Crypto bridge (optional)
+alice-crypto = { path = "../ALICE-Crypto", optional = true, default-features = false, features = ["std"] }
+
 # Utilities
 thiserror = "1.0"
 log = "0.4"
@@ -61,6 +64,7 @@ rand = "0.8"
 default = []
 python = ["pyo3", "numpy", "ndarray"]
 analytics = ["alice-analytics"]  # ALICE-Analytics bridge (MetricPipeline → DB persistence)
+crypto = ["dep:alice-crypto"]  # ALICE-Crypto encryption at rest
 
 [[bench]]
 name = "db_benchmark"

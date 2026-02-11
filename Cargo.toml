@@ -65,6 +65,7 @@ default = []
 python = ["pyo3", "numpy", "ndarray"]
 analytics = ["alice-analytics"]  # ALICE-Analytics bridge (MetricPipeline → DB persistence)
 crypto = ["dep:alice-crypto"]  # ALICE-Crypto encryption at rest
+sdf = []  # SDF spatial data storage (Morton code indexing)
 
 [[bench]]
 name = "db_benchmark"

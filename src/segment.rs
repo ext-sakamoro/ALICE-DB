@@ -131,15 +131,17 @@ impl DataSegment {
     ///
     /// This is O(1) - just evaluate the mathematical function!
     /// No disk I/O needed beyond loading the segment.
+    #[inline(always)]
     pub fn query_point(&self, timestamp: i64) -> Option<f32> {
         if !self.contains(timestamp) {
             return None;
         }
 
-        // Normalize timestamp to [0, 1] range
+        // Normalize timestamp to [0, 1] range using reciprocal multiply
         let range = (self.end_time - self.start_time) as f64;
         let x = if range > 0.0 {
-            (timestamp - self.start_time) as f64 / range
+            let inv_range = 1.0 / range;
+            (timestamp - self.start_time) as f64 * inv_range
         } else {
             0.0
         };
@@ -430,13 +432,13 @@ impl DataSegment {
         let all_data = self.generate_all();
         let mut t = query_start as f64;
 
+        // Pre-compute reciprocal to replace division in loop
+        let inv_total_range = if total_range > 0.0 { 1.0 / total_range } else { 0.0 };
+        let start_time = self.start_time;
+
         while t <= query_end as f64 {
             let timestamp = t as i64;
-            let x = if total_range > 0.0 {
-                (timestamp - self.start_time) as f64 / total_range
-            } else {
-                0.0
-            };
+            let x = (timestamp - start_time) as f64 * inv_total_range;
             let idx = (x * (all_data.len().saturating_sub(1)) as f64).round() as usize;
             let val = all_data.get(idx).copied().unwrap_or(0.0);
             results.push((timestamp, val));
@@ -500,10 +502,13 @@ impl DataSegment {
                 vec![*value as f32; n]
             }
             ModelType::Linear { start_value, end_value } => {
+                // Pre-compute reciprocal to avoid repeated division in iterator
+                let inv_n_minus_1 = if n > 1 { 1.0 / (n - 1) as f64 } else { 0.0 };
+                let delta = end_value - start_value;
                 (0..n)
                     .map(|i| {
-                        let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 0.0 };
-                        (start_value + t * (end_value - start_value)) as f32
+                        let t = i as f64 * inv_n_minus_1;
+                        (start_value + t * delta) as f32
                     })
                     .collect()
             }
@@ -522,6 +527,7 @@ impl DataSegment {
     }
 
     /// Evaluate model at normalized position x ∈ [0, 1]
+    #[inline(always)]
     fn evaluate_model_at_x(&self, x: f64) -> f32 {
         match &self.model {
             ModelType::Polynomial { coefficients, .. } => {
@@ -534,11 +540,14 @@ impl DataSegment {
             }
             ModelType::Fourier { coefficients, dc_offset, sample_count } => {
                 // Evaluate Fourier series at position
+                // Pre-compute inv_n to replace division in the coefficient loop
                 let n = *sample_count;
+                let inv_n = 1.0 / n as f64;
                 let t = x * n as f64;
+                let two_pi = 2.0 * std::f64::consts::PI;
                 let mut sum = *dc_offset;
                 for &(freq_idx, mag, phase) in coefficients {
-                    let angle = 2.0 * std::f64::consts::PI * freq_idx as f64 * t / n as f64;
+                    let angle = two_pi * freq_idx as f64 * t * inv_n;
                     sum += mag * (angle as f32 + phase).cos();
                 }
                 sum
@@ -575,12 +584,14 @@ impl DataSegment {
     }
 
     /// Convert timestamp to array index
+    #[inline(always)]
     fn timestamp_to_index(&self, timestamp: i64) -> usize {
         let range = (self.end_time - self.start_time) as f64;
         if range <= 0.0 || self.metadata.point_count <= 1 {
             return 0;
         }
-        let ratio = (timestamp - self.start_time) as f64 / range;
+        let inv_range = 1.0 / range;
+        let ratio = (timestamp - self.start_time) as f64 * inv_range;
         (ratio * (self.metadata.point_count - 1) as f64).round() as usize
     }
 
@@ -842,6 +853,7 @@ impl SegmentView {
     ///
     /// Computes f(x) directly from archived model coefficients.
     /// No deserialization occurs - we read directly from mmap.
+    #[inline(always)]
     pub fn query_point(&self, timestamp: i64) -> Option<f32> {
         if !self.contains(timestamp) {
             return None;
@@ -849,7 +861,8 @@ impl SegmentView {
 
         let range = (self.archived.end_time - self.archived.start_time) as f64;
         let x = if range > 0.0 {
-            (timestamp - self.archived.start_time) as f64 / range
+            let inv_range = 1.0 / range;
+            (timestamp - self.archived.start_time) as f64 * inv_range
         } else {
             0.0
         };
@@ -1131,13 +1144,13 @@ impl SegmentView {
     ) {
         let mut t = query_start as f64;
 
+        // Pre-compute reciprocal to replace division in loop
+        let inv_total_range = if total_range > 0.0 { 1.0 / total_range } else { 0.0 };
+        let start_time = self.archived.start_time;
+
         while t <= query_end as f64 {
             let timestamp = t as i64;
-            let x = if total_range > 0.0 {
-                (timestamp - self.archived.start_time) as f64 / total_range
-            } else {
-                0.0
-            };
+            let x = (timestamp - start_time) as f64 * inv_total_range;
 
             let value = self.evaluate_archived_model(x);
             results.push((timestamp, value));
@@ -1146,6 +1159,7 @@ impl SegmentView {
     }
 
     /// Evaluate archived model at normalized x
+    #[inline(always)]
     fn evaluate_archived_model(&self, x: f64) -> f32 {
         match &self.archived.model {
             ArchivedModelType::Polynomial { coefficients, .. } => {
@@ -1175,12 +1189,15 @@ impl SegmentView {
                 sum
             }
             ArchivedModelType::Fourier { coefficients, dc_offset, sample_count } => {
+                // Pre-compute inv_n to replace division in the coefficient loop
                 let n = *sample_count;
+                let inv_n = 1.0 / n as f64;
                 let t = x * n as f64;
+                let two_pi = 2.0 * std::f64::consts::PI;
                 let mut sum = *dc_offset;
                 for coeff in coefficients.iter() {
                     let (freq_idx, mag, phase) = (coeff.0, coeff.1, coeff.2);
-                    let angle = 2.0 * std::f64::consts::PI * freq_idx as f64 * t / n as f64;
+                    let angle = two_pi * freq_idx as f64 * t * inv_n;
                     sum += mag * (angle as f32 + phase).cos();
                 }
                 sum

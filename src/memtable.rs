@@ -304,11 +304,15 @@ impl MemTable {
         let last = values[values.len() - 1] as f64;
         let n = values.len();
 
+        // Pre-compute reciprocal to replace division in loop
+        let inv_n_minus_1 = 1.0 / (n - 1) as f64;
+        let delta = last - first;
+
         // Check if data is approximately linear
         let mut max_error = 0.0f64;
         for (i, &v) in values.iter().enumerate() {
-            let t = i as f64 / (n - 1) as f64;
-            let expected = first + t * (last - first);
+            let t = i as f64 * inv_n_minus_1;
+            let expected = first + t * delta;
             let error = (v as f64 - expected).abs();
             max_error = max_error.max(error);
         }
@@ -369,15 +373,17 @@ impl MemTable {
             dc_offset,
         );
 
+        // Pre-compute reciprocal for MSE and variance normalization
+        let inv_len = 1.0 / values.len() as f32;
         let mse: f32 = values
             .iter()
             .zip(reconstructed.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() / values.len() as f32;
+            .sum::<f32>() * inv_len;
 
         let variance: f32 = {
-            let mean = values.iter().sum::<f32>() / values.len() as f32;
-            values.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32
+            let mean = values.iter().sum::<f32>() * inv_len;
+            values.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() * inv_len
         };
 
         let relative_error = if variance > 1e-10 {
@@ -411,8 +417,10 @@ impl MemTable {
         let (freq_idx, magnitude, phase) = coefficients[0];
 
         // Convert to SineWave parameters
+        // Pre-compute reciprocal for amplitude scaling and MSE/variance
+        let inv_len = 1.0 / values.len() as f32;
         let frequency = freq_idx as f32;
-        let amplitude = magnitude * 2.0 / values.len() as f32;
+        let amplitude = magnitude * 2.0 * inv_len;
 
         let model = ModelType::SineWave {
             frequency,
@@ -434,11 +442,11 @@ impl MemTable {
             .iter()
             .zip(reconstructed.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() / values.len() as f32;
+            .sum::<f32>() * inv_len;
 
         let variance: f32 = {
-            let mean = values.iter().sum::<f32>() / values.len() as f32;
-            values.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32
+            let mean = values.iter().sum::<f32>() * inv_len;
+            values.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() * inv_len
         };
 
         let relative_error = if variance > 1e-10 {

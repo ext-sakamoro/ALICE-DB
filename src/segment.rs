@@ -770,8 +770,52 @@ impl SegmentView {
     ///
     /// Best for: Reading existing segments from disk.
     /// The OS handles page caching; only accessed pages are loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidData` if the file is empty or smaller than the minimum
+    /// valid rkyv archive size. An empty mmap is undefined behaviour on some
+    /// platforms; we reject it here before the `unsafe` mmap call.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
+
+        // Validate file size before mapping.
+        //
+        // A zero-length mmap is undefined behaviour on Linux (mmap(2) returns
+        // EINVAL) and Windows. Even a non-zero but truncated file would
+        // produce an mmap whose contents are outside the rkyv archive bounds,
+        // causing rkyv validation to fail or — if validation were skipped —
+        // undefined behaviour. We reject both cases here so that the unsafe
+        // Mmap::map call below always operates on a correctly-sized file.
+        //
+        // rkyv 0.7 archives contain at minimum an 8-byte root offset footer,
+        // so any valid archive must be larger than 0 bytes.
+        let file_len = file.metadata()?.len();
+        if file_len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "segment file is empty (0 bytes); cannot mmap",
+            ));
+        }
+        // A minimal rkyv DataSegment archive is at least a few hundred bytes.
+        // Using 8 as the lower bound here matches the rkyv root-offset footer
+        // size and prevents the mmap call from succeeding on severely truncated
+        // files before rkyv validation catches the corruption.
+        if file_len < 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "segment file is too small ({} bytes) to contain a valid rkyv archive",
+                    file_len
+                ),
+            ));
+        }
+
+        // SAFETY: The file descriptor is valid and the file has been confirmed
+        // non-empty above. The resulting Mmap is stored in Arc<Mmap> inside
+        // SegmentSource::Mmap and kept alive for the lifetime of the
+        // SegmentView, ensuring the mapped pages are not unmapped while any
+        // reference into them is live.
         let mmap = unsafe { Mmap::map(&file)? };
         let source = SegmentSource::Mmap(Arc::new(mmap));
         Self::from_source(source)
@@ -809,14 +853,59 @@ impl SegmentView {
     fn from_source(source: SegmentSource) -> io::Result<Self> {
         let data = source.as_ref();
 
-        // Validate rkyv data
+        // Validate rkyv data. `check_archived_root` verifies byte-level
+        // validity including alignment, size, and internal rkyv invariants,
+        // so the pointer we derive from it is guaranteed to be correctly
+        // aligned and to point into initialized, immutable memory within
+        // `data`.
         let archived = rkyv::check_archived_root::<DataSegment>(data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("rkyv validation: {:?}", e)))?;
 
-        // SAFETY: The source is kept alive in the struct.
-        // The archived reference is valid for the lifetime of the source.
+        // SAFETY: Lifetime extension from &'data ArchivedDataSegment to
+        // &'static ArchivedDataSegment.
+        //
+        // Invariants that make this sound:
+        //
+        // 1. **Alignment & size**: `rkyv::check_archived_root` above has
+        //    already verified that `archived` is correctly aligned for
+        //    `ArchivedDataSegment` and that all referenced bytes are within
+        //    bounds of `data`. No type-punning occurs; we are only changing
+        //    the lifetime, not the type or the pointer value.
+        //
+        // 2. **Backing memory lifetime**: `source` is stored in the same
+        //    `SegmentView` struct immediately after this block. Rust's
+        //    ownership model guarantees that `source` is not dropped before
+        //    `SegmentView` is dropped.
+        //
+        // 3. **Drop order**: `archived` is declared as the *first* field of
+        //    `SegmentView` (see struct definition). Rust drops fields in
+        //    declaration order (top to bottom). Therefore `archived` (a plain
+        //    reference — no destructor) is "dropped" before `source`. Because
+        //    references have no destructor, this ordering ensures no
+        //    use-after-free: the reference simply becomes unreachable before
+        //    the backing memory is freed. The struct-level doc comment above
+        //    the `SegmentView` definition explicitly warns maintainers not to
+        //    reorder these fields.
+        //
+        // 4. **No interior mutability / aliasing**: `SegmentSource` variants
+        //    (Mmap, Vec, Slice) all provide shared read-only access to the
+        //    underlying bytes. No `&mut` reference to the backing bytes is
+        //    ever created while `archived` is live.
+        //
+        // 5. **No Send/Sync unsoundness**: `Arc<Mmap>` and `Arc<Vec<u8>>`
+        //    are `Send + Sync`, so `SegmentView` remains safe to share across
+        //    threads. The `&'static` annotation does not introduce additional
+        //    aliasing beyond what `Arc` already permits.
+        //
+        // Alternative considered: storing a raw pointer `*const
+        // ArchivedDataSegment` instead of `&'static`. That would be equally
+        // safe but would require unsafe derefs at every access site, making
+        // the code more verbose without any safety gain.
         let archived: &'static ArchivedDataSegment = unsafe {
-            std::mem::transmute(archived)
+            // We cast the pointer, not the reference, to make it explicit that
+            // only the lifetime tag changes and no reinterpretation of the
+            // pointed-to bits occurs.
+            &*(archived as *const ArchivedDataSegment)
         };
 
         Ok(Self { source, archived })

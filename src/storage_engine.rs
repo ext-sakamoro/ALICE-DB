@@ -110,7 +110,11 @@ impl IntervalTree {
     ///
     /// This ensures consistent write latency without periodic spikes.
     pub fn insert(&mut self, start: i64, end: i64, segment_id: u64) {
-        self.all_intervals.push(Interval { start, end, segment_id });
+        self.all_intervals.push(Interval {
+            start,
+            end,
+            segment_id,
+        });
         self.insertions_since_rebuild += 1;
         // NOTE: No automatic rebuild here! Call rebuild() explicitly after flush.
     }
@@ -145,9 +149,7 @@ impl IntervalTree {
         }
 
         // Find center point (median of endpoints)
-        let mut endpoints: Vec<i64> = intervals.iter()
-            .flat_map(|i| [i.start, i.end])
-            .collect();
+        let mut endpoints: Vec<i64> = intervals.iter().flat_map(|i| [i.start, i.end]).collect();
         endpoints.sort_unstable();
         let center = endpoints[endpoints.len() / 2];
 
@@ -180,7 +182,7 @@ impl IntervalTree {
             center,
             intervals_start,
             intervals_count,
-            left_idx: NO_CHILD,  // Will be set below
+            left_idx: NO_CHILD, // Will be set below
             right_idx: NO_CHILD,
         });
 
@@ -202,7 +204,8 @@ impl IntervalTree {
     pub fn query_range(&self, start: i64, end: i64) -> Vec<u64> {
         // If tree is not built, fallback to linear scan
         if self.root_idx == NO_CHILD && !self.all_intervals.is_empty() {
-            return self.all_intervals
+            return self
+                .all_intervals
                 .iter()
                 .filter(|i| i.start <= end && i.end >= start)
                 .map(|i| i.segment_id)
@@ -235,10 +238,8 @@ impl IntervalTree {
             }
 
             let node = &self.nodes[node_idx as usize];
-            let intervals = &self.intervals_storage[
-                node.intervals_start as usize..
-                (node.intervals_start as usize + node.intervals_count as usize)
-            ];
+            let intervals = &self.intervals_storage[node.intervals_start as usize
+                ..(node.intervals_start as usize + node.intervals_count as usize)];
 
             if end < node.center {
                 // Query entirely to the left - check intervals that might overlap
@@ -362,8 +363,8 @@ pub struct StorageEngine {
     index: RwLock<BTreeMap<u64, SegmentIndexEntry>>,
     /// Interval Tree for O(log N + K) range queries (Phase 4)
     interval_tree: RwLock<IntervalTree>,
-    /// Cached segments: Arc<SegmentView> for Zero-Copy access
-    /// Using SegmentView instead of DataSegment avoids deserialization overhead
+    /// Cached segments: `Arc<SegmentView>` for Zero-Copy access.
+    /// Using `SegmentView` instead of `DataSegment` avoids deserialization overhead
     segment_cache: RwLock<BTreeMap<u64, Arc<SegmentView>>>,
     /// Data file handle (legacy, for index persistence)
     data_file: RwLock<Option<File>>,
@@ -414,6 +415,7 @@ impl StorageEngine {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&data_path)?;
 
         let offset = file.metadata()?.len();
@@ -424,7 +426,6 @@ impl StorageEngine {
             let wal_path = self.config.data_dir.join("wal.alice");
             let wal = OpenOptions::new()
                 .read(true)
-                .write(true)
                 .create(true)
                 .append(true)
                 .open(&wal_path)?;
@@ -603,10 +604,15 @@ impl StorageEngine {
         // 2. Create SegmentView from bytes IMMEDIATELY (Zero-Copy, no disk wait)
         // This is the key optimization: cache is populated before disk write
         let view = SegmentView::from_vec(rkyv_bytes.clone())?;
-        self.segment_cache.write().insert(segment_id, Arc::new(view));
+        self.segment_cache
+            .write()
+            .insert(segment_id, Arc::new(view));
 
         // 3. Write to disk (could be async/background in future)
-        let segment_path = self.config.data_dir.join(format!("seg_{}.rkyv", segment_id));
+        let segment_path = self
+            .config
+            .data_dir
+            .join(format!("seg_{}.rkyv", segment_id));
         fs::write(&segment_path, &rkyv_bytes)?;
 
         if self.config.sync_writes {
@@ -628,7 +634,9 @@ impl StorageEngine {
 
         // Insert into both index and interval tree
         self.index.write().insert(segment_id, entry);
-        self.interval_tree.write().insert(start_time, end_time, segment_id);
+        self.interval_tree
+            .write()
+            .insert(start_time, end_time, segment_id);
 
         Ok(())
     }
@@ -657,7 +665,9 @@ impl StorageEngine {
         let arc_view = Arc::new(view);
 
         // Update cache
-        self.segment_cache.write().insert(entry.id, Arc::clone(&arc_view));
+        self.segment_cache
+            .write()
+            .insert(entry.id, Arc::clone(&arc_view));
 
         Ok(arc_view)
     }
@@ -688,11 +698,16 @@ impl StorageEngine {
             let arc_view = Arc::new(view);
 
             // Update cache
-            self.segment_cache.write().insert(entry.id, Arc::clone(&arc_view));
+            self.segment_cache
+                .write()
+                .insert(entry.id, Arc::clone(&arc_view));
 
             Ok(arc_view)
         } else {
-            Err(io::Error::new(io::ErrorKind::NotFound, "Data file not open"))
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Data file not open",
+            ))
         }
     }
 
@@ -797,19 +812,18 @@ impl StorageEngine {
         let index = self.index.read();
 
         let total_segments = index.len();
-        let total_compression_ratio: f64 = index
-            .values()
-            .map(|e| e.compression_ratio)
-            .sum::<f64>() / total_segments.max(1) as f64;
+        let total_compression_ratio: f64 =
+            index.values().map(|e| e.compression_ratio).sum::<f64>() / total_segments.max(1) as f64;
 
         let total_size: u64 = index.values().map(|e| e.size).sum();
 
-        let model_counts: std::collections::HashMap<String, usize> = index
-            .values()
-            .fold(std::collections::HashMap::new(), |mut acc, e| {
-                *acc.entry(e.model_type.clone()).or_insert(0) += 1;
-                acc
-            });
+        let model_counts: std::collections::HashMap<String, usize> =
+            index
+                .values()
+                .fold(std::collections::HashMap::new(), |mut acc, e| {
+                    *acc.entry(e.model_type.clone()).or_insert(0) += 1;
+                    acc
+                });
 
         StorageStats {
             total_segments,
@@ -912,5 +926,233 @@ mod tests {
         // Query range
         let results = engine.query_range(0, 99).unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_interval_tree_empty() {
+        let tree = IntervalTree::new();
+        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 0);
+        let results = tree.query_range(0, 100);
+        assert!(results.is_empty());
+        let point_results = tree.query_point(50);
+        assert!(point_results.is_empty());
+    }
+
+    #[test]
+    fn test_interval_tree_insert_and_query_without_rebuild() {
+        let mut tree = IntervalTree::new();
+        tree.insert(0, 100, 1);
+        tree.insert(50, 150, 2);
+        tree.insert(200, 300, 3);
+
+        // Without rebuild, should fallback to linear scan
+        assert!(tree.needs_rebuild());
+        let results = tree.query_range(60, 90);
+        assert!(results.contains(&1));
+        assert!(results.contains(&2));
+        assert!(!results.contains(&3));
+    }
+
+    #[test]
+    fn test_interval_tree_after_rebuild() {
+        let mut tree = IntervalTree::new();
+        tree.insert(0, 100, 1);
+        tree.insert(50, 150, 2);
+        tree.insert(200, 300, 3);
+        tree.insert(250, 350, 4);
+
+        tree.rebuild();
+        assert!(!tree.needs_rebuild());
+        assert_eq!(tree.len(), 4);
+
+        // Point query
+        let point_results = tree.query_point(75);
+        assert!(point_results.contains(&1));
+        assert!(point_results.contains(&2));
+        assert!(!point_results.contains(&3));
+
+        // Range query fully in right side
+        let right_results = tree.query_range(250, 280);
+        assert!(right_results.contains(&3));
+        assert!(right_results.contains(&4));
+        assert!(!right_results.contains(&1));
+
+        // No overlap
+        let no_results = tree.query_range(160, 190);
+        assert!(no_results.is_empty());
+    }
+
+    #[test]
+    fn test_interval_tree_single_interval() {
+        let mut tree = IntervalTree::new();
+        tree.insert(10, 20, 42);
+        tree.rebuild();
+
+        assert_eq!(tree.query_point(15).len(), 1);
+        assert_eq!(tree.query_point(15)[0], 42);
+        assert!(tree.query_point(5).is_empty());
+        assert!(tree.query_point(25).is_empty());
+    }
+
+    #[test]
+    fn test_storage_config_default() {
+        let config = StorageConfig::default();
+        assert_eq!(config.memtable_capacity, 1000);
+        assert!(config.enable_wal);
+        assert!(!config.sync_writes);
+        assert_eq!(config.compaction_threshold, 10);
+    }
+
+    #[test]
+    fn test_storage_engine_with_wal() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 100,
+            enable_wal: true,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+
+        for i in 0..50 {
+            engine.put(i, i as f32).unwrap();
+        }
+        engine.flush().unwrap();
+
+        let stats = engine.stats();
+        assert_eq!(stats.total_segments, 1);
+        engine.close().unwrap();
+
+        // WAL should be removed on clean close
+        assert!(!dir.path().join("wal.alice").exists());
+    }
+
+    #[test]
+    fn test_storage_engine_batch_put() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 50,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+
+        let data: Vec<(i64, f32)> = (0..200).map(|i| (i, i as f32 * 0.5)).collect();
+        engine.put_batch(&data).unwrap();
+        engine.flush().unwrap();
+
+        let stats = engine.stats();
+        assert!(stats.total_segments >= 4); // 200/50 = 4 flushes
+
+        let results = engine.query_range(0, 199).unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_storage_engine_point_query() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 1000,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+
+        for i in 0..100 {
+            engine.put(i, i as f32 * 2.0).unwrap();
+        }
+        engine.flush().unwrap();
+
+        // Point query for existing data
+        let result = engine.query_point(50).unwrap();
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // Should be approximately 100.0 (50 * 2.0)
+        assert!((val - 100.0).abs() < 10.0);
+
+        // Point query for non-existent timestamp
+        let missing = engine.query_point(9999).unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_storage_engine_stats_model_distribution() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 100,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+
+        // Insert constant data
+        for i in 0..100 {
+            engine.put(i, 42.0).unwrap();
+        }
+        engine.flush().unwrap();
+
+        let stats = engine.stats();
+        assert!(!stats.model_distribution.is_empty());
+        // The constant data should be stored with some model type
+        let total_models: usize = stats.model_distribution.values().sum();
+        assert_eq!(total_models, stats.total_segments);
+    }
+
+    #[test]
+    fn test_storage_engine_find_segments_empty() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 100,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        let segments = engine.find_segments(0, 100);
+        assert!(segments.is_empty());
+    }
+
+    #[test]
+    fn test_storage_engine_reopen_persistence() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+
+        // Write data
+        {
+            let config = StorageConfig {
+                data_dir: dir_path.clone(),
+                memtable_capacity: 100,
+                enable_wal: false,
+                ..Default::default()
+            };
+            let engine = StorageEngine::new(config).unwrap();
+            for i in 0..100 {
+                engine.put(i, i as f32).unwrap();
+            }
+            engine.flush().unwrap();
+            let stats = engine.stats();
+            assert!(stats.total_segments >= 1);
+            engine.close().unwrap();
+        }
+
+        // Reopen and verify data persisted
+        {
+            let config = StorageConfig {
+                data_dir: dir_path,
+                memtable_capacity: 100,
+                enable_wal: false,
+                ..Default::default()
+            };
+            let engine = StorageEngine::new(config).unwrap();
+            let stats = engine.stats();
+            assert!(stats.total_segments >= 1);
+
+            let results = engine.query_range(0, 99).unwrap();
+            assert!(!results.is_empty());
+        }
     }
 }

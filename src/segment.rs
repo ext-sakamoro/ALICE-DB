@@ -184,7 +184,11 @@ impl DataSegment {
         } else {
             1.0
         };
-        let inv_range = if total_range > 0.0 { 1.0 / total_range } else { 0.0 };
+        let inv_range = if total_range > 0.0 {
+            1.0 / total_range
+        } else {
+            0.0
+        };
         let estimated_count = ((query_end - query_start) as f64 / step) as usize + 1;
 
         // Pre-allocate with exact capacity
@@ -193,22 +197,79 @@ impl DataSegment {
         // ★ LOOP UNSWITCHING: Branch ONCE here, then run tight loop ★
         match &self.model {
             ModelType::Polynomial { coefficients, .. } => {
-                self.query_loop_polynomial(&mut results, query_start, query_end, step, inv_range, coefficients);
+                self.query_loop_polynomial(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    coefficients,
+                );
             }
-            ModelType::Fourier { coefficients, dc_offset, sample_count } => {
-                self.query_loop_fourier(&mut results, query_start, query_end, step, inv_range, coefficients, *dc_offset, *sample_count);
+            ModelType::Fourier {
+                coefficients,
+                dc_offset,
+                sample_count,
+            } => {
+                self.query_loop_fourier(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    coefficients,
+                    *dc_offset,
+                    *sample_count,
+                );
             }
-            ModelType::SineWave { frequency, amplitude, phase, offset } => {
-                self.query_loop_sine(&mut results, query_start, query_end, step, inv_range, *frequency, *amplitude, *phase, *offset);
+            ModelType::SineWave {
+                frequency,
+                amplitude,
+                phase,
+                offset,
+            } => {
+                self.query_loop_sine(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    *frequency,
+                    *amplitude,
+                    *phase,
+                    *offset,
+                );
             }
-            ModelType::MultiSine { components, dc_offset } => {
-                self.query_loop_multisine(&mut results, query_start, query_end, step, inv_range, components, *dc_offset);
+            ModelType::MultiSine {
+                components,
+                dc_offset,
+            } => {
+                self.query_loop_multisine(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    components,
+                    *dc_offset,
+                );
             }
             ModelType::Constant { value } => {
                 self.query_loop_constant(&mut results, query_start, query_end, step, *value as f32);
             }
-            ModelType::Linear { start_value, end_value } => {
-                self.query_loop_linear(&mut results, query_start, query_end, step, inv_range, *start_value, *end_value);
+            ModelType::Linear {
+                start_value,
+                end_value,
+            } => {
+                self.query_loop_linear(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    *start_value,
+                    *end_value,
+                );
             }
             ModelType::PerlinNoise { .. } | ModelType::RawLzma { .. } => {
                 // Fallback for complex types - generate all and slice
@@ -289,6 +350,7 @@ impl DataSegment {
     }
 
     /// Fourier query loop
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn query_loop_fourier(
         &self,
@@ -322,6 +384,7 @@ impl DataSegment {
     }
 
     /// Sine wave query loop
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn query_loop_sine(
         &self,
@@ -349,6 +412,7 @@ impl DataSegment {
     }
 
     /// Multi-sine query loop
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn query_loop_multisine(
         &self,
@@ -395,6 +459,7 @@ impl DataSegment {
     }
 
     /// Linear query loop
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn query_loop_linear(
         &self,
@@ -433,7 +498,11 @@ impl DataSegment {
         let mut t = query_start as f64;
 
         // Pre-compute reciprocal to replace division in loop
-        let inv_total_range = if total_range > 0.0 { 1.0 / total_range } else { 0.0 };
+        let inv_total_range = if total_range > 0.0 {
+            1.0 / total_range
+        } else {
+            0.0
+        };
         let start_time = self.start_time;
 
         while t <= query_end as f64 {
@@ -488,20 +557,31 @@ impl DataSegment {
             ModelType::Polynomial { coefficients, .. } => {
                 generators::generate_polynomial(n, coefficients)
             }
-            ModelType::Fourier { coefficients, dc_offset, sample_count } => {
+            ModelType::Fourier {
+                coefficients,
+                dc_offset,
+                sample_count,
+            } => {
                 let coefs: Vec<(usize, f32, f32)> = coefficients.clone();
                 generators::generate_from_coefficients(*sample_count, &coefs, *dc_offset)
             }
-            ModelType::SineWave { frequency, amplitude, phase, offset } => {
-                generators::generate_sine_wave(n, *frequency, *amplitude, *phase, *offset)
-            }
-            ModelType::MultiSine { components, dc_offset } => {
-                generators::generate_multi_sine(n, components, *dc_offset)
-            }
+            ModelType::SineWave {
+                frequency,
+                amplitude,
+                phase,
+                offset,
+            } => generators::generate_sine_wave(n, *frequency, *amplitude, *phase, *offset),
+            ModelType::MultiSine {
+                components,
+                dc_offset,
+            } => generators::generate_multi_sine(n, components, *dc_offset),
             ModelType::Constant { value } => {
                 vec![*value as f32; n]
             }
-            ModelType::Linear { start_value, end_value } => {
+            ModelType::Linear {
+                start_value,
+                end_value,
+            } => {
                 // Pre-compute reciprocal to avoid repeated division in iterator
                 let inv_n_minus_1 = if n > 1 { 1.0 / (n - 1) as f64 } else { 0.0 };
                 let delta = end_value - start_value;
@@ -512,14 +592,29 @@ impl DataSegment {
                     })
                     .collect()
             }
-            ModelType::PerlinNoise { seed, scale, octaves, persistence, lacunarity } => {
+            ModelType::PerlinNoise {
+                seed,
+                scale,
+                octaves,
+                persistence,
+                lacunarity,
+            } => {
                 // Generate 1D Perlin noise by taking a slice
-                let data = generators::generate_perlin_advanced(
-                    n, 1, *seed, *scale, *octaves, *persistence, *lacunarity
-                );
-                data
+                generators::generate_perlin_advanced(
+                    n,
+                    1,
+                    *seed,
+                    *scale,
+                    *octaves,
+                    *persistence,
+                    *lacunarity,
+                )
             }
-            ModelType::RawLzma { compressed_data, dtype, .. } => {
+            ModelType::RawLzma {
+                compressed_data,
+                dtype,
+                ..
+            } => {
                 // Decompress LZMA data
                 self.decompress_raw(compressed_data, *dtype, n)
             }
@@ -538,7 +633,11 @@ impl DataSegment {
                 }
                 result as f32
             }
-            ModelType::Fourier { coefficients, dc_offset, sample_count } => {
+            ModelType::Fourier {
+                coefficients,
+                dc_offset,
+                sample_count,
+            } => {
                 // Evaluate Fourier series at position
                 // Pre-compute inv_n to replace division in the coefficient loop
                 let n = *sample_count;
@@ -552,11 +651,19 @@ impl DataSegment {
                 }
                 sum
             }
-            ModelType::SineWave { frequency, amplitude, phase, offset } => {
+            ModelType::SineWave {
+                frequency,
+                amplitude,
+                phase,
+                offset,
+            } => {
                 let angle = 2.0 * std::f32::consts::PI * frequency * x as f32 + phase;
                 offset + amplitude * angle.sin()
             }
-            ModelType::MultiSine { components, dc_offset } => {
+            ModelType::MultiSine {
+                components,
+                dc_offset,
+            } => {
                 let mut sum = *dc_offset;
                 for &(freq, amp, phase) in components {
                     let angle = 2.0 * std::f32::consts::PI * freq * x as f32 + phase;
@@ -565,9 +672,10 @@ impl DataSegment {
                 sum
             }
             ModelType::Constant { value } => *value as f32,
-            ModelType::Linear { start_value, end_value } => {
-                (start_value + x * (end_value - start_value)) as f32
-            }
+            ModelType::Linear {
+                start_value,
+                end_value,
+            } => (start_value + x * (end_value - start_value)) as f32,
             ModelType::PerlinNoise { .. } => {
                 // For point query, generate and return single value
                 // This is less efficient but maintains consistency
@@ -575,7 +683,11 @@ impl DataSegment {
                 let idx = (x * (data.len() - 1) as f64).round() as usize;
                 data.get(idx).copied().unwrap_or(0.0)
             }
-            ModelType::RawLzma { compressed_data, dtype, .. } => {
+            ModelType::RawLzma {
+                compressed_data,
+                dtype,
+                ..
+            } => {
                 let data = self.decompress_raw(compressed_data, *dtype, self.metadata.point_count);
                 let idx = (x * (data.len().saturating_sub(1)) as f64).round() as usize;
                 data.get(idx).copied().unwrap_or(0.0)
@@ -618,46 +730,34 @@ impl DataSegment {
         }
 
         match dtype {
-            DataType::Float32 => {
-                decompressed
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes(b.try_into().unwrap_or([0; 4])))
-                    .collect()
-            }
-            DataType::Float64 => {
-                decompressed
-                    .chunks_exact(8)
-                    .map(|b| f64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32)
-                    .collect()
-            }
-            DataType::Int32 => {
-                decompressed
-                    .chunks_exact(4)
-                    .map(|b| i32::from_le_bytes(b.try_into().unwrap_or([0; 4])) as f32)
-                    .collect()
-            }
-            DataType::Int64 => {
-                decompressed
-                    .chunks_exact(8)
-                    .map(|b| i64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32)
-                    .collect()
-            }
-            DataType::UInt8 => {
-                decompressed.iter().map(|&b| b as f32).collect()
-            }
+            DataType::Float32 => decompressed
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap_or([0; 4])))
+                .collect(),
+            DataType::Float64 => decompressed
+                .chunks_exact(8)
+                .map(|b| f64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32)
+                .collect(),
+            DataType::Int32 => decompressed
+                .chunks_exact(4)
+                .map(|b| i32::from_le_bytes(b.try_into().unwrap_or([0; 4])) as f32)
+                .collect(),
+            DataType::Int64 => decompressed
+                .chunks_exact(8)
+                .map(|b| i64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32)
+                .collect(),
+            DataType::UInt8 => decompressed.iter().map(|&b| b as f32).collect(),
         }
     }
 
     /// Serialize segment to bytes
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
-        bincode::serialize(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        bincode::serialize(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Deserialize segment from bytes
     pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
-        bincode::deserialize(data)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        bincode::deserialize(data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Write segment to file
@@ -683,7 +783,12 @@ impl DataSegment {
     pub fn to_rkyv_bytes(&self) -> io::Result<Vec<u8>> {
         rkyv::to_bytes::<_, 256>(self)
             .map(|v| v.to_vec())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("rkyv serialize: {:?}", e)))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("rkyv serialize: {:?}", e),
+                )
+            })
     }
 
     /// Write segment to file in rkyv format
@@ -758,7 +863,6 @@ pub struct SegmentView {
     // ⚠️ SAFETY: archived MUST be declared BEFORE source!
     // Rust drops fields top-to-bottom. archived references source's memory,
     // so archived must be invalidated before source is freed.
-
     /// Archived segment (zero-copy reference into source) - DROPPED FIRST
     archived: &'static ArchivedDataSegment,
     /// Backing memory (kept alive for archived reference) - DROPPED SECOND
@@ -837,7 +941,7 @@ impl SegmentView {
         Self::from_source(source)
     }
 
-    /// Create from Arc<Vec<u8>> (avoids clone if you already have Arc)
+    /// Create from `Arc<Vec<u8>>` (avoids clone if you already have Arc)
     pub fn from_arc_vec(data: Arc<Vec<u8>>) -> io::Result<Self> {
         let source = SegmentSource::Vec(data);
         Self::from_source(source)
@@ -858,8 +962,12 @@ impl SegmentView {
         // so the pointer we derive from it is guaranteed to be correctly
         // aligned and to point into initialized, immutable memory within
         // `data`.
-        let archived = rkyv::check_archived_root::<DataSegment>(data)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("rkyv validation: {:?}", e)))?;
+        let archived = rkyv::check_archived_root::<DataSegment>(data).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("rkyv validation: {:?}", e),
+            )
+        })?;
 
         // SAFETY: Lifetime extension from &'data ArchivedDataSegment to
         // &'static ArchivedDataSegment.
@@ -980,7 +1088,11 @@ impl SegmentView {
         } else {
             1.0
         };
-        let inv_range = if total_range > 0.0 { 1.0 / total_range } else { 0.0 };
+        let inv_range = if total_range > 0.0 {
+            1.0 / total_range
+        } else {
+            0.0
+        };
         let estimated_count = ((query_end - query_start) as f64 / step) as usize + 1;
 
         let mut results = Vec::with_capacity(estimated_count.min(point_count as usize));
@@ -988,26 +1100,95 @@ impl SegmentView {
         // ★ LOOP UNSWITCHING: Branch ONCE here, then run tight loop ★
         match &self.archived.model {
             ArchivedModelType::Polynomial { coefficients, .. } => {
-                self.query_loop_polynomial_archived(&mut results, query_start, query_end, step, inv_range, coefficients.as_slice());
+                self.query_loop_polynomial_archived(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    coefficients.as_slice(),
+                );
             }
             ArchivedModelType::Constant { value } => {
-                self.query_loop_constant_archived(&mut results, query_start, query_end, step, *value as f32);
+                self.query_loop_constant_archived(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    *value as f32,
+                );
             }
-            ArchivedModelType::Linear { start_value, end_value } => {
-                self.query_loop_linear_archived(&mut results, query_start, query_end, step, inv_range, *start_value, *end_value);
+            ArchivedModelType::Linear {
+                start_value,
+                end_value,
+            } => {
+                self.query_loop_linear_archived(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    *start_value,
+                    *end_value,
+                );
             }
-            ArchivedModelType::SineWave { frequency, amplitude, phase, offset } => {
-                self.query_loop_sine_archived(&mut results, query_start, query_end, step, inv_range, *frequency, *amplitude, *phase, *offset);
+            ArchivedModelType::SineWave {
+                frequency,
+                amplitude,
+                phase,
+                offset,
+            } => {
+                self.query_loop_sine_archived(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    *frequency,
+                    *amplitude,
+                    *phase,
+                    *offset,
+                );
             }
-            ArchivedModelType::MultiSine { components, dc_offset } => {
-                self.query_loop_multisine_archived(&mut results, query_start, query_end, step, inv_range, components, *dc_offset);
+            ArchivedModelType::MultiSine {
+                components,
+                dc_offset,
+            } => {
+                self.query_loop_multisine_archived(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    components,
+                    *dc_offset,
+                );
             }
-            ArchivedModelType::Fourier { coefficients, dc_offset, sample_count } => {
-                self.query_loop_fourier_archived(&mut results, query_start, query_end, step, inv_range, coefficients, *dc_offset, *sample_count);
+            ArchivedModelType::Fourier {
+                coefficients,
+                dc_offset,
+                sample_count,
+            } => {
+                self.query_loop_fourier_archived(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    inv_range,
+                    coefficients,
+                    *dc_offset,
+                    *sample_count,
+                );
             }
             ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
                 // Fallback for complex types
-                self.query_loop_fallback_archived(&mut results, query_start, query_end, step, total_range);
+                self.query_loop_fallback_archived(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    total_range,
+                );
             }
         }
 
@@ -1107,6 +1288,7 @@ impl SegmentView {
     }
 
     /// Linear query loop - Zero-Copy version
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn query_loop_linear_archived(
         &self,
@@ -1131,6 +1313,7 @@ impl SegmentView {
     }
 
     /// Sine wave query loop - Zero-Copy version
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn query_loop_sine_archived(
         &self,
@@ -1158,6 +1341,7 @@ impl SegmentView {
     }
 
     /// Multi-sine query loop - Zero-Copy version
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn query_loop_multisine_archived(
         &self,
@@ -1188,6 +1372,7 @@ impl SegmentView {
     }
 
     /// Fourier query loop - Zero-Copy version
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn query_loop_fourier_archived(
         &self,
@@ -1234,7 +1419,11 @@ impl SegmentView {
         let mut t = query_start as f64;
 
         // Pre-compute reciprocal to replace division in loop
-        let inv_total_range = if total_range > 0.0 { 1.0 / total_range } else { 0.0 };
+        let inv_total_range = if total_range > 0.0 {
+            1.0 / total_range
+        } else {
+            0.0
+        };
         let start_time = self.archived.start_time;
 
         while t <= query_end as f64 {
@@ -1261,14 +1450,23 @@ impl SegmentView {
                 result as f32
             }
             ArchivedModelType::Constant { value } => *value as f32,
-            ArchivedModelType::Linear { start_value, end_value } => {
-                (start_value + x * (end_value - start_value)) as f32
-            }
-            ArchivedModelType::SineWave { frequency, amplitude, phase, offset } => {
+            ArchivedModelType::Linear {
+                start_value,
+                end_value,
+            } => (start_value + x * (end_value - start_value)) as f32,
+            ArchivedModelType::SineWave {
+                frequency,
+                amplitude,
+                phase,
+                offset,
+            } => {
                 let angle = 2.0 * std::f32::consts::PI * frequency * x as f32 + phase;
                 offset + amplitude * angle.sin()
             }
-            ArchivedModelType::MultiSine { components, dc_offset } => {
+            ArchivedModelType::MultiSine {
+                components,
+                dc_offset,
+            } => {
                 let mut sum = *dc_offset;
                 for comp in components.iter() {
                     let (freq, amp, phase) = (comp.0, comp.1, comp.2);
@@ -1277,7 +1475,11 @@ impl SegmentView {
                 }
                 sum
             }
-            ArchivedModelType::Fourier { coefficients, dc_offset, sample_count } => {
+            ArchivedModelType::Fourier {
+                coefficients,
+                dc_offset,
+                sample_count,
+            } => {
                 // Pre-compute inv_n to replace division in the coefficient loop
                 let n = *sample_count;
                 let inv_n = 1.0 / n as f64;
@@ -1451,7 +1653,9 @@ mod tests {
             assert!(
                 (s.1 - simd.1).abs() < 0.001,
                 "Mismatch at t={}: scalar={}, simd={}",
-                s.0, s.1, simd.1
+                s.0,
+                s.1,
+                simd.1
             );
         }
     }
@@ -1482,8 +1686,244 @@ mod tests {
             assert!(
                 (s.1 - sim.1).abs() < 0.01,
                 "Mismatch: scalar={}, simd={}",
-                s.1, sim.1
+                s.1,
+                sim.1
             );
         }
+    }
+
+    #[test]
+    fn test_contains_boundary_values() {
+        let segment = DataSegment::new(1, 10, 20, ModelType::Constant { value: 1.0 }, 11, 44);
+        // Inclusive boundaries
+        assert!(segment.contains(10));
+        assert!(segment.contains(20));
+        assert!(segment.contains(15));
+        // Outside boundaries
+        assert!(!segment.contains(9));
+        assert!(!segment.contains(21));
+        assert!(!segment.contains(i64::MIN));
+        assert!(!segment.contains(i64::MAX));
+    }
+
+    #[test]
+    fn test_overlaps() {
+        let segment = DataSegment::new(1, 100, 200, ModelType::Constant { value: 1.0 }, 101, 404);
+        // Overlapping ranges
+        assert!(segment.overlaps(50, 150)); // partial overlap left
+        assert!(segment.overlaps(150, 250)); // partial overlap right
+        assert!(segment.overlaps(100, 200)); // exact match
+        assert!(segment.overlaps(120, 180)); // fully inside
+        assert!(segment.overlaps(50, 300)); // fully containing
+                                            // Non-overlapping ranges
+        assert!(!segment.overlaps(0, 99));
+        assert!(!segment.overlaps(201, 300));
+    }
+
+    #[test]
+    fn test_query_point_outside_range_returns_none() {
+        let segment = DataSegment::new(
+            1,
+            0,
+            100,
+            ModelType::Linear {
+                start_value: 0.0,
+                end_value: 100.0,
+            },
+            101,
+            404,
+        );
+        assert!(segment.query_point(-1).is_none());
+        assert!(segment.query_point(101).is_none());
+    }
+
+    #[test]
+    fn test_query_range_non_overlapping() {
+        let segment = DataSegment::new(1, 100, 200, ModelType::Constant { value: 5.0 }, 101, 404);
+        let results = segment.query_range(0, 50);
+        assert!(results.is_empty());
+
+        let results2 = segment.query_range(300, 400);
+        assert!(results2.is_empty());
+    }
+
+    #[test]
+    fn test_single_point_segment() {
+        // Segment with start_time == end_time (single point)
+        let segment = DataSegment::new(1, 42, 42, ModelType::Constant { value: 99.0 }, 1, 4);
+        assert!(segment.contains(42));
+        assert!(!segment.contains(41));
+        let val = segment.query_point(42).unwrap();
+        assert!((val - 99.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_constant_segment_generate_all() {
+        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 7.5 }, 100, 400);
+        let all = segment.generate_all();
+        assert_eq!(all.len(), 100);
+        for &v in &all {
+            assert!((v - 7.5).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn test_linear_generate_all() {
+        let segment = DataSegment::new(
+            1,
+            0,
+            99,
+            ModelType::Linear {
+                start_value: 0.0,
+                end_value: 99.0,
+            },
+            100,
+            400,
+        );
+        let all = segment.generate_all();
+        assert_eq!(all.len(), 100);
+        assert!((all[0] - 0.0).abs() < 0.1);
+        assert!((all[99] - 99.0).abs() < 0.1);
+        // Monotonically increasing
+        for i in 1..all.len() {
+            assert!(all[i] >= all[i - 1] - 0.01);
+        }
+    }
+
+    #[test]
+    fn test_segment_rkyv_roundtrip() {
+        let segment = DataSegment::new(
+            42,
+            100,
+            500,
+            ModelType::Linear {
+                start_value: 10.0,
+                end_value: 50.0,
+            },
+            401,
+            1604,
+        );
+        let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
+        assert!(!rkyv_bytes.is_empty());
+
+        // Validate that SegmentView can read the rkyv bytes
+        let view = SegmentView::from_vec(rkyv_bytes).unwrap();
+        assert_eq!(view.start_time(), 100);
+        assert_eq!(view.end_time(), 500);
+        assert!(view.contains(300));
+        assert!(!view.contains(50));
+    }
+
+    #[test]
+    fn test_segment_view_source_type() {
+        let segment = DataSegment::new(1, 0, 10, ModelType::Constant { value: 1.0 }, 11, 44);
+        let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
+        let view = SegmentView::from_vec(rkyv_bytes).unwrap();
+        assert_eq!(view.source_type(), "vec");
+    }
+
+    #[test]
+    fn test_segment_view_query_point_constant() {
+        let segment = DataSegment::new(1, 0, 100, ModelType::Constant { value: 42.0 }, 101, 404);
+        let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
+        let view = SegmentView::from_vec(rkyv_bytes).unwrap();
+
+        let val = view.query_point(50).unwrap();
+        assert!((val - 42.0).abs() < 0.001);
+
+        assert!(view.query_point(-1).is_none());
+        assert!(view.query_point(101).is_none());
+    }
+
+    #[test]
+    fn test_segment_view_query_range_linear() {
+        let segment = DataSegment::new(
+            1,
+            0,
+            100,
+            ModelType::Linear {
+                start_value: 0.0,
+                end_value: 100.0,
+            },
+            101,
+            404,
+        );
+        let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
+        let view = SegmentView::from_vec(rkyv_bytes).unwrap();
+
+        let results = view.query_range(0, 100);
+        assert!(!results.is_empty());
+
+        let (_, first_val) = results.first().unwrap();
+        let (_, last_val) = results.last().unwrap();
+        assert!((first_val - 0.0).abs() < 1.0);
+        assert!((last_val - 100.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_segment_view_compression_ratio_and_point_count() {
+        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 1.0 }, 100, 400);
+        let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
+        let view = SegmentView::from_vec(rkyv_bytes).unwrap();
+        assert!(view.compression_ratio() > 1.0);
+        assert_eq!(view.point_count(), 100);
+    }
+
+    #[test]
+    fn test_segment_write_read_file_roundtrip() {
+        let segment = DataSegment::new(
+            5,
+            0,
+            50,
+            ModelType::Polynomial {
+                coefficients: vec![1.0, -0.5, 0.25],
+                degree: 2,
+                fit_error: 0.0001,
+            },
+            51,
+            204,
+        );
+
+        let mut buf: Vec<u8> = Vec::new();
+        segment.write_to(&mut buf).unwrap();
+
+        let mut cursor = std::io::Cursor::new(&buf);
+        let restored = DataSegment::read_from(&mut cursor).unwrap();
+
+        assert_eq!(restored.start_time, 0);
+        assert_eq!(restored.end_time, 50);
+        assert_eq!(restored.metadata.id, 5);
+        assert_eq!(restored.metadata.point_count, 51);
+    }
+
+    #[test]
+    fn test_with_residual() {
+        let segment = DataSegment::new(1, 0, 10, ModelType::Constant { value: 5.0 }, 11, 44);
+        assert!(segment.residual_blob.is_none());
+
+        let residual_data: Vec<u8> = (0..44).map(|i| i as u8).collect();
+        let segment_with_res = segment.with_residual(residual_data.clone());
+        assert!(segment_with_res.residual_blob.is_some());
+        assert_eq!(segment_with_res.residual_blob.unwrap().len(), 44);
+    }
+
+    #[test]
+    fn test_segment_metadata_fields() {
+        let segment = DataSegment::new(
+            99,
+            1000,
+            2000,
+            ModelType::Linear {
+                start_value: 0.0,
+                end_value: 1.0,
+            },
+            1001,
+            4004,
+        );
+        assert_eq!(segment.metadata.id, 99);
+        assert_eq!(segment.metadata.point_count, 1001);
+        assert_eq!(segment.metadata.original_size, 4004);
+        assert!(segment.metadata.created_at > 0);
+        assert!(segment.metadata.compression_ratio > 1.0);
     }
 }

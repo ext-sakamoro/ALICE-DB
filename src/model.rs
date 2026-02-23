@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 #[archive(check_bytes)]
 #[archive_attr(derive(Debug))]
 pub enum ModelType {
-    /// Polynomial model: y = c[0] + c[1]*x + c[2]*x^2 + ...
+    /// Polynomial model: `y = c[0] + c[1]*x + c[2]*x^2 + ...`
     ///
     /// Coefficients are stored from lowest to highest degree.
     /// Generated using Horner's method for numerical stability.
@@ -111,19 +111,14 @@ pub enum ModelType {
     /// Trivial but important for flat-line detection.
     ///
     /// Compression: Any size → 8 bytes
-    Constant {
-        value: f64,
-    },
+    Constant { value: f64 },
 
     /// Linear interpolation between two points
     ///
     /// Simplest non-constant model.
     ///
     /// Compression: Any size → 16 bytes
-    Linear {
-        start_value: f64,
-        end_value: f64,
-    },
+    Linear { start_value: f64, end_value: f64 },
 
     /// Raw fallback: LZMA-compressed original data
     ///
@@ -142,7 +137,18 @@ pub enum ModelType {
 }
 
 /// Data type for raw storage
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Archive, RkyvSerialize, RkyvDeserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
 #[archive(check_bytes)]
 #[archive_attr(derive(Debug, PartialEq, Eq))]
 pub enum DataType {
@@ -179,15 +185,13 @@ impl ModelType {
                 coefficients.len() * 12 + 16
             }
             ModelType::SineWave { .. } => 16,
-            ModelType::MultiSine { components, .. } => {
-                components.len() * 12 + 8
-            }
+            ModelType::MultiSine { components, .. } => components.len() * 12 + 8,
             ModelType::PerlinNoise { .. } => 24,
             ModelType::Constant { .. } => 8,
             ModelType::Linear { .. } => 16,
-            ModelType::RawLzma { compressed_data, .. } => {
-                compressed_data.len() + 16
-            }
+            ModelType::RawLzma {
+                compressed_data, ..
+            } => compressed_data.len() + 16,
         }
     }
 
@@ -271,5 +275,184 @@ mod tests {
         assert_eq!(DataType::Float32.size(), 4);
         assert_eq!(DataType::Float64.size(), 8);
         assert_eq!(DataType::UInt8.size(), 1);
+    }
+
+    #[test]
+    fn test_data_type_size_all_variants() {
+        assert_eq!(DataType::Int32.size(), 4);
+        assert_eq!(DataType::Int64.size(), 8);
+    }
+
+    #[test]
+    fn test_model_name_all_variants() {
+        assert_eq!(ModelType::Constant { value: 0.0 }.name(), "Constant");
+        assert_eq!(
+            ModelType::Linear {
+                start_value: 0.0,
+                end_value: 1.0
+            }
+            .name(),
+            "Linear"
+        );
+        assert_eq!(
+            ModelType::SineWave {
+                frequency: 1.0,
+                amplitude: 1.0,
+                phase: 0.0,
+                offset: 0.0
+            }
+            .name(),
+            "SineWave"
+        );
+        assert_eq!(
+            ModelType::MultiSine {
+                components: vec![],
+                dc_offset: 0.0
+            }
+            .name(),
+            "MultiSine"
+        );
+        assert_eq!(
+            ModelType::PerlinNoise {
+                seed: 0,
+                scale: 1.0,
+                octaves: 1,
+                persistence: 0.5,
+                lacunarity: 2.0
+            }
+            .name(),
+            "PerlinNoise"
+        );
+        assert_eq!(
+            ModelType::Fourier {
+                coefficients: vec![],
+                dc_offset: 0.0,
+                sample_count: 0
+            }
+            .name(),
+            "Fourier"
+        );
+    }
+
+    #[test]
+    fn test_is_fallback_non_fallback_variants() {
+        assert!(!ModelType::Constant { value: 1.0 }.is_fallback());
+        assert!(!ModelType::Linear {
+            start_value: 0.0,
+            end_value: 1.0
+        }
+        .is_fallback());
+        assert!(!ModelType::SineWave {
+            frequency: 1.0,
+            amplitude: 1.0,
+            phase: 0.0,
+            offset: 0.0
+        }
+        .is_fallback());
+        assert!(!ModelType::PerlinNoise {
+            seed: 0,
+            scale: 1.0,
+            octaves: 1,
+            persistence: 0.5,
+            lacunarity: 2.0
+        }
+        .is_fallback());
+    }
+
+    #[test]
+    fn test_estimated_size_constant() {
+        let c = ModelType::Constant { value: 42.0 };
+        assert_eq!(c.estimated_size(), 8);
+    }
+
+    #[test]
+    fn test_estimated_size_linear() {
+        let l = ModelType::Linear {
+            start_value: 0.0,
+            end_value: 100.0,
+        };
+        assert_eq!(l.estimated_size(), 16);
+    }
+
+    #[test]
+    fn test_estimated_size_sinewave() {
+        let s = ModelType::SineWave {
+            frequency: 1.0,
+            amplitude: 1.0,
+            phase: 0.0,
+            offset: 0.0,
+        };
+        assert_eq!(s.estimated_size(), 16);
+    }
+
+    #[test]
+    fn test_estimated_size_perlin() {
+        let p = ModelType::PerlinNoise {
+            seed: 0,
+            scale: 1.0,
+            octaves: 4,
+            persistence: 0.5,
+            lacunarity: 2.0,
+        };
+        assert_eq!(p.estimated_size(), 24);
+    }
+
+    #[test]
+    fn test_estimated_size_multisine() {
+        let m = ModelType::MultiSine {
+            components: vec![(1.0, 0.5, 0.0), (2.0, 0.3, 1.0)],
+            dc_offset: 0.0,
+        };
+        // 2 components * 12 + 8 = 32
+        assert_eq!(m.estimated_size(), 32);
+    }
+
+    #[test]
+    fn test_estimated_size_fourier() {
+        let f = ModelType::Fourier {
+            coefficients: vec![(1, 0.5, 0.0), (3, 0.3, 1.0), (5, 0.1, 0.5)],
+            dc_offset: 0.0,
+            sample_count: 1000,
+        };
+        // 3 coefficients * 12 + 16 = 52
+        assert_eq!(f.estimated_size(), 52);
+    }
+
+    #[test]
+    fn test_estimated_size_raw_lzma() {
+        let r = ModelType::RawLzma {
+            compressed_data: vec![0u8; 200],
+            dtype: DataType::Float32,
+            original_size: 1000,
+        };
+        // 200 + 16 = 216
+        assert_eq!(r.estimated_size(), 216);
+    }
+
+    #[test]
+    fn test_fit_result_compression_ratio() {
+        let model = ModelType::Linear {
+            start_value: 0.0,
+            end_value: 100.0,
+        };
+        let result = FitResult::new(model, 4000, 0.001, false);
+        // 4000 / 16 = 250.0
+        assert!((result.compression_ratio - 250.0).abs() < 0.1);
+        assert!(!result.is_lossless);
+        assert!((result.error - 0.001).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_fit_result_zero_model_size() {
+        // Empty polynomial (no coefficients) has estimated_size = 0*8 + 24 = 24
+        let model = ModelType::Polynomial {
+            coefficients: vec![],
+            degree: 0,
+            fit_error: 0.0,
+        };
+        let result = FitResult::new(model, 0, 0.0, true);
+        // original_size=0, model_size=24 => 0/24 = 0.0
+        assert!((result.compression_ratio - 0.0).abs() < 0.01);
+        assert!(result.is_lossless);
     }
 }

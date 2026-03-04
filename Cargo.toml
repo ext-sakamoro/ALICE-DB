@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Moroya Sakamoto"]
 description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
-license = "LicenseRef-Proprietary"
 license-file = "LICENSE"
 publish = false
 repository = "https://github.com/ext-sakamoro/ALICE-DB"
@@ -64,6 +63,7 @@ rand = "0.8"
 
 [features]
 default = []
+ffi = []  # C/C++/C# FFI bindings
 python = ["pyo3", "numpy", "ndarray"]
 analytics = ["alice-analytics"]  # ALICE-Analytics bridge (MetricPipeline → DB persistence)
 crypto = ["dep:alice-crypto"]  # ALICE-Crypto encryption at rest

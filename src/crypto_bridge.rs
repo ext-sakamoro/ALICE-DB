@@ -3,8 +3,8 @@
 //! Wraps an AliceDB instance to transparently encrypt values before
 //! writing and decrypt on read, providing encryption at rest.
 
-use alice_crypto::{self as crypto, Key, CipherError};
 use crate::AliceDB;
+use alice_crypto::{self as crypto, CipherError, Key};
 use std::io;
 use std::path::Path;
 

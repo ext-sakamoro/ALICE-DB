@@ -24,7 +24,7 @@
 //! - **O(1) Point Queries**: Compute f(x) instead of disk read
 //! - **Automatic Model Selection**: Polynomial, Fourier, Perlin, etc.
 //! - **Lossless Option**: Residual storage for exact reconstruction
-//! - **Time-Series Optimized**: LSM-Tree architecture with model-based SSTables
+//! - **Time-Series Optimized**: LSM-Tree architecture with model-based `SSTables`
 //!
 //! # Quick Start (Rust)
 //!
@@ -104,28 +104,42 @@
 //!
 //! Moroya Sakamoto
 
-pub mod model;
-pub mod segment;
-pub mod memtable;
-pub mod storage_engine;
-pub mod query_engine;
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::module_name_repetitions,
+    clippy::inline_always,
+    clippy::too_many_lines
+)]
+
 #[cfg(feature = "analytics")]
 pub mod analytics_bridge;
 #[cfg(feature = "crypto")]
 pub mod crypto_bridge;
+pub mod memtable;
+pub mod model;
+pub mod query_engine;
 #[cfg(feature = "sdf")]
 pub mod sdf_bridge;
+pub mod segment;
+pub mod storage_engine;
+
+#[cfg(feature = "ffi")]
+pub mod ffi;
 
 // Re-exports for convenience
-pub use model::{DataType, FitResult, ModelType};
-pub use segment::DataSegment;
-pub use memtable::{FitConfig, MemTable};
-pub use storage_engine::{StorageConfig, StorageEngine, StorageStats};
-pub use query_engine::{Aggregation, QueryBuilder, QueryInterface, QueryResult};
 #[cfg(feature = "analytics")]
-pub use analytics_bridge::{
-    flush_metrics_to_db, metric_key, AnalyticsSink, VARIANTS_PER_METRIC,
-};
+pub use analytics_bridge::{flush_metrics_to_db, metric_key, AnalyticsSink, VARIANTS_PER_METRIC};
+pub use memtable::{FitConfig, MemTable};
+pub use model::{DataType, FitResult, ModelType};
+pub use query_engine::{Aggregation, QueryBuilder, QueryInterface, QueryResult};
+pub use segment::DataSegment;
+pub use storage_engine::{StorageConfig, StorageEngine, StorageStats};
 
 use std::io;
 use std::path::Path;
@@ -142,33 +156,57 @@ impl AliceDB {
     /// Open a database at the specified path
     ///
     /// Creates the directory if it doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the storage engine cannot be opened at the given path.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let engine = StorageEngine::open(path)?;
         Ok(Self { engine })
     }
 
     /// Open with custom configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the storage engine cannot be initialized with the given config.
     pub fn with_config(config: StorageConfig) -> io::Result<Self> {
         let engine = StorageEngine::new(config)?;
         Ok(Self { engine })
     }
 
     /// Insert a single value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL write or segment persistence fails.
     pub fn put(&self, timestamp: i64, value: f32) -> io::Result<()> {
         self.engine.put(timestamp, value)
     }
 
     /// Insert multiple values (batch)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL write or segment persistence fails.
     pub fn put_batch(&self, data: &[(i64, f32)]) -> io::Result<()> {
         self.engine.put_batch(data)
     }
 
     /// Query a single point
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment loading fails.
     pub fn get(&self, timestamp: i64) -> io::Result<Option<f32>> {
         self.engine.query_point(timestamp)
     }
 
     /// Query a time range
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment loading fails.
     pub fn scan(&self, start: i64, end: i64) -> io::Result<Vec<(i64, f32)>> {
         self.engine.query_range(start, end)
     }
@@ -179,11 +217,19 @@ impl AliceDB {
     }
 
     /// Aggregation shorthand
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage query fails.
     pub fn aggregate(&self, start: i64, end: i64, agg: Aggregation) -> io::Result<f64> {
         self.engine.aggregate(start, end, agg)
     }
 
     /// Downsampling query
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage query fails.
     pub fn downsample(
         &self,
         start: i64,
@@ -195,6 +241,10 @@ impl AliceDB {
     }
 
     /// Force flush to disk
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing fails.
     pub fn flush(&self) -> io::Result<()> {
         self.engine.flush()
     }
@@ -205,6 +255,10 @@ impl AliceDB {
     }
 
     /// Close the database
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing or cleanup fails.
     pub fn close(self) -> io::Result<()> {
         self.engine.close()
     }
@@ -217,12 +271,12 @@ impl AliceDB {
 #[cfg(feature = "python")]
 mod python {
     use super::*;
-    use pyo3::prelude::*;
-    use pyo3::exceptions::{PyIOError, PyValueError};
-    use numpy::{PyArray1, PyArray2, PyArrayMethods};
     use ndarray::Array2;
-    use std::sync::Arc;
+    use numpy::{PyArray1, PyArray2, PyArrayMethods};
     use parking_lot::Mutex;
+    use pyo3::exceptions::{PyIOError, PyValueError};
+    use pyo3::prelude::*;
+    use std::sync::Arc;
 
     /// Convert io::Error to PyErr
     fn io_to_py(e: io::Error) -> PyErr {
@@ -256,20 +310,31 @@ mod python {
         /// Insert a single value
         fn put(&self, timestamp: i64, value: f32) -> PyResult<()> {
             let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+            let db = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("Database closed"))?;
             db.put(timestamp, value).map_err(io_to_py)
         }
 
         /// Insert multiple values from lists
-        fn put_batch(&self, py: Python<'_>, timestamps: Vec<i64>, values: Vec<f32>) -> PyResult<()> {
+        fn put_batch(
+            &self,
+            py: Python<'_>,
+            timestamps: Vec<i64>,
+            values: Vec<f32>,
+        ) -> PyResult<()> {
             if timestamps.len() != values.len() {
-                return Err(PyValueError::new_err("timestamps and values must have same length"));
+                return Err(PyValueError::new_err(
+                    "timestamps and values must have same length",
+                ));
             }
             let data: Vec<(i64, f32)> = timestamps.into_iter().zip(values).collect();
             let inner = self.inner.clone();
             py.allow_threads(move || {
                 let guard = inner.lock();
-                let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+                let db = guard
+                    .as_ref()
+                    .ok_or_else(|| PyIOError::new_err("Database closed"))?;
                 db.put_batch(&data).map_err(io_to_py)
             })
         }
@@ -284,18 +349,24 @@ mod python {
             let ts = timestamps.as_slice()?;
             let vals = values.as_slice()?;
             if ts.len() != vals.len() {
-                return Err(PyValueError::new_err("timestamps and values must have same length"));
+                return Err(PyValueError::new_err(
+                    "timestamps and values must have same length",
+                ));
             }
             let data: Vec<(i64, f32)> = ts.iter().zip(vals.iter()).map(|(&t, &v)| (t, v)).collect();
             let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+            let db = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("Database closed"))?;
             db.put_batch(&data).map_err(io_to_py)
         }
 
         /// Query a single point
         fn get(&self, timestamp: i64) -> PyResult<Option<f32>> {
             let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+            let db = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("Database closed"))?;
             db.get(timestamp).map_err(io_to_py)
         }
 
@@ -304,7 +375,9 @@ mod python {
             let inner = self.inner.clone();
             py.allow_threads(move || {
                 let guard = inner.lock();
-                let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+                let db = guard
+                    .as_ref()
+                    .ok_or_else(|| PyIOError::new_err("Database closed"))?;
                 db.scan(start, end).map_err(io_to_py)
             })
         }
@@ -317,7 +390,9 @@ mod python {
             end: i64,
         ) -> PyResult<Bound<'py, PyArray2<f64>>> {
             let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+            let db = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("Database closed"))?;
             let points = db.scan(start, end).map_err(io_to_py)?;
 
             let n = points.len();
@@ -345,19 +420,33 @@ mod python {
                 "last" => Aggregation::Last,
                 "stddev" | "std" => Aggregation::StdDev,
                 "variance" | "var" => Aggregation::Variance,
-                _ => return Err(PyValueError::new_err(format!("Unknown aggregation: {}", agg))),
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unknown aggregation: {}",
+                        agg
+                    )))
+                }
             };
             let inner = self.inner.clone();
             py.allow_threads(move || {
                 let guard = inner.lock();
-                let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+                let db = guard
+                    .as_ref()
+                    .ok_or_else(|| PyIOError::new_err("Database closed"))?;
                 db.aggregate(start, end, aggregation).map_err(io_to_py)
             })
         }
 
         /// Downsampling query
         #[pyo3(signature = (start, end, interval, agg="avg"))]
-        fn downsample(&self, py: Python<'_>, start: i64, end: i64, interval: i64, agg: &str) -> PyResult<Vec<(i64, f64)>> {
+        fn downsample(
+            &self,
+            py: Python<'_>,
+            start: i64,
+            end: i64,
+            interval: i64,
+            agg: &str,
+        ) -> PyResult<Vec<(i64, f64)>> {
             let aggregation = match agg.to_lowercase().as_str() {
                 "sum" => Aggregation::Sum,
                 "avg" | "average" | "mean" => Aggregation::Avg,
@@ -366,27 +455,39 @@ mod python {
                 "count" => Aggregation::Count,
                 "first" => Aggregation::First,
                 "last" => Aggregation::Last,
-                _ => return Err(PyValueError::new_err(format!("Unknown aggregation: {}", agg))),
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unknown aggregation: {}",
+                        agg
+                    )))
+                }
             };
             let inner = self.inner.clone();
             py.allow_threads(move || {
                 let guard = inner.lock();
-                let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
-                db.downsample(start, end, interval, aggregation).map_err(io_to_py)
+                let db = guard
+                    .as_ref()
+                    .ok_or_else(|| PyIOError::new_err("Database closed"))?;
+                db.downsample(start, end, interval, aggregation)
+                    .map_err(io_to_py)
             })
         }
 
         /// Force flush to disk
         fn flush(&self) -> PyResult<()> {
             let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+            let db = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("Database closed"))?;
             db.flush().map_err(io_to_py)
         }
 
         /// Get database statistics
         fn stats(&self) -> PyResult<PyStats> {
             let guard = self.inner.lock();
-            let db = guard.as_ref().ok_or_else(|| PyIOError::new_err("Database closed"))?;
+            let db = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("Database closed"))?;
             let stats = db.stats();
             Ok(PyStats {
                 total_segments: stats.total_segments,
@@ -537,5 +638,113 @@ mod tests {
 
         // Should achieve significant compression
         assert!(stats.average_compression_ratio > 5.0);
+    }
+
+    #[test]
+    fn test_alice_db_with_config() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 50,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let db = AliceDB::with_config(config).unwrap();
+
+        for i in 0..100 {
+            db.put(i, i as f32).unwrap();
+        }
+        db.flush().unwrap();
+
+        let stats = db.stats();
+        assert!(stats.total_segments >= 2); // 100/50 = 2 flushes
+        db.close().unwrap();
+    }
+
+    #[test]
+    fn test_alice_db_batch_insert() {
+        let dir = tempdir().unwrap();
+        let db = AliceDB::open(dir.path()).unwrap();
+
+        let data: Vec<(i64, f32)> = (0..500).map(|i| (i, (i as f32 * 0.1).sin())).collect();
+        db.put_batch(&data).unwrap();
+        db.flush().unwrap();
+
+        let results = db.scan(0, 499).unwrap();
+        assert!(!results.is_empty());
+        db.close().unwrap();
+    }
+
+    #[test]
+    fn test_alice_db_point_query() {
+        let dir = tempdir().unwrap();
+        let db = AliceDB::open(dir.path()).unwrap();
+
+        for i in 0..100 {
+            db.put(i, i as f32 * 3.0).unwrap();
+        }
+        db.flush().unwrap();
+
+        let result = db.get(50).unwrap();
+        assert!(result.is_some());
+        // Value at 50 should be approximately 150.0
+        let val = result.unwrap();
+        assert!((val - 150.0).abs() < 20.0);
+
+        // Non-existent timestamp
+        let missing = db.get(9999).unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_alice_db_downsample() {
+        let dir = tempdir().unwrap();
+        let db = AliceDB::open(dir.path()).unwrap();
+
+        for i in 0..100 {
+            db.put(i, i as f32).unwrap();
+        }
+        db.flush().unwrap();
+
+        let downsampled = db.downsample(0, 99, 25, Aggregation::Avg).unwrap();
+        assert!(!downsampled.is_empty());
+        assert!(downsampled.len() <= 4);
+    }
+
+    #[test]
+    fn test_alice_db_constant_data_compression() {
+        let dir = tempdir().unwrap();
+        let db = AliceDB::open(dir.path()).unwrap();
+
+        // All same value should compress extremely well
+        for i in 0..500 {
+            db.put(i, 42.0).unwrap();
+        }
+        db.flush().unwrap();
+
+        let stats = db.stats();
+        assert!(stats.average_compression_ratio > 10.0);
+        assert!(stats.total_segments >= 1);
+    }
+
+    #[test]
+    fn test_alice_db_query_builder() {
+        let dir = tempdir().unwrap();
+        let db = AliceDB::open(dir.path()).unwrap();
+
+        for i in 0..100 {
+            db.put(i, i as f32).unwrap();
+        }
+        db.flush().unwrap();
+
+        let result = db
+            .query()
+            .range(10, 50)
+            .aggregate(Aggregation::Count)
+            .execute()
+            .unwrap();
+
+        let count = result.into_scalar();
+        assert!(count > 0.0);
     }
 }

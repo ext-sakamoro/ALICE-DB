@@ -42,8 +42,8 @@
 //! | 4 | p90 | DDSketch 90th percentile |
 //! | 5 | p99 | DDSketch 99th percentile |
 
-use alice_analytics::pipeline::MetricPipeline;
 use crate::AliceDB;
+use alice_analytics::pipeline::MetricPipeline;
 use std::io;
 
 /// Number of variants stored per metric (counter, gauge, cardinality, p50, p90, p99).
@@ -99,9 +99,18 @@ pub fn flush_metrics_to_db<const SLOTS: usize, const QUEUE_SIZE: usize>(
 
         // Quantiles (DDSketch) — only if observations exist
         if slot.ddsketch.count() > 0 {
-            batch.push((metric_key(nh, timestamp, 3), slot.ddsketch.quantile(0.50) as f32));
-            batch.push((metric_key(nh, timestamp, 4), slot.ddsketch.quantile(0.90) as f32));
-            batch.push((metric_key(nh, timestamp, 5), slot.ddsketch.quantile(0.99) as f32));
+            batch.push((
+                metric_key(nh, timestamp, 3),
+                slot.ddsketch.quantile(0.50) as f32,
+            ));
+            batch.push((
+                metric_key(nh, timestamp, 4),
+                slot.ddsketch.quantile(0.90) as f32,
+            ));
+            batch.push((
+                metric_key(nh, timestamp, 5),
+                slot.ddsketch.quantile(0.99) as f32,
+            ));
         }
     }
 
@@ -256,10 +265,7 @@ mod tests {
     fn test_analytics_sink_persist() {
         let dir = tempdir().unwrap();
 
-        let mut sink = AnalyticsSink::<64, 256>::open(
-            dir.path().to_str().unwrap(),
-            0.05,
-        ).unwrap();
+        let mut sink = AnalyticsSink::<64, 256>::open(dir.path().to_str().unwrap(), 0.05).unwrap();
 
         let hash = FnvHasher::hash_bytes(b"sensor.temperature");
 
@@ -281,10 +287,7 @@ mod tests {
     fn test_analytics_sink_persist_and_reset() {
         let dir = tempdir().unwrap();
 
-        let mut sink = AnalyticsSink::<64, 256>::open(
-            dir.path().to_str().unwrap(),
-            0.05,
-        ).unwrap();
+        let mut sink = AnalyticsSink::<64, 256>::open(dir.path().to_str().unwrap(), 0.05).unwrap();
 
         let hash = FnvHasher::hash_bytes(b"requests");
 

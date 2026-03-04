@@ -1,17 +1,17 @@
-//! MemTable: In-Memory Write Buffer (Double-Buffered Vec)
+//! `MemTable`: In-Memory Write Buffer (Double-Buffered Vec)
 //!
-//! Data flows: Insert → MemTable → Flush → Model Fitting → Segment
+//! Data flows: Insert → `MemTable` → Flush → Model Fitting → Segment
 //!
-//! The MemTable buffers incoming writes until it reaches capacity,
+//! The `MemTable` buffers incoming writes until it reaches capacity,
 //! then triggers a flush operation that:
 //! 1. Runs multiple fitting algorithms in parallel
 //! 2. Selects the best model (highest compression, lowest error)
-//! 3. Creates a DataSegment with the winning model
+//! 3. Creates a `DataSegment` with the winning model
 //!
 //! # Performance: Double-Buffered Vec
 //!
 //! Time-series data is typically append-only (monotonically increasing timestamps).
-//! SkipList's O(log N) random-access is overkill for this workload.
+//! `SkipList`'s O(log N) random-access is overkill for this workload.
 //!
 //! Instead, we use a simple `Vec<(i64, f32)>` with:
 //! - O(1) amortized push (just append to Vec)
@@ -60,14 +60,14 @@ impl Default for FitConfig {
     }
 }
 
-/// MemTable: Double-buffered in-memory write buffer
+/// `MemTable`: Double-buffered in-memory write buffer
 ///
 /// # Performance: Double-Buffered Vec
 ///
 /// For append-only time-series workloads:
 /// - Write buffer: `Vec::push()` is O(1) amortized
 /// - On flush: swap buffer pointer, sort & compress in background
-/// - No SkipList node allocations, no CAS loops
+/// - No `SkipList` node allocations, no CAS loops
 ///
 /// This is optimal for time-series where data arrives in roughly sorted order.
 pub struct MemTable {
@@ -82,7 +82,8 @@ pub struct MemTable {
 }
 
 impl MemTable {
-    /// Create a new MemTable with specified capacity
+    /// Create a new `MemTable` with specified capacity
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             buffer: Mutex::new(Vec::with_capacity(capacity)),
@@ -92,7 +93,8 @@ impl MemTable {
         }
     }
 
-    /// Create a new MemTable with custom config
+    /// Create a new `MemTable` with custom config
+    #[must_use]
     pub fn with_config(capacity: usize, config: FitConfig) -> Self {
         Self {
             buffer: Mutex::new(Vec::with_capacity(capacity)),
@@ -105,7 +107,7 @@ impl MemTable {
     /// Insert a single value
     ///
     /// Returns Some(DataSegment) if flush was triggered, None otherwise.
-    /// Insert is O(1) amortized (just Vec::push).
+    /// Insert is O(1) amortized (just `Vec::push`).
     #[inline]
     pub fn put(&self, timestamp: i64, value: f32) -> Option<DataSegment> {
         let mut buffer = self.buffer.lock();
@@ -187,21 +189,14 @@ impl MemTable {
         if data.is_empty() {
             // Edge case: return empty constant segment
             let id = self.next_id();
-            return DataSegment::new(
-                id,
-                0,
-                0,
-                ModelType::Constant { value: 0.0 },
-                0,
-                0,
-            );
+            return DataSegment::new(id, 0, 0, ModelType::Constant { value: 0.0 }, 0, 0);
         }
 
         // Sort by timestamp (O(N) for nearly-sorted data via pdqsort)
         data.sort_unstable_by_key(|&(t, _)| t);
 
-        let start_time = data.first().map(|&(t, _)| t).unwrap_or(0);
-        let end_time = data.last().map(|&(t, _)| t).unwrap_or(0);
+        let start_time = data.first().map_or(0, |&(t, _)| t);
+        let end_time = data.last().map_or(0, |&(t, _)| t);
         let values: Vec<f32> = data.iter().map(|&(_, v)| v).collect();
         let original_size = values.len() * 4;
 
@@ -227,25 +222,22 @@ impl MemTable {
     /// Fit the best model to data
     ///
     /// Runs multiple fitting algorithms in parallel and selects the winner.
-    /// Selection criteria: compression_ratio / (1 + error)
+    /// Selection criteria: `compression_ratio` / (1 + error)
     fn fit_best_model(&self, values: &[f32]) -> FitResult {
         let original_size = values.len() * 4;
 
         // Quick checks for trivial cases
         if values.is_empty() {
-            return FitResult::new(
-                ModelType::Constant { value: 0.0 },
-                0,
-                0.0,
-                true,
-            );
+            return FitResult::new(ModelType::Constant { value: 0.0 }, 0, 0.0, true);
         }
 
         // Check for constant data
         let first = values[0];
         if values.iter().all(|&v| (v - first).abs() < 1e-10) {
             return FitResult::new(
-                ModelType::Constant { value: first as f64 },
+                ModelType::Constant {
+                    value: first as f64,
+                },
                 original_size,
                 0.0,
                 true,
@@ -267,20 +259,18 @@ impl MemTable {
 
         let sine_result = self.try_sine_fit(values);
 
-        let mut candidates: Vec<FitResult> = vec![
-            poly_result,
-            fourier_result,
-            sine_result,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let mut candidates: Vec<FitResult> = vec![poly_result, fourier_result, sine_result]
+            .into_iter()
+            .flatten()
+            .collect();
 
         // Select best candidate by score
         candidates.sort_by(|a, b| {
             let score_a = a.compression_ratio / (1.0 + a.error * 100.0);
             let score_b = b.compression_ratio / (1.0 + b.error * 100.0);
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Return best if it meets minimum compression ratio
@@ -295,6 +285,7 @@ impl MemTable {
     }
 
     /// Try linear fitting
+    #[allow(clippy::unused_self)]
     fn try_linear_fit(&self, values: &[f32]) -> Option<FitResult> {
         if values.len() < 2 {
             return None;
@@ -318,14 +309,23 @@ impl MemTable {
         }
 
         let range = (last - first).abs();
-        let relative_error = if range > 1e-10 { max_error / range } else { max_error };
+        let relative_error = if range > 1e-10 {
+            max_error / range
+        } else {
+            max_error
+        };
 
         if relative_error < 0.01 {
             let model = ModelType::Linear {
                 start_value: first,
                 end_value: last,
             };
-            Some(FitResult::new(model, values.len() * 4, relative_error, false))
+            Some(FitResult::new(
+                model,
+                values.len() * 4,
+                relative_error,
+                false,
+            ))
         } else {
             None
         }
@@ -367,11 +367,8 @@ impl MemTable {
         }
 
         // Reconstruct and calculate error
-        let reconstructed = generators::generate_from_coefficients(
-            values.len(),
-            &coefficients,
-            dc_offset,
-        );
+        let reconstructed =
+            generators::generate_from_coefficients(values.len(), &coefficients, dc_offset);
 
         // Pre-compute reciprocal for MSE and variance normalization
         let inv_len = 1.0 / values.len() as f32;
@@ -379,7 +376,8 @@ impl MemTable {
             .iter()
             .zip(reconstructed.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() * inv_len;
+            .sum::<f32>()
+            * inv_len;
 
         let variance: f32 = {
             let mean = values.iter().sum::<f32>() * inv_len;
@@ -398,10 +396,16 @@ impl MemTable {
             sample_count: values.len(),
         };
 
-        Some(FitResult::new(model, values.len() * 4, relative_error, false))
+        Some(FitResult::new(
+            model,
+            values.len() * 4,
+            relative_error,
+            false,
+        ))
     }
 
     /// Try simple sine wave fitting
+    #[allow(clippy::unused_self)]
     fn try_sine_fit(&self, values: &[f32]) -> Option<FitResult> {
         if values.len() < 8 {
             return None;
@@ -430,19 +434,15 @@ impl MemTable {
         };
 
         // Verify fit quality
-        let reconstructed = generators::generate_sine_wave(
-            values.len(),
-            frequency,
-            amplitude,
-            phase,
-            dc_offset,
-        );
+        let reconstructed =
+            generators::generate_sine_wave(values.len(), frequency, amplitude, phase, dc_offset);
 
         let mse: f32 = values
             .iter()
             .zip(reconstructed.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() * inv_len;
+            .sum::<f32>()
+            * inv_len;
 
         let variance: f32 = {
             let mean = values.iter().sum::<f32>() * inv_len;
@@ -457,18 +457,21 @@ impl MemTable {
 
         // Only accept if error is low
         if relative_error < 0.1 {
-            Some(FitResult::new(model, values.len() * 4, relative_error, false))
+            Some(FitResult::new(
+                model,
+                values.len() * 4,
+                relative_error,
+                false,
+            ))
         } else {
             None
         }
     }
 
     /// Fallback: LZMA compress raw data
+    #[allow(clippy::unused_self)]
     fn fallback_lzma(&self, values: &[f32]) -> FitResult {
-        let bytes: Vec<u8> = values
-            .iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = values.iter().flat_map(|&v| v.to_le_bytes()).collect();
 
         let mut compressed = Vec::new();
         let _ = lzma_rs::lzma_compress(&mut Cursor::new(&bytes), &mut compressed);
@@ -538,8 +541,8 @@ mod tests {
         let result = memtable.fit_best_model(&values);
         // Should detect as Linear or Polynomial degree 1
         assert!(
-            matches!(result.model, ModelType::Linear { .. }) ||
-            matches!(result.model, ModelType::Polynomial { degree: 1, .. })
+            matches!(result.model, ModelType::Linear { .. })
+                || matches!(result.model, ModelType::Polynomial { degree: 1, .. })
         );
     }
 
@@ -565,5 +568,120 @@ mod tests {
         let segment = memtable.force_flush();
         assert!(segment.is_some());
         assert!(memtable.is_empty());
+    }
+
+    #[test]
+    fn test_force_flush_empty_returns_none() {
+        let memtable = MemTable::new(100);
+        assert!(memtable.force_flush().is_none());
+    }
+
+    #[test]
+    fn test_fit_empty_values() {
+        let memtable = MemTable::new(100);
+        let result = memtable.fit_best_model(&[]);
+        assert!(matches!(result.model, ModelType::Constant { value } if value == 0.0));
+    }
+
+    #[test]
+    fn test_fit_single_value() {
+        let memtable = MemTable::new(1000);
+        let result = memtable.fit_best_model(&[42.0]);
+        // Single value should be detected as constant
+        assert!(
+            matches!(result.model, ModelType::Constant { value } if (value - 42.0).abs() < 1e-6)
+        );
+    }
+
+    #[test]
+    fn test_fit_two_values_linear() {
+        let memtable = MemTable::new(1000);
+        let values: Vec<f32> = vec![0.0, 100.0];
+        let result = memtable.fit_best_model(&values);
+        // Two values forming a line: could be Linear or Polynomial degree 1
+        assert!(
+            matches!(result.model, ModelType::Linear { .. })
+                || matches!(result.model, ModelType::Polynomial { .. })
+                || matches!(result.model, ModelType::RawLzma { .. }),
+            "Expected Linear, Polynomial, or RawLzma for two-point data, got {:?}",
+            result.model.name()
+        );
+    }
+
+    #[test]
+    fn test_fit_random_noise_falls_back_to_lzma() {
+        let memtable = MemTable::new(1000);
+        // High-entropy random-looking data should fall back to LZMA
+        let values: Vec<f32> = (0..100)
+            .map(|i| {
+                (i as f32 * 7.3).sin() * 1000.0
+                    + (i as f32 * 13.7).cos() * 500.0
+                    + (i as f32 * 0.3).tan().clamp(-1000.0, 1000.0)
+            })
+            .collect();
+        let result = memtable.fit_best_model(&values);
+        // Should either find a model or fall back to RawLzma
+        assert!(result.compression_ratio > 0.0);
+    }
+
+    #[test]
+    fn test_memtable_with_config() {
+        let config = FitConfig {
+            max_polynomial_degree: 5,
+            polynomial_error_threshold: 0.01,
+            max_fourier_coefficients: 10,
+            fourier_energy_threshold: 0.95,
+            exhaustive_search: false,
+            min_compression_ratio: 1.5,
+        };
+        let memtable = MemTable::with_config(200, config);
+        assert!(memtable.is_empty());
+        assert_eq!(memtable.len(), 0);
+    }
+
+    #[test]
+    fn test_batch_insert_exact_capacity() {
+        let memtable = MemTable::new(50);
+        let data: Vec<(i64, f32)> = (0..50).map(|i| (i, i as f32)).collect();
+        let segments = memtable.put_batch(&data);
+        // Exactly at capacity should trigger one flush
+        assert_eq!(segments.len(), 1);
+        assert!(memtable.is_empty());
+    }
+
+    #[test]
+    fn test_batch_insert_below_capacity() {
+        let memtable = MemTable::new(100);
+        let data: Vec<(i64, f32)> = (0..30).map(|i| (i, i as f32)).collect();
+        let segments = memtable.put_batch(&data);
+        assert!(segments.is_empty());
+        assert_eq!(memtable.len(), 30);
+    }
+
+    #[test]
+    fn test_segment_id_monotonically_increasing() {
+        let memtable = MemTable::new(10);
+        let data: Vec<(i64, f32)> = (0..30).map(|i| (i, i as f32)).collect();
+        let segments = memtable.put_batch(&data);
+        assert!(segments.len() >= 2);
+        for i in 1..segments.len() {
+            assert!(segments[i].metadata.id > segments[i - 1].metadata.id);
+        }
+    }
+
+    #[test]
+    fn test_flush_preserves_timestamp_ordering() {
+        let memtable = MemTable::new(1000);
+        // Insert out-of-order timestamps
+        memtable.put(50, 50.0);
+        memtable.put(10, 10.0);
+        memtable.put(30, 30.0);
+        memtable.put(20, 20.0);
+        memtable.put(40, 40.0);
+
+        let segment = memtable.force_flush().unwrap();
+        // After flush, start_time should be the minimum timestamp
+        assert_eq!(segment.start_time, 10);
+        assert_eq!(segment.end_time, 50);
     }
 }

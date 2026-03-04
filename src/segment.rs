@@ -1,4 +1,4 @@
-//! Data Segment (Model-Based SSTable)
+//! Data Segment (Model-Based `SSTable`)
 //!
 //! The core innovation of ALICE-DB: instead of storing raw data,
 //! we store mathematical models that can regenerate data on-demand.
@@ -13,7 +13,7 @@
 //!
 //! # Zero-Copy I/O (Phase 1)
 //!
-//! SegmentView uses mmap + rkyv for true zero-copy access:
+//! `SegmentView` uses mmap + rkyv for true zero-copy access:
 //! - No deserialization overhead
 //! - OS handles page caching
 //! - Direct pointer access to model coefficients
@@ -75,6 +75,7 @@ pub struct DataSegment {
 
 impl DataSegment {
     /// Create a new segment from a model
+    #[must_use]
     pub fn new(
         id: u64,
         start_time: i64,
@@ -110,6 +111,7 @@ impl DataSegment {
     }
 
     /// Add residual data for lossless reconstruction
+    #[must_use]
     pub fn with_residual(mut self, residual: Vec<u8>) -> Self {
         self.residual_blob = Some(residual);
         self
@@ -117,12 +119,14 @@ impl DataSegment {
 
     /// Check if a timestamp falls within this segment
     #[inline]
+    #[must_use]
     pub fn contains(&self, timestamp: i64) -> bool {
         timestamp >= self.start_time && timestamp <= self.end_time
     }
 
     /// Check if a time range overlaps with this segment
     #[inline]
+    #[must_use]
     pub fn overlaps(&self, start: i64, end: i64) -> bool {
         self.start_time <= end && self.end_time >= start
     }
@@ -132,6 +136,7 @@ impl DataSegment {
     /// This is O(1) - just evaluate the mathematical function!
     /// No disk I/O needed beyond loading the segment.
     #[inline(always)]
+    #[must_use]
     pub fn query_point(&self, timestamp: i64) -> Option<f32> {
         if !self.contains(timestamp) {
             return None;
@@ -169,6 +174,7 @@ impl DataSegment {
     /// Instead of branching inside the loop (killing branch prediction),
     /// we branch ONCE outside, then run a tight branchless loop.
     /// This allows CPU to pipeline SIMD instructions without stalls.
+    #[must_use]
     pub fn query_range(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
         let query_start = start.max(self.start_time);
         let query_end = end.min(self.end_time);
@@ -341,6 +347,7 @@ impl DataSegment {
 
     /// Scalar Horner's method (for tail processing)
     #[inline(always)]
+    #[allow(clippy::unused_self)]
     fn horner_scalar(&self, x: f64, coefficients: &[f64]) -> f64 {
         let mut result = 0.0f64;
         for &c in coefficients.iter().rev() {
@@ -443,6 +450,7 @@ impl DataSegment {
 
     /// Constant query loop (trivial but kept for consistency)
     #[inline]
+    #[allow(clippy::unused_self)]
     fn query_loop_constant(
         &self,
         results: &mut Vec<(i64, f32)>,
@@ -483,7 +491,7 @@ impl DataSegment {
         }
     }
 
-    /// Fallback query loop for complex types (Perlin, RawLzma)
+    /// Fallback query loop for complex types (Perlin, `RawLzma`)
     #[inline]
     fn query_loop_fallback(
         &self,
@@ -528,8 +536,9 @@ impl DataSegment {
 
     /// Query a range of values using SIMD acceleration (Phase 3)
     ///
-    /// Now unified with query_range - this is an alias for compatibility.
+    /// Now unified with `query_range` - this is an alias for compatibility.
     #[inline]
+    #[must_use]
     pub fn query_range_simd(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
         // query_range now uses SIMD internally for polynomial
         self.query_range(start, end)
@@ -537,6 +546,7 @@ impl DataSegment {
 
     /// SIMD Horner's method: evaluate polynomial at 4 x-values simultaneously
     #[inline(always)]
+    #[allow(clippy::unused_self)]
     fn horner_simd(&self, x: f64x4, coefficients: &[f64]) -> f64x4 {
         let mut result = f64x4::ZERO;
         for &c in coefficients.iter().rev() {
@@ -550,6 +560,7 @@ impl DataSegment {
     ///
     /// This regenerates the entire dataset from the model.
     /// Used for full segment reads or verification.
+    #[must_use]
     pub fn generate_all(&self) -> Vec<f32> {
         let n = self.metadata.point_count;
 
@@ -708,6 +719,7 @@ impl DataSegment {
     }
 
     /// Get residual correction at index
+    #[allow(clippy::unused_self)]
     fn get_residual_at(&self, residual: &[u8], idx: usize) -> Option<f32> {
         // Residual is stored as quantized LZMA-compressed data
         // For now, assume it's been decompressed and stored as f32
@@ -721,6 +733,7 @@ impl DataSegment {
     }
 
     /// Decompress raw LZMA data
+    #[allow(clippy::unused_self)]
     fn decompress_raw(&self, compressed: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
         use std::io::Cursor;
 
@@ -751,16 +764,28 @@ impl DataSegment {
     }
 
     /// Serialize segment to bytes
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
         bincode::serialize(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Deserialize segment from bytes
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization fails.
     pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
         bincode::deserialize(data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Write segment to file
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or writing fails.
     pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         let bytes = self.to_bytes()?;
         writer.write_all(&(bytes.len() as u64).to_le_bytes())?;
@@ -769,6 +794,10 @@ impl DataSegment {
     }
 
     /// Read segment from file
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or deserialization fails.
     pub fn read_from<R: Read>(reader: &mut R) -> io::Result<Self> {
         let mut len_bytes = [0u8; 8];
         reader.read_exact(&mut len_bytes)?;
@@ -780,18 +809,23 @@ impl DataSegment {
     }
 
     /// Serialize to rkyv format (zero-copy compatible)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if rkyv serialization fails.
     pub fn to_rkyv_bytes(&self) -> io::Result<Vec<u8>> {
         rkyv::to_bytes::<_, 256>(self)
             .map(|v| v.to_vec())
             .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("rkyv serialize: {:?}", e),
-                )
+                io::Error::new(io::ErrorKind::InvalidData, format!("rkyv serialize: {e:?}"))
             })
     }
 
     /// Write segment to file in rkyv format
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or writing to disk fails.
     pub fn write_rkyv<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let bytes = self.to_rkyv_bytes()?;
         std::fs::write(path, bytes)
@@ -811,7 +845,7 @@ impl DataSegment {
 pub enum SegmentSource {
     /// Memory-mapped file (best for large segments, lazy loading)
     Mmap(Arc<Mmap>),
-    /// In-memory bytes (for freshly flushed MemTable data)
+    /// In-memory bytes (for freshly flushed `MemTable` data)
     Vec(Arc<Vec<u8>>),
     /// Static slice (for embedded/testing)
     Slice(&'static [u8]),
@@ -909,8 +943,7 @@ impl SegmentView {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "segment file is too small ({} bytes) to contain a valid rkyv archive",
-                    file_len
+                    "segment file is too small ({file_len} bytes) to contain a valid rkyv archive"
                 ),
             ));
         }
@@ -927,8 +960,12 @@ impl SegmentView {
 
     /// Create from in-memory bytes (Zero-Copy, no disk I/O)
     ///
-    /// Best for: Freshly flushed MemTable data.
+    /// Best for: Freshly flushed `MemTable` data.
     /// Avoids waiting for disk write to complete before caching.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the rkyv data is invalid.
     ///
     /// # Example
     /// ```ignore
@@ -942,18 +979,26 @@ impl SegmentView {
     }
 
     /// Create from `Arc<Vec<u8>>` (avoids clone if you already have Arc)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the rkyv data is invalid.
     pub fn from_arc_vec(data: Arc<Vec<u8>>) -> io::Result<Self> {
         let source = SegmentSource::Vec(data);
         Self::from_source(source)
     }
 
     /// Create from static slice (for embedded/testing)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the rkyv data is invalid.
     pub fn from_static(data: &'static [u8]) -> io::Result<Self> {
         let source = SegmentSource::Slice(data);
         Self::from_source(source)
     }
 
-    /// Internal: Create SegmentView from any SegmentSource
+    /// Internal: Create `SegmentView` from any `SegmentSource`
     fn from_source(source: SegmentSource) -> io::Result<Self> {
         let data = source.as_ref();
 
@@ -965,7 +1010,7 @@ impl SegmentView {
         let archived = rkyv::check_archived_root::<DataSegment>(data).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("rkyv validation: {:?}", e),
+                format!("rkyv validation: {e:?}"),
             )
         })?;
 
@@ -1013,13 +1058,14 @@ impl SegmentView {
             // We cast the pointer, not the reference, to make it explicit that
             // only the lifetime tag changes and no reinterpretation of the
             // pointed-to bits occurs.
-            &*(archived as *const ArchivedDataSegment)
+            &*std::ptr::from_ref::<ArchivedDataSegment>(archived)
         };
 
-        Ok(Self { source, archived })
+        Ok(Self { archived, source })
     }
 
     /// Get the underlying source type (for debugging/stats)
+    #[must_use]
     pub fn source_type(&self) -> &'static str {
         match &self.source {
             SegmentSource::Mmap(_) => "mmap",
@@ -1030,18 +1076,21 @@ impl SegmentView {
 
     /// Get start timestamp
     #[inline]
+    #[must_use]
     pub fn start_time(&self) -> i64 {
         self.archived.start_time
     }
 
     /// Get end timestamp
     #[inline]
+    #[must_use]
     pub fn end_time(&self) -> i64 {
         self.archived.end_time
     }
 
     /// Check if timestamp is in range
     #[inline]
+    #[must_use]
     pub fn contains(&self, timestamp: i64) -> bool {
         timestamp >= self.archived.start_time && timestamp <= self.archived.end_time
     }
@@ -1051,6 +1100,7 @@ impl SegmentView {
     /// Computes f(x) directly from archived model coefficients.
     /// No deserialization occurs - we read directly from mmap.
     #[inline(always)]
+    #[must_use]
     pub fn query_point(&self, timestamp: i64) -> Option<f32> {
         if !self.contains(timestamp) {
             return None;
@@ -1069,10 +1119,11 @@ impl SegmentView {
 
     /// Zero-copy range query (Loop Unswitched + SIMD for Polynomial)
     ///
-    /// # Performance: Same optimization as DataSegment
+    /// # Performance: Same optimization as `DataSegment`
     ///
     /// Branch ONCE outside loop, then run tight branchless loops.
     /// Polynomial uses SIMD (f64x4) for 4x throughput.
+    #[must_use]
     pub fn query_range(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
         let query_start = start.max(self.archived.start_time);
         let query_end = end.min(self.archived.end_time);
@@ -1249,7 +1300,7 @@ impl SegmentView {
         }
     }
 
-    /// SIMD Horner's method (static version for SegmentView)
+    /// SIMD Horner's method (static version for `SegmentView`)
     #[inline(always)]
     fn horner_simd_static(x: f64x4, coefficients: &[f64]) -> f64x4 {
         let mut result = f64x4::ZERO;
@@ -1260,7 +1311,7 @@ impl SegmentView {
         result
     }
 
-    /// Scalar Horner's method (static version for SegmentView)
+    /// Scalar Horner's method (static version for `SegmentView`)
     #[inline(always)]
     fn horner_scalar_static(x: f64, coefficients: &[f64]) -> f64 {
         let mut result = 0.0f64;
@@ -1272,6 +1323,7 @@ impl SegmentView {
 
     /// Constant query loop - Zero-Copy version
     #[inline]
+    #[allow(clippy::unused_self)]
     fn query_loop_constant_archived(
         &self,
         results: &mut Vec<(i64, f32)>,
@@ -1502,11 +1554,13 @@ impl SegmentView {
     }
 
     /// Get compression ratio from metadata
+    #[must_use]
     pub fn compression_ratio(&self) -> f64 {
         self.archived.metadata.compression_ratio
     }
 
     /// Get point count from metadata
+    #[must_use]
     pub fn point_count(&self) -> usize {
         self.archived.metadata.point_count as usize
     }

@@ -9,7 +9,7 @@
 //! # Phase 4: Interval Tree Indexing
 //!
 //! Uses an Interval Tree for O(log N + K) time range queries.
-//! Traditional BTreeMap index requires O(N) scan for overlapping segments.
+//! Traditional `BTreeMap` index requires O(N) scan for overlapping segments.
 //! Interval Tree enables efficient stabbing queries and range overlap detection.
 //!
 //! License: MIT
@@ -51,13 +51,13 @@ struct Interval {
 struct IntervalNode {
     /// Center point of this node
     center: i64,
-    /// Start index into intervals_storage
+    /// Start index into `intervals_storage`
     intervals_start: u32,
     /// Number of intervals at this node
     intervals_count: u16,
-    /// Left child index (NO_CHILD if none)
+    /// Left child index (`NO_CHILD` if none)
     left_idx: u32,
-    /// Right child index (NO_CHILD if none)
+    /// Right child index (`NO_CHILD` if none)
     right_idx: u32,
 }
 
@@ -80,7 +80,7 @@ pub struct IntervalTree {
     nodes: Vec<IntervalNode>,
     /// Arena: all intervals stored here (contiguous memory)
     intervals_storage: Vec<Interval>,
-    /// Root node index (NO_CHILD if empty)
+    /// Root node index (`NO_CHILD` if empty)
     root_idx: u32,
     /// All intervals for rebuilding
     all_intervals: Vec<Interval>,
@@ -90,6 +90,7 @@ pub struct IntervalTree {
 
 impl IntervalTree {
     /// Create a new empty interval tree
+    #[must_use]
     pub fn new() -> Self {
         Self {
             nodes: Vec::with_capacity(64),
@@ -121,13 +122,14 @@ impl IntervalTree {
 
     /// Check if rebuild is needed (for callers to decide when to rebuild)
     #[inline]
+    #[must_use]
     pub fn needs_rebuild(&self) -> bool {
         self.insertions_since_rebuild > 0 || self.root_idx == NO_CHILD
     }
 
     /// Rebuild the entire tree for optimal balance
     ///
-    /// Call this after flush() or compaction, NOT during hot write path.
+    /// Call this after `flush()` or compaction, NOT during hot write path.
     pub fn rebuild(&mut self) {
         self.nodes.clear();
         self.intervals_storage.clear();
@@ -201,6 +203,7 @@ impl IntervalTree {
     ///
     /// If tree is not built yet, falls back to linear scan of all intervals.
     #[inline]
+    #[must_use]
     pub fn query_range(&self, start: i64, end: i64) -> Vec<u64> {
         // If tree is not built, fallback to linear scan
         if self.root_idx == NO_CHILD && !self.all_intervals.is_empty() {
@@ -288,17 +291,20 @@ impl IntervalTree {
 
     /// Find all intervals containing a specific point
     #[inline]
+    #[must_use]
     pub fn query_point(&self, point: i64) -> Vec<u64> {
         self.query_range(point, point)
     }
 
     /// Get total number of intervals
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.all_intervals.len()
     }
 
     /// Check if tree is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.all_intervals.is_empty()
     }
@@ -328,7 +334,7 @@ pub struct SegmentIndexEntry {
 pub struct StorageConfig {
     /// Directory for data files
     pub data_dir: PathBuf,
-    /// MemTable capacity (points before flush)
+    /// `MemTable` capacity (points before flush)
     pub memtable_capacity: usize,
     /// Model fitting configuration
     pub fit_config: FitConfig,
@@ -359,7 +365,7 @@ pub struct StorageEngine {
     config: StorageConfig,
     /// In-memory write buffer
     memtable: MemTable,
-    /// Segment index (segment_id → segment info)
+    /// Segment index (`segment_id` → segment info)
     index: RwLock<BTreeMap<u64, SegmentIndexEntry>>,
     /// Interval Tree for O(log N + K) range queries (Phase 4)
     interval_tree: RwLock<IntervalTree>,
@@ -376,6 +382,10 @@ pub struct StorageEngine {
 
 impl StorageEngine {
     /// Create a new storage engine
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data directory cannot be created or files cannot be initialized.
     pub fn new(config: StorageConfig) -> io::Result<Self> {
         // Create data directory if it doesn't exist
         fs::create_dir_all(&config.data_dir)?;
@@ -400,6 +410,10 @@ impl StorageEngine {
     }
 
     /// Create with default configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the storage engine cannot be initialized at the given path.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let config = StorageConfig {
             data_dir: path.as_ref().to_path_buf(),
@@ -536,6 +550,10 @@ impl StorageEngine {
     }
 
     /// Insert a single value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL write or segment persistence fails.
     pub fn put(&self, timestamp: i64, value: f32) -> io::Result<()> {
         // Write to WAL first for durability
         if self.config.enable_wal {
@@ -544,13 +562,17 @@ impl StorageEngine {
 
         // Insert into MemTable
         if let Some(segment) = self.memtable.put(timestamp, value) {
-            self.persist_segment(segment)?;
+            self.persist_segment(&segment)?;
         }
 
         Ok(())
     }
 
     /// Insert multiple values (batch)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL write or segment persistence fails.
     pub fn put_batch(&self, data: &[(i64, f32)]) -> io::Result<()> {
         // Write to WAL first
         if self.config.enable_wal {
@@ -562,7 +584,7 @@ impl StorageEngine {
         // Insert into MemTable
         let segments = self.memtable.put_batch(data);
         for segment in segments {
-            self.persist_segment(segment)?;
+            self.persist_segment(&segment)?;
         }
 
         Ok(())
@@ -585,12 +607,12 @@ impl StorageEngine {
     /// # Performance: Zero-Copy Path
     ///
     /// 1. Serialize to rkyv bytes (in memory)
-    /// 2. Create SegmentView from bytes IMMEDIATELY (no disk I/O wait)
+    /// 2. Create `SegmentView` from bytes IMMEDIATELY (no disk I/O wait)
     /// 3. Write bytes to disk (can be async in future)
     ///
-    /// This ensures queries can hit the cache instantly after MemTable flush,
+    /// This ensures queries can hit the cache instantly after `MemTable` flush,
     /// without waiting for disk I/O to complete.
-    fn persist_segment(&self, segment: DataSegment) -> io::Result<()> {
+    fn persist_segment(&self, segment: &DataSegment) -> io::Result<()> {
         let segment_id = segment.metadata.id;
         let start_time = segment.start_time;
         let end_time = segment.end_time;
@@ -609,10 +631,7 @@ impl StorageEngine {
             .insert(segment_id, Arc::new(view));
 
         // 3. Write to disk (could be async/background in future)
-        let segment_path = self
-            .config
-            .data_dir
-            .join(format!("seg_{}.rkyv", segment_id));
+        let segment_path = self.config.data_dir.join(format!("seg_{segment_id}.rkyv"));
         fs::write(&segment_path, &rkyv_bytes)?;
 
         if self.config.sync_writes {
@@ -641,7 +660,7 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Load a segment as SegmentView (Zero-Copy mmap)
+    /// Load a segment as `SegmentView` (Zero-Copy mmap)
     ///
     /// # Performance: Zero-Copy
     ///
@@ -726,7 +745,11 @@ impl StorageEngine {
             .collect()
     }
 
-    /// Query a single point (Zero-Copy via SegmentView)
+    /// Query a single point (Zero-Copy via `SegmentView`)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment loading fails.
     pub fn query_point(&self, timestamp: i64) -> io::Result<Option<f32>> {
         // Check MemTable first (most recent data)
         // Note: MemTable doesn't support point queries directly,
@@ -742,12 +765,16 @@ impl StorageEngine {
         Ok(view.query_point(timestamp))
     }
 
-    /// Query a time range (Zero-Copy via SegmentView)
+    /// Query a time range (Zero-Copy via `SegmentView`)
     ///
     /// # Performance: Zero-Copy Path
     ///
-    /// Uses SegmentView (mmap + SIMD) for maximum throughput.
+    /// Uses `SegmentView` (mmap + SIMD) for maximum throughput.
     /// No deserialization occurs during query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment loading fails.
     pub fn query_range(&self, start: i64, end: i64) -> io::Result<Vec<(i64, f32)>> {
         let entries = self.find_segments(start, end);
 
@@ -767,13 +794,17 @@ impl StorageEngine {
         Ok(results)
     }
 
-    /// Force flush MemTable to disk
+    /// Force flush `MemTable` to disk
     ///
     /// Also rebuilds the Interval Tree for optimal query performance.
     /// This is the correct place to rebuild (not during hot write path).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment persistence or index saving fails.
     pub fn flush(&self) -> io::Result<()> {
         if let Some(segment) = self.memtable.force_flush() {
-            self.persist_segment(segment)?;
+            self.persist_segment(&segment)?;
         }
 
         // Rebuild Interval Tree after flush (jitter-free writes)
@@ -789,6 +820,10 @@ impl StorageEngine {
     }
 
     /// Close the storage engine
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing or WAL cleanup fails.
     pub fn close(&self) -> io::Result<()> {
         self.flush()?;
 

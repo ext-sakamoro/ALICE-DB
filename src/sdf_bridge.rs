@@ -70,11 +70,7 @@ impl MortonCode {
     }
 
     #[inline]
-    pub fn from_world(
-        wx: f32, wy: f32, wz: f32,
-        world_min: [f32; 3],
-        world_max: [f32; 3],
-    ) -> Self {
+    pub fn from_world(wx: f32, wy: f32, wz: f32, world_min: [f32; 3], world_max: [f32; 3]) -> Self {
         let inv_rx = 1.0 / (world_max[0] - world_min[0]);
         let inv_ry = 1.0 / (world_max[1] - world_min[1]);
         let inv_rz = 1.0 / (world_max[2] - world_min[2]);
@@ -152,7 +148,8 @@ impl SdfStorage {
         cells: &[(MortonCode, f32)],
         scene_version: u32,
     ) -> io::Result<()> {
-        let batch: Vec<(i64, f32)> = cells.iter()
+        let batch: Vec<(i64, f32)> = cells
+            .iter()
             .map(|(cell, value)| {
                 let key = (cell.0 as i64) << 16 | (scene_version as i64 & 0xFFFF);
                 (key, *value)
@@ -163,12 +160,7 @@ impl SdfStorage {
     }
 
     /// Store a delta update for a spatial cell
-    pub fn store_delta(
-        &self,
-        cell: MortonCode,
-        delta_version: u32,
-        value: f32,
-    ) -> io::Result<()> {
+    pub fn store_delta(&self, cell: MortonCode, delta_version: u32, value: f32) -> io::Result<()> {
         let key = (cell.0 as i64) << 16 | (delta_version as i64 & 0xFFFF);
         self.delta_db.put(key, value)
     }
@@ -182,12 +174,18 @@ impl SdfStorage {
         region_max: [f32; 3],
     ) -> io::Result<Vec<(MortonCode, f32)>> {
         let morton_min = MortonCode::from_world(
-            region_min[0], region_min[1], region_min[2],
-            self.world_min, self.world_max,
+            region_min[0],
+            region_min[1],
+            region_min[2],
+            self.world_min,
+            self.world_max,
         );
         let morton_max = MortonCode::from_world(
-            region_max[0], region_max[1], region_max[2],
-            self.world_min, self.world_max,
+            region_max[0],
+            region_max[1],
+            region_max[2],
+            self.world_min,
+            self.world_max,
         );
 
         // Range scan using Morton code bounds
@@ -196,10 +194,13 @@ impl SdfStorage {
 
         let results = self.keyframe_db.scan(start_key, end_key)?;
 
-        Ok(results.into_iter().map(|(key, value)| {
-            let morton = MortonCode((key >> 16) as u32);
-            (morton, value)
-        }).collect())
+        Ok(results
+            .into_iter()
+            .map(|(key, value)| {
+                let morton = MortonCode((key >> 16) as u32);
+                (morton, value)
+            })
+            .collect())
     }
 
     /// Flush all data to disk
@@ -244,11 +245,7 @@ mod tests {
 
     #[test]
     fn test_morton_from_world() {
-        let code = MortonCode::from_world(
-            0.5, 0.5, 0.5,
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-        );
+        let code = MortonCode::from_world(0.5, 0.5, 0.5, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let (x, y, z) = code.decode();
         // Should be approximately center (127-128)
         assert!(x >= 126 && x <= 128);
@@ -263,16 +260,16 @@ mod tests {
             dir.path().join("sdf"),
             [-10.0, -10.0, -10.0],
             [10.0, 10.0, 10.0],
-        ).unwrap();
+        )
+        .unwrap();
 
         let cell = MortonCode::encode(128, 128, 128);
         storage.store_keyframe(cell, 1, 0.5).unwrap();
         storage.flush().unwrap();
 
-        let results = storage.query_spatial_region(
-            [-1.0, -1.0, -1.0],
-            [1.0, 1.0, 1.0],
-        ).unwrap();
+        let results = storage
+            .query_spatial_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0])
+            .unwrap();
 
         assert!(!results.is_empty());
         storage.close().unwrap();

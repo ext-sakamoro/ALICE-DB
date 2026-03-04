@@ -57,7 +57,7 @@ pub enum ModelType {
     /// Typical use: Periodic sensor data, vibration, seasonal patterns
     /// Compression: 1000 points → ~200 bytes (10 components)
     Fourier {
-        /// Fourier coefficients: (freq_index, magnitude, phase)
+        /// Fourier coefficients: (`freq_index`, magnitude, phase)
         coefficients: Vec<(usize, f32, f32)>,
         /// DC offset (mean value)
         dc_offset: f32,
@@ -161,12 +161,11 @@ pub enum DataType {
 
 impl DataType {
     /// Size of one element in bytes
+    #[must_use]
     pub fn size(&self) -> usize {
         match self {
-            DataType::Float32 => 4,
-            DataType::Float64 => 8,
-            DataType::Int32 => 4,
-            DataType::Int64 => 8,
+            DataType::Float32 | DataType::Int32 => 4,
+            DataType::Float64 | DataType::Int64 => 8,
             DataType::UInt8 => 1,
         }
     }
@@ -174,6 +173,7 @@ impl DataType {
 
 impl ModelType {
     /// Estimate the serialized size of this model in bytes
+    #[must_use]
     pub fn estimated_size(&self) -> usize {
         match self {
             ModelType::Polynomial { coefficients, .. } => {
@@ -184,11 +184,10 @@ impl ModelType {
                 // 12 bytes per coefficient (usize + f32 + f32) + overhead
                 coefficients.len() * 12 + 16
             }
-            ModelType::SineWave { .. } => 16,
+            ModelType::SineWave { .. } | ModelType::Linear { .. } => 16,
             ModelType::MultiSine { components, .. } => components.len() * 12 + 8,
             ModelType::PerlinNoise { .. } => 24,
             ModelType::Constant { .. } => 8,
-            ModelType::Linear { .. } => 16,
             ModelType::RawLzma {
                 compressed_data, ..
             } => compressed_data.len() + 16,
@@ -196,11 +195,13 @@ impl ModelType {
     }
 
     /// Check if this is a fallback (non-procedural) model
+    #[must_use]
     pub fn is_fallback(&self) -> bool {
         matches!(self, ModelType::RawLzma { .. })
     }
 
     /// Get a human-readable name for this model type
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             ModelType::Polynomial { .. } => "Polynomial",
@@ -220,7 +221,7 @@ impl ModelType {
 pub struct FitResult {
     /// The winning model
     pub model: ModelType,
-    /// Compression ratio achieved (original_size / model_size)
+    /// Compression ratio achieved (`original_size` / `model_size`)
     pub compression_ratio: f64,
     /// Fitting error (relative MSE for lossy, 0 for lossless)
     pub error: f64,
@@ -229,7 +230,8 @@ pub struct FitResult {
 }
 
 impl FitResult {
-    /// Create a new FitResult
+    /// Create a new `FitResult`
+    #[must_use]
     pub fn new(model: ModelType, original_size: usize, error: f64, is_lossless: bool) -> Self {
         let model_size = model.estimated_size();
         let compression_ratio = if model_size > 0 {

@@ -58,6 +58,11 @@ pub enum QueryResult {
 
 impl QueryResult {
     /// Get as points (panics if not Points variant)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the result is not the `Points` variant.
+    #[must_use]
     pub fn into_points(self) -> Vec<(i64, f32)> {
         match self {
             QueryResult::Points(p) => p,
@@ -66,6 +71,11 @@ impl QueryResult {
     }
 
     /// Get as scalar (panics if not Scalar variant)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the result is not the `Scalar` variant.
+    #[must_use]
     pub fn into_scalar(self) -> f64 {
         match self {
             QueryResult::Scalar(v) => v,
@@ -74,6 +84,11 @@ impl QueryResult {
     }
 
     /// Get as aggregates (panics if not Aggregates variant)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the result is not the `Aggregates` variant.
+    #[must_use]
     pub fn into_aggregates(self) -> Vec<(i64, f64)> {
         match self {
             QueryResult::Aggregates(a) => a,
@@ -108,18 +123,21 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// Set time range start
+    #[must_use]
     pub fn from(mut self, start: i64) -> Self {
         self.start_time = Some(start);
         self
     }
 
     /// Set time range end
+    #[must_use]
     pub fn to(mut self, end: i64) -> Self {
         self.end_time = Some(end);
         self
     }
 
     /// Set time range (convenience method)
+    #[must_use]
     pub fn range(mut self, start: i64, end: i64) -> Self {
         self.start_time = Some(start);
         self.end_time = Some(end);
@@ -127,30 +145,38 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// Set aggregation function
+    #[must_use]
     pub fn aggregate(mut self, agg: Aggregation) -> Self {
         self.aggregation = agg;
         self
     }
 
     /// Group by time interval (for downsampling)
+    #[must_use]
     pub fn group_by(mut self, interval: i64) -> Self {
         self.group_by_interval = Some(interval);
         self
     }
 
     /// Limit number of results
+    #[must_use]
     pub fn limit(mut self, n: usize) -> Self {
         self.limit = Some(n);
         self
     }
 
     /// Skip first n results
+    #[must_use]
     pub fn offset(mut self, n: usize) -> Self {
         self.offset = Some(n);
         self
     }
 
     /// Execute the query
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage query fails.
     pub fn execute(self) -> io::Result<QueryResult> {
         let start = self.start_time.unwrap_or(i64::MIN);
         let end = self.end_time.unwrap_or(i64::MAX);
@@ -181,7 +207,7 @@ impl<'a> QueryBuilder<'a> {
         match self.aggregation {
             Aggregation::None => Ok(QueryResult::Points(points)),
             Aggregation::Sum => Ok(QueryResult::Scalar(
-                points.iter().map(|&(_, v)| v as f64).sum()
+                points.iter().map(|&(_, v)| v as f64).sum(),
             )),
             Aggregation::Avg => {
                 if points.is_empty() {
@@ -195,13 +221,13 @@ impl<'a> QueryBuilder<'a> {
                 points
                     .iter()
                     .map(|&(_, v)| v as f64)
-                    .fold(f64::INFINITY, f64::min)
+                    .fold(f64::INFINITY, f64::min),
             )),
             Aggregation::Max => Ok(QueryResult::Scalar(
                 points
                     .iter()
                     .map(|&(_, v)| v as f64)
-                    .fold(f64::NEG_INFINITY, f64::max)
+                    .fold(f64::NEG_INFINITY, f64::max),
             )),
             Aggregation::Count => Ok(QueryResult::Scalar(points.len() as f64)),
             Aggregation::First => {
@@ -222,13 +248,12 @@ impl<'a> QueryBuilder<'a> {
                 let variance = self.calculate_variance(&points);
                 Ok(QueryResult::Scalar(variance.sqrt()))
             }
-            Aggregation::Variance => {
-                Ok(QueryResult::Scalar(self.calculate_variance(&points)))
-            }
+            Aggregation::Variance => Ok(QueryResult::Scalar(self.calculate_variance(&points))),
         }
     }
 
     /// Calculate variance of points
+    #[allow(clippy::unused_self)]
     fn calculate_variance(&self, points: &[(i64, f32)]) -> f64 {
         if points.is_empty() {
             return 0.0;
@@ -238,16 +263,18 @@ impl<'a> QueryBuilder<'a> {
         points
             .iter()
             .map(|&(_, v)| (v as f64 - mean).powi(2))
-            .sum::<f64>() / points.len() as f64
+            .sum::<f64>()
+            / points.len() as f64
     }
 
     /// Apply aggregation to grouped data (Streaming O(1) space)
     ///
     /// # Performance: Streaming Algorithm
     ///
-    /// Instead of BTreeMap<bucket, Vec<f32>> which uses O(n) space,
+    /// Instead of `BTreeMap`<bucket, Vec<f32>> which uses O(n) space,
     /// we use a single-pass streaming algorithm with O(1) space.
-    /// Points must be sorted by timestamp (which they are from query_range).
+    /// Points must be sorted by timestamp (which they are from `query_range`).
+    #[allow(clippy::items_after_statements)]
     fn apply_grouped_aggregation(&self, points: &[(i64, f32)], interval: i64) -> QueryResult {
         if points.is_empty() {
             return QueryResult::Aggregates(Vec::new());
@@ -335,15 +362,15 @@ impl<'a> QueryBuilder<'a> {
         for &(t, v) in &points[1..] {
             let bucket = (t / interval) * interval;
 
-            if bucket != current_bucket {
+            if bucket == current_bucket {
+                state.update(v);
+            } else {
                 // Emit completed bucket
                 results.push((current_bucket, state.finalize(self.aggregation)));
 
                 // Start new bucket
                 current_bucket = bucket;
                 state = BucketState::new(v);
-            } else {
-                state.update(v);
             }
         }
 
@@ -360,15 +387,31 @@ pub trait QueryInterface {
     fn query(&self) -> QueryBuilder<'_>;
 
     /// Shorthand for point query
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the storage query fails.
     fn get(&self, timestamp: i64) -> io::Result<Option<f32>>;
 
     /// Shorthand for range query
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the storage query fails.
     fn scan(&self, start: i64, end: i64) -> io::Result<Vec<(i64, f32)>>;
 
     /// Shorthand for aggregation query
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the storage query fails.
     fn aggregate(&self, start: i64, end: i64, agg: Aggregation) -> io::Result<f64>;
 
     /// Downsampling query
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the storage query fails.
     fn downsample(
         &self,
         start: i64,
@@ -392,11 +435,7 @@ impl QueryInterface for StorageEngine {
     }
 
     fn aggregate(&self, start: i64, end: i64, agg: Aggregation) -> io::Result<f64> {
-        let result = self
-            .query()
-            .range(start, end)
-            .aggregate(agg)
-            .execute()?;
+        let result = self.query().range(start, end).aggregate(agg).execute()?;
         Ok(result.into_scalar())
     }
 
@@ -447,11 +486,7 @@ mod tests {
     fn test_query_builder_range() {
         let (_dir, engine) = setup_engine_with_data();
 
-        let result = engine
-            .query()
-            .range(0, 50)
-            .execute()
-            .unwrap();
+        let result = engine.query().range(0, 50).execute().unwrap();
 
         let points = result.into_points();
         assert!(!points.is_empty());
@@ -488,9 +523,7 @@ mod tests {
     fn test_query_downsample() {
         let (_dir, engine) = setup_engine_with_data();
 
-        let downsampled = engine
-            .downsample(0, 99, 10, Aggregation::Avg)
-            .unwrap();
+        let downsampled = engine.downsample(0, 99, 10, Aggregation::Avg).unwrap();
 
         // Should have ~10 buckets
         assert!(!downsampled.is_empty());
@@ -501,14 +534,105 @@ mod tests {
     fn test_query_limit_offset() {
         let (_dir, engine) = setup_engine_with_data();
 
+        let result = engine.query().range(0, 99).limit(10).execute().unwrap();
+
+        let points = result.into_points();
+        assert!(points.len() <= 10);
+    }
+
+    #[test]
+    fn test_query_first_and_last() {
+        let (_dir, engine) = setup_engine_with_data();
+
+        let first = engine.aggregate(0, 99, Aggregation::First).unwrap();
+        assert!(first < 5.0); // First value should be near 0
+
+        let last = engine.aggregate(0, 99, Aggregation::Last).unwrap();
+        assert!(last > 90.0); // Last value should be near 99
+    }
+
+    #[test]
+    fn test_query_stddev_and_variance() {
+        let (_dir, engine) = setup_engine_with_data();
+
+        let variance = engine.aggregate(0, 99, Aggregation::Variance).unwrap();
+        assert!(variance > 0.0); // Non-constant data should have non-zero variance
+
+        let stddev = engine.aggregate(0, 99, Aggregation::StdDev).unwrap();
+        assert!(stddev > 0.0);
+        // StdDev should be sqrt of variance
+        assert!((stddev - variance.sqrt()).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_query_offset_beyond_data() {
+        let (_dir, engine) = setup_engine_with_data();
+
         let result = engine
             .query()
             .range(0, 99)
-            .limit(10)
+            .offset(100000)
             .execute()
             .unwrap();
 
         let points = result.into_points();
-        assert!(points.len() <= 10);
+        assert!(points.is_empty());
+    }
+
+    #[test]
+    fn test_query_result_into_methods() {
+        let points = QueryResult::Points(vec![(1, 2.0), (3, 4.0)]);
+        assert_eq!(points.into_points().len(), 2);
+
+        let scalar = QueryResult::Scalar(42.0);
+        assert!((scalar.into_scalar() - 42.0).abs() < f64::EPSILON);
+
+        let aggs = QueryResult::Aggregates(vec![(0, 1.0), (10, 2.0)]);
+        assert_eq!(aggs.into_aggregates().len(), 2);
+    }
+
+    #[test]
+    fn test_query_aggregation_on_empty_range() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 1000,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        // No data inserted
+
+        let avg = engine.aggregate(0, 99, Aggregation::Avg).unwrap();
+        assert!((avg - 0.0).abs() < f64::EPSILON);
+
+        let count = engine.aggregate(0, 99, Aggregation::Count).unwrap();
+        assert!((count - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_query_builder_from_to() {
+        let (_dir, engine) = setup_engine_with_data();
+
+        let result = engine.query().from(10).to(50).execute().unwrap();
+
+        let points = result.into_points();
+        assert!(!points.is_empty());
+        // All returned timestamps should be in range
+        for &(t, _) in &points {
+            assert!(t >= 0 && t <= 99);
+        }
+    }
+
+    #[test]
+    fn test_downsample_with_count_aggregation() {
+        let (_dir, engine) = setup_engine_with_data();
+
+        let downsampled = engine.downsample(0, 99, 20, Aggregation::Count).unwrap();
+
+        assert!(!downsampled.is_empty());
+        for &(_, count) in &downsampled {
+            assert!(count > 0.0);
+        }
     }
 }

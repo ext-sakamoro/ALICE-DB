@@ -2,8 +2,8 @@
 //!
 //! Run with: cargo bench
 
-use alice_db::{AliceDB, Aggregation, StorageConfig};
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use alice_db::{Aggregation, AliceDB, StorageConfig};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use tempfile::tempdir;
 
 fn benchmark_insert(c: &mut Criterion) {
@@ -146,7 +146,14 @@ fn benchmark_aggregation(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("aggregation");
 
-    for agg in [Aggregation::Sum, Aggregation::Avg, Aggregation::Min, Aggregation::Max].iter() {
+    for agg in [
+        Aggregation::Sum,
+        Aggregation::Avg,
+        Aggregation::Min,
+        Aggregation::Max,
+    ]
+    .iter()
+    {
         let agg_name = match agg {
             Aggregation::Sum => "sum",
             Aggregation::Avg => "avg",

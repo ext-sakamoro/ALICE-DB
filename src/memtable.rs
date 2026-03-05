@@ -283,8 +283,8 @@ impl MemTable {
 
         // Select best candidate by score
         candidates.sort_by(|a, b| {
-            let score_a = a.compression_ratio / (1.0 + a.error * 100.0);
-            let score_b = b.compression_ratio / (1.0 + b.error * 100.0);
+            let score_a = a.compression_ratio / a.error.mul_add(100.0, 1.0);
+            let score_b = b.compression_ratio / b.error.mul_add(100.0, 1.0);
             score_b
                 .partial_cmp(&score_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -631,8 +631,9 @@ mod tests {
         // High-entropy random-looking data should fall back to LZMA
         let values: Vec<f32> = (0..100)
             .map(|i| {
-                (i as f32 * 7.3).sin() * 1000.0
-                    + (i as f32 * 13.7).cos() * 500.0
+                (i as f32 * 7.3)
+                    .sin()
+                    .mul_add(1000.0, (i as f32 * 13.7).cos() * 500.0)
                     + (i as f32 * 0.3).tan().clamp(-1000.0, 1000.0)
             })
             .collect();
@@ -654,7 +655,9 @@ mod tests {
             .map(|i| {
                 (
                     i as i64,
-                    (i as f32 * 0.73).sin() * 100.0 + (i as f32 * 0.13).cos() * 50.0,
+                    (i as f32 * 0.73)
+                        .sin()
+                        .mul_add(100.0, (i as f32 * 0.13).cos() * 50.0),
                 )
             })
             .collect();
@@ -674,10 +677,7 @@ mod tests {
             if let Some(actual) = segment.query_point(t) {
                 assert!(
                     (actual - expected).abs() < 1e-2,
-                    "Lossless mismatch at t={}: expected={}, actual={}",
-                    t,
-                    expected,
-                    actual
+                    "Lossless mismatch at t={t}: expected={expected}, actual={actual}"
                 );
             }
         }

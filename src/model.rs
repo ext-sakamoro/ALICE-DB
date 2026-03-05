@@ -162,11 +162,11 @@ pub enum DataType {
 impl DataType {
     /// Size of one element in bytes
     #[must_use]
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         match self {
-            DataType::Float32 | DataType::Int32 => 4,
-            DataType::Float64 | DataType::Int64 => 8,
-            DataType::UInt8 => 1,
+            Self::Float32 | Self::Int32 => 4,
+            Self::Float64 | Self::Int64 => 8,
+            Self::UInt8 => 1,
         }
     }
 }
@@ -174,21 +174,21 @@ impl DataType {
 impl ModelType {
     /// Estimate the serialized size of this model in bytes
     #[must_use]
-    pub fn estimated_size(&self) -> usize {
+    pub const fn estimated_size(&self) -> usize {
         match self {
-            ModelType::Polynomial { coefficients, .. } => {
+            Self::Polynomial { coefficients, .. } => {
                 // 8 bytes per coefficient + overhead
                 coefficients.len() * 8 + 24
             }
-            ModelType::Fourier { coefficients, .. } => {
+            Self::Fourier { coefficients, .. } => {
                 // 12 bytes per coefficient (usize + f32 + f32) + overhead
                 coefficients.len() * 12 + 16
             }
-            ModelType::SineWave { .. } | ModelType::Linear { .. } => 16,
-            ModelType::MultiSine { components, .. } => components.len() * 12 + 8,
-            ModelType::PerlinNoise { .. } => 24,
-            ModelType::Constant { .. } => 8,
-            ModelType::RawLzma {
+            Self::SineWave { .. } | Self::Linear { .. } => 16,
+            Self::MultiSine { components, .. } => components.len() * 12 + 8,
+            Self::PerlinNoise { .. } => 24,
+            Self::Constant { .. } => 8,
+            Self::RawLzma {
                 compressed_data, ..
             } => compressed_data.len() + 16,
         }
@@ -196,22 +196,22 @@ impl ModelType {
 
     /// Check if this is a fallback (non-procedural) model
     #[must_use]
-    pub fn is_fallback(&self) -> bool {
-        matches!(self, ModelType::RawLzma { .. })
+    pub const fn is_fallback(&self) -> bool {
+        matches!(self, Self::RawLzma { .. })
     }
 
     /// Get a human-readable name for this model type
     #[must_use]
-    pub fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self {
-            ModelType::Polynomial { .. } => "Polynomial",
-            ModelType::Fourier { .. } => "Fourier",
-            ModelType::SineWave { .. } => "SineWave",
-            ModelType::MultiSine { .. } => "MultiSine",
-            ModelType::PerlinNoise { .. } => "PerlinNoise",
-            ModelType::Constant { .. } => "Constant",
-            ModelType::Linear { .. } => "Linear",
-            ModelType::RawLzma { .. } => "RawLzma",
+            Self::Polynomial { .. } => "Polynomial",
+            Self::Fourier { .. } => "Fourier",
+            Self::SineWave { .. } => "SineWave",
+            Self::MultiSine { .. } => "MultiSine",
+            Self::PerlinNoise { .. } => "PerlinNoise",
+            Self::Constant { .. } => "Constant",
+            Self::Linear { .. } => "Linear",
+            Self::RawLzma { .. } => "RawLzma",
         }
     }
 }

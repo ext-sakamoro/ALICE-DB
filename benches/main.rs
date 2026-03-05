@@ -7,6 +7,13 @@
 //!
 //! Run with: cargo bench --bench main
 
+#![allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
+
 use alice_db::{AliceDB, StorageConfig};
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use rand::prelude::*;
@@ -46,7 +53,7 @@ fn bench_write_throughput(c: &mut Criterion) {
             |(_dir, db, data)| {
                 db.put_batch(black_box(&data)).unwrap();
             },
-        )
+        );
     });
 
     // Linear data (best case - perfect compression)
@@ -61,7 +68,7 @@ fn bench_write_throughput(c: &mut Criterion) {
             |(_dir, db, data)| {
                 db.put_batch(black_box(&data)).unwrap();
             },
-        )
+        );
     });
 
     group.finish();
@@ -94,7 +101,7 @@ fn bench_query_latency(c: &mut Criterion) {
         b.iter(|| {
             let t = rng.gen_range(0..n as i64);
             db.get(black_box(t)).unwrap()
-        })
+        });
     });
 
     // 2. Range Scan (proves SIMD acceleration)
@@ -103,7 +110,7 @@ fn bench_query_latency(c: &mut Criterion) {
         b.iter(|| {
             let start = rng.gen_range(0..(n as i64 - 1000));
             db.scan(black_box(start), black_box(start + 1000)).unwrap()
-        })
+        });
     });
 
     // 3. Range Scan 10K (larger range)
@@ -112,7 +119,7 @@ fn bench_query_latency(c: &mut Criterion) {
         b.iter(|| {
             let start = rng.gen_range(0..(n as i64 - 10000));
             db.scan(black_box(start), black_box(start + 10000)).unwrap()
-        })
+        });
     });
 
     group.finish();
@@ -143,7 +150,7 @@ fn bench_compression(c: &mut Criterion) {
             |(_dir, db)| {
                 db.flush().unwrap();
             },
-        )
+        );
     });
 
     // Linear - should compress to ~0 bytes
@@ -165,7 +172,7 @@ fn bench_compression(c: &mut Criterion) {
             |(_dir, db)| {
                 db.flush().unwrap();
             },
-        )
+        );
     });
 
     group.finish();

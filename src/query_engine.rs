@@ -65,7 +65,7 @@ impl QueryResult {
     #[must_use]
     pub fn into_points(self) -> Vec<(i64, f32)> {
         match self {
-            QueryResult::Points(p) => p,
+            Self::Points(p) => p,
             _ => panic!("Expected Points result"),
         }
     }
@@ -78,7 +78,7 @@ impl QueryResult {
     #[must_use]
     pub fn into_scalar(self) -> f64 {
         match self {
-            QueryResult::Scalar(v) => v,
+            Self::Scalar(v) => v,
             _ => panic!("Expected Scalar result"),
         }
     }
@@ -91,7 +91,7 @@ impl QueryResult {
     #[must_use]
     pub fn into_aggregates(self) -> Vec<(i64, f64)> {
         match self {
-            QueryResult::Aggregates(a) => a,
+            Self::Aggregates(a) => a,
             _ => panic!("Expected Aggregates result"),
         }
     }
@@ -110,7 +110,7 @@ pub struct QueryBuilder<'a> {
 
 impl<'a> QueryBuilder<'a> {
     /// Create a new query builder
-    pub fn new(engine: &'a StorageEngine) -> Self {
+    pub const fn new(engine: &'a StorageEngine) -> Self {
         Self {
             engine,
             start_time: None,
@@ -124,21 +124,21 @@ impl<'a> QueryBuilder<'a> {
 
     /// Set time range start
     #[must_use]
-    pub fn from(mut self, start: i64) -> Self {
+    pub const fn from(mut self, start: i64) -> Self {
         self.start_time = Some(start);
         self
     }
 
     /// Set time range end
     #[must_use]
-    pub fn to(mut self, end: i64) -> Self {
+    pub const fn to(mut self, end: i64) -> Self {
         self.end_time = Some(end);
         self
     }
 
     /// Set time range (convenience method)
     #[must_use]
-    pub fn range(mut self, start: i64, end: i64) -> Self {
+    pub const fn range(mut self, start: i64, end: i64) -> Self {
         self.start_time = Some(start);
         self.end_time = Some(end);
         self
@@ -146,28 +146,28 @@ impl<'a> QueryBuilder<'a> {
 
     /// Set aggregation function
     #[must_use]
-    pub fn aggregate(mut self, agg: Aggregation) -> Self {
+    pub const fn aggregate(mut self, agg: Aggregation) -> Self {
         self.aggregation = agg;
         self
     }
 
     /// Group by time interval (for downsampling)
     #[must_use]
-    pub fn group_by(mut self, interval: i64) -> Self {
+    pub const fn group_by(mut self, interval: i64) -> Self {
         self.group_by_interval = Some(interval);
         self
     }
 
     /// Limit number of results
     #[must_use]
-    pub fn limit(mut self, n: usize) -> Self {
+    pub const fn limit(mut self, n: usize) -> Self {
         self.limit = Some(n);
         self
     }
 
     /// Skip first n results
     #[must_use]
-    pub fn offset(mut self, n: usize) -> Self {
+    pub const fn offset(mut self, n: usize) -> Self {
         self.offset = Some(n);
         self
     }
@@ -294,7 +294,7 @@ impl<'a> QueryBuilder<'a> {
         }
 
         impl BucketState {
-            fn new(first_value: f32) -> Self {
+            const fn new(first_value: f32) -> Self {
                 Self {
                     sum: first_value as f64,
                     count: 1,
@@ -571,7 +571,7 @@ mod tests {
         let result = engine
             .query()
             .range(0, 99)
-            .offset(100000)
+            .offset(100_000)
             .execute()
             .unwrap();
 
@@ -620,7 +620,7 @@ mod tests {
         assert!(!points.is_empty());
         // All returned timestamps should be in range
         for &(t, _) in &points {
-            assert!(t >= 0 && t <= 99);
+            assert!((0..=99).contains(&t));
         }
     }
 

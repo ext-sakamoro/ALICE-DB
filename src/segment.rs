@@ -120,14 +120,14 @@ impl DataSegment {
     /// Check if a timestamp falls within this segment
     #[inline]
     #[must_use]
-    pub fn contains(&self, timestamp: i64) -> bool {
+    pub const fn contains(&self, timestamp: i64) -> bool {
         timestamp >= self.start_time && timestamp <= self.end_time
     }
 
     /// Check if a time range overlaps with this segment
     #[inline]
     #[must_use]
-    pub fn overlaps(&self, start: i64, end: i64) -> bool {
+    pub const fn overlaps(&self, start: i64, end: i64) -> bool {
         self.start_time <= end && self.end_time >= start
     }
 
@@ -299,6 +299,7 @@ impl DataSegment {
 
     /// Polynomial query loop with SIMD (4 points at a time)
     #[inline]
+    #[allow(clippy::while_float)]
     fn query_loop_polynomial(
         &self,
         results: &mut Vec<(i64, f32)>,
@@ -313,11 +314,11 @@ impl DataSegment {
         let start_time = self.start_time as f64;
 
         // SIMD path: process 4 points at a time
-        while t + step * 3.0 <= query_end as f64 {
+        while step.mul_add(3.0, t) <= query_end as f64 {
             let t0 = t;
             let t1 = t + step;
-            let t2 = t + step * 2.0;
-            let t3 = t + step * 3.0;
+            let t2 = step.mul_add(2.0, t);
+            let t3 = step.mul_add(3.0, t);
 
             let x = f64x4::from([
                 (t0 - start_time) * inv_range,
@@ -353,13 +354,13 @@ impl DataSegment {
     fn horner_scalar(&self, x: f64, coefficients: &[f64]) -> f64 {
         let mut result = 0.0f64;
         for &c in coefficients.iter().rev() {
-            result = result * x + c;
+            result = result.mul_add(x, c);
         }
         result
     }
 
     /// Fourier query loop
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::while_float)]
     #[inline]
     fn query_loop_fourier(
         &self,
@@ -393,7 +394,7 @@ impl DataSegment {
     }
 
     /// Sine wave query loop
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::while_float)]
     #[inline]
     fn query_loop_sine(
         &self,
@@ -414,14 +415,14 @@ impl DataSegment {
         while t <= query_end as f64 {
             let x = ((t - start_time) * inv_range) as f32;
             let angle = two_pi_freq * x + phase;
-            let val = offset + amplitude * angle.sin();
+            let val = amplitude.mul_add(angle.sin(), offset);
             results.push((t as i64, val));
             t += step;
         }
     }
 
     /// Multi-sine query loop
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::while_float)]
     #[inline]
     fn query_loop_multisine(
         &self,
@@ -441,7 +442,7 @@ impl DataSegment {
             let mut sum = dc_offset;
 
             for &(freq, amp, phase) in components {
-                let angle = 2.0 * std::f32::consts::PI * freq * x + phase;
+                let angle = (2.0 * std::f32::consts::PI * freq).mul_add(x, phase);
                 sum += amp * angle.sin();
             }
 
@@ -452,7 +453,7 @@ impl DataSegment {
 
     /// Constant query loop (trivial but kept for consistency)
     #[inline]
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::while_float)]
     fn query_loop_constant(
         &self,
         results: &mut Vec<(i64, f32)>,
@@ -469,7 +470,7 @@ impl DataSegment {
     }
 
     /// Linear query loop
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::while_float)]
     #[inline]
     fn query_loop_linear(
         &self,
@@ -487,7 +488,7 @@ impl DataSegment {
 
         while t <= query_end as f64 {
             let x = (t - start_time) * inv_range;
-            let val = start_value + x * delta;
+            let val = x.mul_add(delta, start_value);
             results.push((t as i64, val as f32));
             t += step;
         }
@@ -495,6 +496,7 @@ impl DataSegment {
 
     /// Fallback query loop for complex types (Perlin, `RawLzma`)
     #[inline]
+    #[allow(clippy::while_float)]
     fn query_loop_fallback(
         &self,
         results: &mut Vec<(i64, f32)>,
@@ -642,7 +644,7 @@ impl DataSegment {
                 // Horner's method for polynomial evaluation
                 let mut result = 0.0f64;
                 for &c in coefficients.iter().rev() {
-                    result = result * x + c;
+                    result = result.mul_add(x, c);
                 }
                 result as f32
             }
@@ -679,7 +681,7 @@ impl DataSegment {
             } => {
                 let mut sum = *dc_offset;
                 for &(freq, amp, phase) in components {
-                    let angle = 2.0 * std::f32::consts::PI * freq * x as f32 + phase;
+                    let angle = (2.0 * std::f32::consts::PI * freq).mul_add(x as f32, phase);
                     sum += amp * angle.sin();
                 }
                 sum
@@ -845,6 +847,7 @@ const RESIDUAL_RAW: u8 = 1;
 ///
 /// Format: `[1 byte magic] [data]`
 /// Falls back to raw if LZMA expansion occurs.
+#[must_use]
 pub fn compress_residual(raw: &[u8]) -> Vec<u8> {
     let mut compressed = Vec::new();
     if lzma_rs::lzma_compress(&mut std::io::Cursor::new(raw), &mut compressed).is_ok()
@@ -871,6 +874,7 @@ pub fn compress_residual(raw: &[u8]) -> Vec<u8> {
 ///
 /// Distinguishes new-format LZMA from legacy by attempting LZMA decompression;
 /// if it fails, treats the entire blob as legacy raw f32 LE bytes.
+#[must_use]
 pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
     if blob.is_empty() {
         return Vec::new();
@@ -1161,7 +1165,7 @@ impl SegmentView {
 
     /// Get the underlying source type (for debugging/stats)
     #[must_use]
-    pub fn source_type(&self) -> &'static str {
+    pub const fn source_type(&self) -> &'static str {
         match &self.source {
             SegmentSource::Mmap(..) => "mmap",
             SegmentSource::Vec(_) => "vec",
@@ -1172,21 +1176,21 @@ impl SegmentView {
     /// Get start timestamp
     #[inline]
     #[must_use]
-    pub fn start_time(&self) -> i64 {
+    pub const fn start_time(&self) -> i64 {
         self.archived.start_time
     }
 
     /// Get end timestamp
     #[inline]
     #[must_use]
-    pub fn end_time(&self) -> i64 {
+    pub const fn end_time(&self) -> i64 {
         self.archived.end_time
     }
 
     /// Check if timestamp is in range
     #[inline]
     #[must_use]
-    pub fn contains(&self, timestamp: i64) -> bool {
+    pub const fn contains(&self, timestamp: i64) -> bool {
         timestamp >= self.archived.start_time && timestamp <= self.archived.end_time
     }
 
@@ -1347,6 +1351,7 @@ impl SegmentView {
 
     /// Polynomial query loop with SIMD (4 points at a time) - Zero-Copy version
     #[inline]
+    #[allow(clippy::while_float)]
     fn query_loop_polynomial_archived(
         &self,
         results: &mut Vec<(i64, f32)>,
@@ -1361,11 +1366,11 @@ impl SegmentView {
         let start_time = self.archived.start_time as f64;
 
         // SIMD path: process 4 points at a time
-        while t + step * 3.0 <= query_end as f64 {
+        while step.mul_add(3.0, t) <= query_end as f64 {
             let t0 = t;
             let t1 = t + step;
-            let t2 = t + step * 2.0;
-            let t3 = t + step * 3.0;
+            let t2 = step.mul_add(2.0, t);
+            let t3 = step.mul_add(3.0, t);
 
             let x = f64x4::from([
                 (t0 - start_time) * inv_range,
@@ -1411,14 +1416,14 @@ impl SegmentView {
     fn horner_scalar_static(x: f64, coefficients: &[f64]) -> f64 {
         let mut result = 0.0f64;
         for &c in coefficients.iter().rev() {
-            result = result * x + c;
+            result = result.mul_add(x, c);
         }
         result
     }
 
     /// Constant query loop - Zero-Copy version
     #[inline]
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::while_float)]
     fn query_loop_constant_archived(
         &self,
         results: &mut Vec<(i64, f32)>,
@@ -1435,7 +1440,7 @@ impl SegmentView {
     }
 
     /// Linear query loop - Zero-Copy version
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::while_float)]
     #[inline]
     fn query_loop_linear_archived(
         &self,
@@ -1453,14 +1458,14 @@ impl SegmentView {
 
         while t <= query_end as f64 {
             let x = (t - start_time) * inv_range;
-            let val = start_value + x * delta;
+            let val = x.mul_add(delta, start_value);
             results.push((t as i64, val as f32));
             t += step;
         }
     }
 
     /// Sine wave query loop - Zero-Copy version
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::while_float)]
     #[inline]
     fn query_loop_sine_archived(
         &self,
@@ -1481,14 +1486,14 @@ impl SegmentView {
         while t <= query_end as f64 {
             let x = ((t - start_time) * inv_range) as f32;
             let angle = two_pi_freq * x + phase;
-            let val = offset + amplitude * angle.sin();
+            let val = amplitude.mul_add(angle.sin(), offset);
             results.push((t as i64, val));
             t += step;
         }
     }
 
     /// Multi-sine query loop - Zero-Copy version
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::while_float)]
     #[inline]
     fn query_loop_multisine_archived(
         &self,
@@ -1509,7 +1514,7 @@ impl SegmentView {
 
             for comp in components.iter() {
                 let (freq, amp, phase) = (comp.0, comp.1, comp.2);
-                let angle = 2.0 * std::f32::consts::PI * freq * x + phase;
+                let angle = (2.0 * std::f32::consts::PI * freq).mul_add(x, phase);
                 sum += amp * angle.sin();
             }
 
@@ -1519,7 +1524,7 @@ impl SegmentView {
     }
 
     /// Fourier query loop - Zero-Copy version
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::while_float)]
     #[inline]
     fn query_loop_fourier_archived(
         &self,
@@ -1555,6 +1560,7 @@ impl SegmentView {
 
     /// Fallback query loop for complex types - Zero-Copy version
     #[inline]
+    #[allow(clippy::while_float)]
     fn query_loop_fallback_archived(
         &self,
         results: &mut Vec<(i64, f32)>,
@@ -1592,7 +1598,7 @@ impl SegmentView {
                 let coeffs = coefficients.as_slice();
                 let mut result = 0.0f64;
                 for &c in coeffs.iter().rev() {
-                    result = result * x + c;
+                    result = result.mul_add(x, c);
                 }
                 result as f32
             }
@@ -1617,7 +1623,7 @@ impl SegmentView {
                 let mut sum = *dc_offset;
                 for comp in components.iter() {
                     let (freq, amp, phase) = (comp.0, comp.1, comp.2);
-                    let angle = 2.0 * std::f32::consts::PI * freq * x as f32 + phase;
+                    let angle = (2.0 * std::f32::consts::PI * freq).mul_add(x as f32, phase);
                     sum += amp * angle.sin();
                 }
                 sum
@@ -1650,13 +1656,13 @@ impl SegmentView {
 
     /// Get compression ratio from metadata
     #[must_use]
-    pub fn compression_ratio(&self) -> f64 {
+    pub const fn compression_ratio(&self) -> f64 {
         self.archived.metadata.compression_ratio
     }
 
     /// Get point count from metadata
     #[must_use]
-    pub fn point_count(&self) -> usize {
+    pub const fn point_count(&self) -> usize {
         self.archived.metadata.point_count as usize
     }
 }
@@ -2051,7 +2057,7 @@ mod tests {
         assert!(segment.residual_blob.is_none());
 
         let residual_data: Vec<u8> = (0..44).map(|i| i as u8).collect();
-        let segment_with_res = segment.with_residual(residual_data.clone());
+        let segment_with_res = segment.with_residual(residual_data);
         assert!(segment_with_res.residual_blob.is_some());
         assert_eq!(segment_with_res.residual_blob.unwrap().len(), 44);
     }
@@ -2079,14 +2085,7 @@ mod tests {
     #[test]
     fn test_lossless_lzma_roundtrip() {
         // Create a segment with known residuals
-        let mut segment = DataSegment::new(
-            1,
-            0,
-            99,
-            ModelType::Constant { value: 10.0 },
-            100,
-            400,
-        );
+        let mut segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 10.0 }, 100, 400);
 
         // Build raw residual f32 bytes
         let mut raw_residuals = Vec::with_capacity(100 * 4);
@@ -2144,11 +2143,7 @@ mod tests {
         use fs2::FileExt;
 
         // Write a valid segment to a temp file
-        let segment = DataSegment::new(
-            1, 0, 99,
-            ModelType::Constant { value: 42.0 },
-            100, 400,
-        );
+        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 42.0 }, 100, 400);
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
 
         let dir = tempfile::tempdir().unwrap();

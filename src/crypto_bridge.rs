@@ -216,7 +216,10 @@ mod tests {
         // Try to open with key2 — should fail at index decryption
         {
             let result = EncryptedDB::open(&dir_path, key2);
-            assert!(result.is_err(), "Wrong key should cause index decryption error");
+            assert!(
+                result.is_err(),
+                "Wrong key should cause index decryption error"
+            );
         }
     }
 
@@ -275,10 +278,7 @@ mod tests {
         {
             let bad_key = Key::generate().unwrap();
             let result = EncryptedDB::open(&dir_path, bad_key);
-            assert!(
-                result.is_err(),
-                "wrong key should fail to decrypt index"
-            );
+            assert!(result.is_err(), "wrong key should fail to decrypt index");
         }
     }
 }

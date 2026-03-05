@@ -123,7 +123,7 @@ impl IntervalTree {
     /// Check if rebuild is needed (for callers to decide when to rebuild)
     #[inline]
     #[must_use]
-    pub fn needs_rebuild(&self) -> bool {
+    pub const fn needs_rebuild(&self) -> bool {
         self.insertions_since_rebuild > 0 || self.root_idx == NO_CHILD
     }
 
@@ -299,13 +299,13 @@ impl IntervalTree {
     /// Get total number of intervals
     #[inline]
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.all_intervals.len()
     }
 
     /// Check if tree is empty
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.all_intervals.is_empty()
     }
 }
@@ -529,6 +529,7 @@ impl StorageEngine {
     }
 
     /// Load index from disk (decrypt if crypto key is configured)
+    #[allow(clippy::significant_drop_tightening)]
     fn load_index(&self) -> io::Result<()> {
         let index_path = self.config.data_dir.join("index.alice");
         if !index_path.exists() {
@@ -621,6 +622,7 @@ impl StorageEngine {
     }
 
     /// Save index to disk (encrypted if crypto key is configured)
+    #[allow(clippy::significant_drop_tightening)]
     fn save_index(&self) -> io::Result<()> {
         let index_path = self.config.data_dir.join("index.alice");
 
@@ -1142,6 +1144,7 @@ impl StorageEngine {
     /// # Errors
     ///
     /// Returns an error if flushing or WAL cleanup fails.
+    #[allow(clippy::significant_drop_in_scrutinee)]
     pub fn close(&self) -> io::Result<()> {
         self.flush()?;
 
@@ -1169,6 +1172,7 @@ impl StorageEngine {
     }
 
     /// Get statistics
+    #[allow(clippy::significant_drop_tightening)]
     pub fn stats(&self) -> StorageStats {
         let index = self.shared.index.read();
 
@@ -1576,7 +1580,7 @@ mod tests {
         // Reopen - should recover from WAL
         {
             let config = StorageConfig {
-                data_dir: dir_path.clone(),
+                data_dir: dir_path,
                 memtable_capacity: 1000,
                 enable_wal: true,
                 ..Default::default()

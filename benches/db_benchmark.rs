@@ -2,6 +2,13 @@
 //!
 //! Run with: cargo bench
 
+#![allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
+
 use alice_db::{Aggregation, AliceDB, StorageConfig};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use tempfile::tempdir;
@@ -9,7 +16,7 @@ use tempfile::tempdir;
 fn benchmark_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert");
 
-    for size in [100, 1000, 10000].iter() {
+    for size in &[100, 1000, 10000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_with_setup(
                 || {
@@ -38,7 +45,7 @@ fn benchmark_insert(c: &mut Criterion) {
 fn benchmark_flush(c: &mut Criterion) {
     let mut group = c.benchmark_group("flush");
 
-    for size in [100, 1000, 10000].iter() {
+    for size in &[100, 1000, 10000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_with_setup(
                 || {
@@ -112,13 +119,15 @@ fn benchmark_query_range(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("query_range");
 
-    for range_size in [100, 1000, 5000].iter() {
+    for range_size in &[100, 1000, 5000] {
         group.bench_with_input(
             BenchmarkId::from_parameter(range_size),
             range_size,
             |b, &range_size| {
                 b.iter(|| {
-                    let results = db.scan(black_box(0), black_box(range_size as i64)).unwrap();
+                    let results = db
+                        .scan(black_box(0), black_box(i64::from(range_size)))
+                        .unwrap();
                     black_box(results);
                 });
             },
@@ -146,14 +155,12 @@ fn benchmark_aggregation(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("aggregation");
 
-    for agg in [
+    for agg in &[
         Aggregation::Sum,
         Aggregation::Avg,
         Aggregation::Min,
         Aggregation::Max,
-    ]
-    .iter()
-    {
+    ] {
         let agg_name = match agg {
             Aggregation::Sum => "sum",
             Aggregation::Avg => "avg",
@@ -191,7 +198,7 @@ fn benchmark_compression_ratio(c: &mut Criterion) {
             },
             |(_dir, db)| {
                 for i in 0..10000 {
-                    db.put(i, i as f32 * 0.5 + 10.0).unwrap();
+                    db.put(i, (i as f32).mul_add(0.5, 10.0)).unwrap();
                 }
                 db.flush().unwrap();
                 let stats = db.stats();

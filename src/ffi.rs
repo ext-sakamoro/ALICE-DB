@@ -131,6 +131,9 @@ where
     if handle.is_null() {
         return Err(DbResult::InvalidHandle);
     }
+    // SAFETY: `handle` has been checked non-null above. Callers must
+    // provide a handle previously returned by `alice_db_open`, which
+    // guarantees the pointer originates from `Box::into_raw(DbWrapper)`.
     let wrapper = unsafe { &*(handle as *const DbWrapper) };
     let guard = wrapper.db.lock().map_err(|_| DbResult::Unknown)?;
     let db = guard.as_ref().ok_or(DbResult::Closed)?;
@@ -161,6 +164,8 @@ pub unsafe extern "C" fn alice_db_open(path: *const c_char) -> DbHandle {
     if path.is_null() {
         return DB_HANDLE_NULL;
     }
+    // SAFETY: `path` has been checked non-null. The `# Safety` contract
+    // requires the caller to pass a valid null-terminated UTF-8 string.
     let c_str = unsafe { CStr::from_ptr(path) };
     let path_str = match c_str.to_str() {
         Ok(s) => s,
@@ -192,6 +197,8 @@ pub unsafe extern "C" fn alice_db_open_with_config(
     if path.is_null() {
         return DB_HANDLE_NULL;
     }
+    // SAFETY: `path` has been checked non-null. The `# Safety` contract
+    // requires the caller to pass a valid null-terminated UTF-8 string.
     let c_str = unsafe { CStr::from_ptr(path) };
     let path_str = match c_str.to_str() {
         Ok(s) => s,
@@ -225,6 +232,9 @@ pub unsafe extern "C" fn alice_db_close(handle: DbHandle) -> DbResult {
     if handle.is_null() {
         return DbResult::InvalidHandle;
     }
+    // SAFETY: `handle` has been checked non-null. The `# Safety` contract
+    // requires this to be a handle returned by `alice_db_open`. We reclaim
+    // the `Box` to drop the `DbWrapper` after closing.
     let wrapper = unsafe { Box::from_raw(handle as *mut DbWrapper) };
     let mut guard = match wrapper.db.lock() {
         Ok(g) => g,
@@ -266,6 +276,8 @@ pub unsafe extern "C" fn alice_db_put_batch(
     if timestamps.is_null() || values.is_null() {
         return DbResult::NullPointer;
     }
+    // SAFETY: `timestamps` and `values` have been checked non-null. The
+    // `# Safety` contract requires them to point to arrays of `count` elements.
     let ts = unsafe { std::slice::from_raw_parts(timestamps, count as usize) };
     let vs = unsafe { std::slice::from_raw_parts(values, count as usize) };
     let data: Vec<(i64, f32)> = ts.iter().zip(vs.iter()).map(|(&t, &v)| (t, v)).collect();
@@ -324,6 +336,9 @@ pub unsafe extern "C" fn alice_db_scan(
         return results.len() as i32;
     }
     let n = results.len().min(max_count as usize);
+    // SAFETY: We checked non-null above. The `# Safety` contract requires
+    // output buffers to have capacity for at least `max_count` elements.
+    // `n` is clamped to `max_count` so we stay within bounds.
     let ts_out = unsafe { std::slice::from_raw_parts_mut(out_timestamps, n) };
     let vs_out = unsafe { std::slice::from_raw_parts_mut(out_values, n) };
     for (i, &(t, v)) in results.iter().take(n).enumerate() {
@@ -354,6 +369,7 @@ pub unsafe extern "C" fn alice_db_aggregate(
             .map_err(|_| DbResult::IoError)
     }) {
         Ok(val) => {
+            // SAFETY: `out_value` has been checked non-null above.
             unsafe { *out_value = val };
             DbResult::Ok
         }
@@ -388,6 +404,8 @@ pub unsafe extern "C" fn alice_db_downsample(
         return results.len() as i32;
     }
     let n = results.len().min(max_count as usize);
+    // SAFETY: We checked non-null above. The `# Safety` contract requires
+    // output buffers to have capacity for at least `max_count` elements.
     let ts_out = unsafe { std::slice::from_raw_parts_mut(out_timestamps, n) };
     let vs_out = unsafe { std::slice::from_raw_parts_mut(out_values, n) };
     for (i, &(t, v)) in results.iter().take(n).enumerate() {
@@ -435,6 +453,8 @@ pub extern "C" fn alice_db_is_valid(handle: DbHandle) -> bool {
     if handle.is_null() {
         return false;
     }
+    // SAFETY: `handle` has been checked non-null above. Callers must
+    // provide a handle previously returned by `alice_db_open`.
     let wrapper = unsafe { &*(handle as *const DbWrapper) };
     match wrapper.db.lock() {
         Ok(guard) => guard.is_some(),
@@ -450,6 +470,8 @@ pub extern "C" fn alice_db_is_valid(handle: DbHandle) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn alice_db_free_string(s: *mut c_char) {
     if !s.is_null() {
+        // SAFETY: `s` has been checked non-null. The `# Safety` contract
+        // requires it to be a string allocated by ALICE-DB FFI functions.
         drop(unsafe { CString::from_raw(s) });
     }
 }

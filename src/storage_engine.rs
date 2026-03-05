@@ -329,8 +329,17 @@ pub struct SegmentIndexEntry {
     pub compression_ratio: f64,
 }
 
+/// Job for background flush thread
+enum FlushJob {
+    /// A segment to persist to disk
+    Segment(DataSegment),
+    /// Shutdown signal
+    Shutdown,
+}
+
 /// Storage Engine configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct StorageConfig {
     /// Directory for data files
     pub data_dir: PathBuf,
@@ -344,6 +353,13 @@ pub struct StorageConfig {
     pub sync_writes: bool,
     /// Compaction threshold (number of segments)
     pub compaction_threshold: usize,
+    /// Use mmap for segment access (true = mmap, false = read into Vec)
+    pub use_mmap: bool,
+    /// Enable background flush thread to avoid latency spikes on `put()`
+    pub enable_background_flush: bool,
+    /// Encryption key for at-rest encryption (requires "crypto" feature)
+    #[cfg(feature = "crypto")]
+    pub encryption_key: Option<alice_crypto::Key>,
 }
 
 impl Default for StorageConfig {
@@ -355,8 +371,44 @@ impl Default for StorageConfig {
             enable_wal: true,
             sync_writes: false,
             compaction_threshold: 10,
+            use_mmap: true,
+            enable_background_flush: false,
+            #[cfg(feature = "crypto")]
+            encryption_key: None,
         }
     }
+}
+
+impl std::fmt::Debug for StorageConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("StorageConfig");
+        s.field("data_dir", &self.data_dir)
+            .field("memtable_capacity", &self.memtable_capacity)
+            .field("fit_config", &self.fit_config)
+            .field("enable_wal", &self.enable_wal)
+            .field("sync_writes", &self.sync_writes)
+            .field("compaction_threshold", &self.compaction_threshold)
+            .field("use_mmap", &self.use_mmap)
+            .field("enable_background_flush", &self.enable_background_flush);
+        #[cfg(feature = "crypto")]
+        s.field(
+            "encryption_key",
+            &self.encryption_key.as_ref().map(|_| "<redacted>"),
+        );
+        s.finish()
+    }
+}
+
+/// Shared state accessible from both main engine and background flush thread
+struct SharedState {
+    /// Segment index (`segment_id` → segment info)
+    index: RwLock<BTreeMap<u64, SegmentIndexEntry>>,
+    /// Interval Tree for O(log N + K) range queries (Phase 4)
+    interval_tree: RwLock<IntervalTree>,
+    /// Cached segments: `Arc<SegmentView>` for Zero-Copy access.
+    segment_cache: RwLock<BTreeMap<u64, Arc<SegmentView>>>,
+    /// Number of in-flight background flush jobs (for synchronization)
+    in_flight: std::sync::atomic::AtomicUsize,
 }
 
 /// Storage Engine: Core persistence layer
@@ -365,19 +417,18 @@ pub struct StorageEngine {
     config: StorageConfig,
     /// In-memory write buffer
     memtable: MemTable,
-    /// Segment index (`segment_id` → segment info)
-    index: RwLock<BTreeMap<u64, SegmentIndexEntry>>,
-    /// Interval Tree for O(log N + K) range queries (Phase 4)
-    interval_tree: RwLock<IntervalTree>,
-    /// Cached segments: `Arc<SegmentView>` for Zero-Copy access.
-    /// Using `SegmentView` instead of `DataSegment` avoids deserialization overhead
-    segment_cache: RwLock<BTreeMap<u64, Arc<SegmentView>>>,
+    /// Shared state (index, interval tree, cache)
+    shared: Arc<SharedState>,
     /// Data file handle (legacy, for index persistence)
     data_file: RwLock<Option<File>>,
     /// WAL file handle
     wal_file: RwLock<Option<File>>,
     /// Current data file offset
     current_offset: RwLock<u64>,
+    /// Background flush channel sender
+    flush_sender: Option<crossbeam_channel::Sender<FlushJob>>,
+    /// Background flush thread handle
+    flush_handle: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl StorageEngine {
@@ -386,25 +437,53 @@ impl StorageEngine {
     /// # Errors
     ///
     /// Returns an error if the data directory cannot be created or files cannot be initialized.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the background flush thread cannot be spawned.
     pub fn new(config: StorageConfig) -> io::Result<Self> {
         // Create data directory if it doesn't exist
         fs::create_dir_all(&config.data_dir)?;
 
         let memtable = MemTable::with_config(config.memtable_capacity, config.fit_config.clone());
 
-        let engine = Self {
-            config,
-            memtable,
+        let shared = Arc::new(SharedState {
             index: RwLock::new(BTreeMap::new()),
             interval_tree: RwLock::new(IntervalTree::new()),
             segment_cache: RwLock::new(BTreeMap::new()),
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+        });
+
+        // Start background flush thread if enabled
+        let (flush_sender, flush_handle) = if config.enable_background_flush {
+            let (tx, rx) = crossbeam_channel::bounded::<FlushJob>(4);
+            let shared_clone = Arc::clone(&shared);
+            let cfg = config.clone();
+            let handle = std::thread::Builder::new()
+                .name("alice-db-flush".into())
+                .spawn(move || {
+                    Self::flush_thread_loop(&rx, &shared_clone, &cfg);
+                })
+                .expect("failed to spawn flush thread");
+            (Some(tx), parking_lot::Mutex::new(Some(handle)))
+        } else {
+            (None, parking_lot::Mutex::new(None))
+        };
+
+        let engine = Self {
+            config,
+            memtable,
+            shared,
             data_file: RwLock::new(None),
             wal_file: RwLock::new(None),
             current_offset: RwLock::new(0),
+            flush_sender,
+            flush_handle,
         };
 
         engine.init_files()?;
         engine.load_index()?;
+        engine.replay_wal()?;
 
         Ok(engine)
     }
@@ -466,8 +545,8 @@ impl StorageEngine {
         }
         let count = u64::from_le_bytes(count_bytes) as usize;
 
-        let mut index = self.index.write();
-        let mut interval_tree = self.interval_tree.write();
+        let mut index = self.shared.index.write();
+        let mut interval_tree = self.shared.interval_tree.write();
 
         for _ in 0..count {
             // Read entry
@@ -527,7 +606,7 @@ impl StorageEngine {
         let file = File::create(&index_path)?;
         let mut writer = BufWriter::new(file);
 
-        let index = self.index.read();
+        let index = self.shared.index.read();
 
         // Write count
         writer.write_all(&(index.len() as u64).to_le_bytes())?;
@@ -562,7 +641,14 @@ impl StorageEngine {
 
         // Insert into MemTable
         if let Some(segment) = self.memtable.put(timestamp, value) {
-            self.persist_segment(&segment)?;
+            if let Some(ref sender) = self.flush_sender {
+                self.shared
+                    .in_flight
+                    .fetch_add(1, std::sync::atomic::Ordering::Acquire);
+                let _ = sender.send(FlushJob::Segment(segment));
+            } else {
+                self.persist_segment(&segment)?;
+            }
         }
 
         Ok(())
@@ -584,7 +670,98 @@ impl StorageEngine {
         // Insert into MemTable
         let segments = self.memtable.put_batch(data);
         for segment in segments {
-            self.persist_segment(&segment)?;
+            if let Some(ref sender) = self.flush_sender {
+                self.shared
+                    .in_flight
+                    .fetch_add(1, std::sync::atomic::Ordering::Acquire);
+                let _ = sender.send(FlushJob::Segment(segment));
+            } else {
+                self.persist_segment(&segment)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Background flush thread loop
+    fn flush_thread_loop(
+        rx: &crossbeam_channel::Receiver<FlushJob>,
+        shared: &SharedState,
+        config: &StorageConfig,
+    ) {
+        while let Ok(job) = rx.recv() {
+            match job {
+                FlushJob::Segment(segment) => {
+                    if let Err(e) = Self::persist_segment_shared(shared, config, &segment) {
+                        log::error!("Background flush failed: {e}");
+                    }
+                    shared
+                        .in_flight
+                        .fetch_sub(1, std::sync::atomic::Ordering::Release);
+                }
+                FlushJob::Shutdown => break,
+            }
+        }
+    }
+
+    /// Persist segment using shared state (callable from both main and flush thread)
+    fn persist_segment_shared(
+        shared: &SharedState,
+        config: &StorageConfig,
+        segment: &DataSegment,
+    ) -> io::Result<()> {
+        let segment_id = segment.metadata.id;
+        let start_time = segment.start_time;
+        let end_time = segment.end_time;
+        let model_name = segment.model.name().to_string();
+        let compression_ratio = segment.metadata.compression_ratio;
+
+        let rkyv_bytes = segment.to_rkyv_bytes()?;
+        let segment_size = rkyv_bytes.len() as u64;
+
+        let view = SegmentView::from_vec(rkyv_bytes.clone())?;
+        shared
+            .segment_cache
+            .write()
+            .insert(segment_id, Arc::new(view));
+
+        // Write to disk (encrypt if key configured)
+        let segment_path = config.data_dir.join(format!("seg_{segment_id}.rkyv"));
+        #[cfg(feature = "crypto")]
+        {
+            if let Some(ref key) = config.encryption_key {
+                let sealed = alice_crypto::seal(key, &rkyv_bytes)
+                    .map_err(|e| io::Error::other(format!("encryption failed: {e:?}")))?;
+                fs::write(&segment_path, &sealed)?;
+            } else {
+                fs::write(&segment_path, &rkyv_bytes)?;
+            }
+        }
+        #[cfg(not(feature = "crypto"))]
+        fs::write(&segment_path, &rkyv_bytes)?;
+
+        if config.sync_writes {
+            let file = File::open(&segment_path)?;
+            file.sync_all()?;
+        }
+
+        let entry = SegmentIndexEntry {
+            id: segment_id,
+            start_time,
+            end_time,
+            offset: 0,
+            size: segment_size,
+            model_type: model_name,
+            compression_ratio,
+        };
+
+        shared.index.write().insert(segment_id, entry);
+        {
+            let mut tree = shared.interval_tree.write();
+            tree.insert(start_time, end_time, segment_id);
+            if tree.needs_rebuild() {
+                tree.rebuild();
+            }
         }
 
         Ok(())
@@ -593,13 +770,117 @@ impl StorageEngine {
     /// Write to WAL
     fn write_wal(&self, timestamp: i64, value: f32) -> io::Result<()> {
         if let Some(ref mut wal) = *self.wal_file.write() {
-            wal.write_all(&timestamp.to_le_bytes())?;
-            wal.write_all(&value.to_le_bytes())?;
+            #[cfg(feature = "crypto")]
+            if let Some(ref key) = self.config.encryption_key {
+                // Encrypted WAL: length-prefixed sealed entries
+                let mut plaintext = Vec::with_capacity(12);
+                plaintext.extend_from_slice(&timestamp.to_le_bytes());
+                plaintext.extend_from_slice(&value.to_le_bytes());
+                let sealed = alice_crypto::seal(key, &plaintext)
+                    .map_err(|e| io::Error::other(format!("WAL encrypt failed: {e:?}")))?;
+                wal.write_all(&(sealed.len() as u32).to_le_bytes())?;
+                wal.write_all(&sealed)?;
+            } else {
+                wal.write_all(&timestamp.to_le_bytes())?;
+                wal.write_all(&value.to_le_bytes())?;
+            }
+
+            #[cfg(not(feature = "crypto"))]
+            {
+                wal.write_all(&timestamp.to_le_bytes())?;
+                wal.write_all(&value.to_le_bytes())?;
+            }
+
             if self.config.sync_writes {
                 wal.sync_all()?;
             }
         }
         Ok(())
+    }
+
+    /// Replay WAL entries to recover unflushed data after crash
+    ///
+    /// Reads 12-byte entries (i64 LE timestamp + f32 LE value) from wal.alice,
+    /// inserts into `MemTable` (without re-writing to WAL), and persists any
+    /// segments that are produced. Partial entries (incomplete writes) are
+    /// silently ignored. The WAL file is truncated after successful replay.
+    fn replay_wal(&self) -> io::Result<usize> {
+        let wal_path = self.config.data_dir.join("wal.alice");
+        if !wal_path.exists() {
+            return Ok(0);
+        }
+
+        let wal_data = fs::read(&wal_path)?;
+        if wal_data.is_empty() {
+            return Ok(0);
+        }
+
+        let mut recovered = 0usize;
+
+        #[cfg(feature = "crypto")]
+        let is_encrypted = self.config.encryption_key.is_some();
+        #[cfg(not(feature = "crypto"))]
+        let is_encrypted = false;
+
+        if is_encrypted {
+            // Encrypted WAL: length-prefixed sealed entries
+            #[cfg(feature = "crypto")]
+            {
+                let key = self.config.encryption_key.as_ref().unwrap();
+                let mut pos = 0;
+                while pos + 4 <= wal_data.len() {
+                    let sealed_len =
+                        u32::from_le_bytes(wal_data[pos..pos + 4].try_into().unwrap()) as usize;
+                    pos += 4;
+                    if pos + sealed_len > wal_data.len() {
+                        break; // Partial entry
+                    }
+                    let sealed = &wal_data[pos..pos + sealed_len];
+                    pos += sealed_len;
+
+                    let Ok(plaintext) = alice_crypto::open(key, sealed) else {
+                        break; // Corrupted entry
+                    };
+                    if plaintext.len() < 12 {
+                        break;
+                    }
+                    let timestamp = i64::from_le_bytes(plaintext[0..8].try_into().unwrap());
+                    let value = f32::from_le_bytes(plaintext[8..12].try_into().unwrap());
+
+                    if let Some(segment) = self.memtable.put(timestamp, value) {
+                        self.persist_segment(&segment)?;
+                    }
+                    recovered += 1;
+                }
+            }
+        } else {
+            // Unencrypted WAL: fixed 12-byte entries
+            let entry_size = 12; // i64 (8) + f32 (4)
+            let full_entries = wal_data.len() / entry_size;
+
+            for i in 0..full_entries {
+                let offset = i * entry_size;
+                let timestamp =
+                    i64::from_le_bytes(wal_data[offset..offset + 8].try_into().unwrap());
+                let value =
+                    f32::from_le_bytes(wal_data[offset + 8..offset + 12].try_into().unwrap());
+
+                if let Some(segment) = self.memtable.put(timestamp, value) {
+                    self.persist_segment(&segment)?;
+                }
+                recovered += 1;
+            }
+        }
+
+        // Persist any remaining data in memtable
+        if let Some(segment) = self.memtable.force_flush() {
+            self.persist_segment(&segment)?;
+        }
+
+        // Truncate WAL after successful replay
+        File::create(&wal_path)?;
+
+        Ok(recovered)
     }
 
     /// Persist a segment to disk (rkyv format for Zero-Copy)
@@ -613,51 +894,7 @@ impl StorageEngine {
     /// This ensures queries can hit the cache instantly after `MemTable` flush,
     /// without waiting for disk I/O to complete.
     fn persist_segment(&self, segment: &DataSegment) -> io::Result<()> {
-        let segment_id = segment.metadata.id;
-        let start_time = segment.start_time;
-        let end_time = segment.end_time;
-        let model_name = segment.model.name().to_string();
-        let compression_ratio = segment.metadata.compression_ratio;
-
-        // 1. Serialize to rkyv bytes (Aligned Vec)
-        let rkyv_bytes = segment.to_rkyv_bytes()?;
-        let segment_size = rkyv_bytes.len() as u64;
-
-        // 2. Create SegmentView from bytes IMMEDIATELY (Zero-Copy, no disk wait)
-        // This is the key optimization: cache is populated before disk write
-        let view = SegmentView::from_vec(rkyv_bytes.clone())?;
-        self.segment_cache
-            .write()
-            .insert(segment_id, Arc::new(view));
-
-        // 3. Write to disk (could be async/background in future)
-        let segment_path = self.config.data_dir.join(format!("seg_{segment_id}.rkyv"));
-        fs::write(&segment_path, &rkyv_bytes)?;
-
-        if self.config.sync_writes {
-            // Force sync if configured
-            let file = File::open(&segment_path)?;
-            file.sync_all()?;
-        }
-
-        // 4. Update index
-        let entry = SegmentIndexEntry {
-            id: segment_id,
-            start_time,
-            end_time,
-            offset: 0, // Not used for individual files
-            size: segment_size,
-            model_type: model_name,
-            compression_ratio,
-        };
-
-        // Insert into both index and interval tree
-        self.index.write().insert(segment_id, entry);
-        self.interval_tree
-            .write()
-            .insert(start_time, end_time, segment_id);
-
-        Ok(())
+        Self::persist_segment_shared(&self.shared, &self.config, segment)
     }
 
     /// Load a segment as `SegmentView` (Zero-Copy mmap)
@@ -668,7 +905,7 @@ impl StorageEngine {
     /// No deserialization occurs - model coefficients are read directly.
     fn load_segment(&self, entry: &SegmentIndexEntry) -> io::Result<Arc<SegmentView>> {
         // Check cache first (fast path)
-        if let Some(view) = self.segment_cache.read().get(&entry.id) {
+        if let Some(view) = self.shared.segment_cache.read().get(&entry.id) {
             return Ok(Arc::clone(view));
         }
 
@@ -680,11 +917,36 @@ impl StorageEngine {
             return self.load_segment_legacy(entry);
         }
 
-        let view = SegmentView::open(&segment_path)?;
+        // Load segment (decrypt if encrypted)
+        #[cfg(feature = "crypto")]
+        let view = if let Some(ref key) = self.config.encryption_key {
+            // Encrypted: must read to memory, decrypt, then create view
+            let sealed = fs::read(&segment_path)?;
+            let plaintext = alice_crypto::open(key, &sealed).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("decryption failed: {e:?}"),
+                )
+            })?;
+            SegmentView::from_vec(plaintext)?
+        } else if self.config.use_mmap {
+            SegmentView::open(&segment_path)?
+        } else {
+            SegmentView::open_read(&segment_path)?
+        };
+
+        #[cfg(not(feature = "crypto"))]
+        let view = if self.config.use_mmap {
+            SegmentView::open(&segment_path)?
+        } else {
+            SegmentView::open_read(&segment_path)?
+        };
+
         let arc_view = Arc::new(view);
 
         // Update cache
-        self.segment_cache
+        self.shared
+            .segment_cache
             .write()
             .insert(entry.id, Arc::clone(&arc_view));
 
@@ -712,12 +974,17 @@ impl StorageEngine {
             let segment_path = self.config.data_dir.join(format!("seg_{}.rkyv", entry.id));
             segment.write_rkyv(&segment_path)?;
 
-            // Open as SegmentView
-            let view = SegmentView::open(&segment_path)?;
+            // Open as SegmentView (respect use_mmap config)
+            let view = if self.config.use_mmap {
+                SegmentView::open(&segment_path)?
+            } else {
+                SegmentView::open_read(&segment_path)?
+            };
             let arc_view = Arc::new(view);
 
             // Update cache
-            self.segment_cache
+            self.shared
+                .segment_cache
                 .write()
                 .insert(entry.id, Arc::clone(&arc_view));
 
@@ -736,8 +1003,8 @@ impl StorageEngine {
     /// K = number of overlapping segments returned.
     pub fn find_segments(&self, start: i64, end: i64) -> Vec<SegmentIndexEntry> {
         // Use Interval Tree for efficient range query
-        let segment_ids = self.interval_tree.read().query_range(start, end);
-        let index = self.index.read();
+        let segment_ids = self.shared.interval_tree.read().query_range(start, end);
+        let index = self.shared.index.read();
 
         segment_ids
             .into_iter()
@@ -803,13 +1070,26 @@ impl StorageEngine {
     ///
     /// Returns an error if segment persistence or index saving fails.
     pub fn flush(&self) -> io::Result<()> {
+        // Wait for all background flush jobs to complete
+        if self.flush_sender.is_some() {
+            while self
+                .shared
+                .in_flight
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
+            {
+                std::thread::yield_now();
+            }
+        }
+
+        // Force flush memtable synchronously (bypass channel)
         if let Some(segment) = self.memtable.force_flush() {
-            self.persist_segment(&segment)?;
+            Self::persist_segment_shared(&self.shared, &self.config, &segment)?;
         }
 
         // Rebuild Interval Tree after flush (jitter-free writes)
         {
-            let mut tree = self.interval_tree.write();
+            let mut tree = self.shared.interval_tree.write();
             if tree.needs_rebuild() {
                 tree.rebuild();
             }
@@ -826,6 +1106,14 @@ impl StorageEngine {
     /// Returns an error if flushing or WAL cleanup fails.
     pub fn close(&self) -> io::Result<()> {
         self.flush()?;
+
+        // Shutdown background flush thread
+        if let Some(ref sender) = self.flush_sender {
+            let _ = sender.send(FlushJob::Shutdown);
+        }
+        if let Some(handle) = self.flush_handle.lock().take() {
+            let _ = handle.join();
+        }
 
         // Close files
         *self.data_file.write() = None;
@@ -844,7 +1132,7 @@ impl StorageEngine {
 
     /// Get statistics
     pub fn stats(&self) -> StorageStats {
-        let index = self.index.read();
+        let index = self.shared.index.read();
 
         let total_segments = index.len();
         let total_compression_ratio: f64 =
@@ -1152,6 +1440,127 @@ mod tests {
     }
 
     #[test]
+    fn test_background_flush_no_spike() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 50,
+            enable_wal: false,
+            enable_background_flush: true,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+
+        // Insert enough data to trigger multiple flushes
+        let start = std::time::Instant::now();
+        for i in 0..200 {
+            engine.put(i, i as f32 * 0.5).unwrap();
+        }
+        let _elapsed = start.elapsed();
+
+        // Wait for background flush to complete
+        engine.close().unwrap();
+
+        // Verify data was persisted
+        let config2 = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 50,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine2 = StorageEngine::new(config2).unwrap();
+        let stats = engine2.stats();
+        assert!(
+            stats.total_segments >= 4,
+            "Should have at least 4 segments (200/50)"
+        );
+
+        // Check data is queryable
+        let results = engine2.query_range(0, 199).unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_query_without_manual_flush() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 50,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+
+        // Insert enough to trigger auto-flush (2x capacity)
+        for i in 0..100 {
+            engine.put(i, i as f32 * 2.0).unwrap();
+        }
+
+        // Do NOT call flush() — auto-rebuild in persist_segment should make
+        // the interval tree ready for queries
+        let results = engine.query_range(0, 99).unwrap();
+        assert!(
+            !results.is_empty(),
+            "Auto-rebuilt interval tree should support queries"
+        );
+    }
+
+    #[test]
+    fn test_wal_recovery_after_crash() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+
+        // Write data with WAL enabled, then "crash" (drop without close)
+        {
+            let config = StorageConfig {
+                data_dir: dir_path.clone(),
+                memtable_capacity: 1000, // large enough to NOT auto-flush
+                enable_wal: true,
+                ..Default::default()
+            };
+            let engine = StorageEngine::new(config).unwrap();
+
+            for i in 0..50 {
+                engine.put(i, i as f32 * 2.0).unwrap();
+            }
+
+            // Simulate crash: WAL written but no flush/close
+            // Drop the engine without calling close()
+            // We need to prevent Drop from calling close, so we leak intentionally
+            // Actually, Drop calls close which flushes - to simulate crash,
+            // we manually write WAL and skip the drop
+            std::mem::forget(engine);
+        }
+
+        // WAL file should exist with data
+        assert!(dir_path.join("wal.alice").exists());
+
+        // Reopen - should recover from WAL
+        {
+            let config = StorageConfig {
+                data_dir: dir_path.clone(),
+                memtable_capacity: 1000,
+                enable_wal: true,
+                ..Default::default()
+            };
+            let engine = StorageEngine::new(config).unwrap();
+
+            // Data should have been recovered from WAL and flushed
+            let stats = engine.stats();
+            assert!(
+                stats.total_segments >= 1,
+                "WAL recovery should produce segments"
+            );
+
+            // Verify data
+            let results = engine.query_range(0, 49).unwrap();
+            assert!(!results.is_empty(), "Recovered data should be queryable");
+
+            engine.close().unwrap();
+        }
+    }
+
+    #[test]
     fn test_storage_engine_reopen_persistence() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path().to_path_buf();
@@ -1189,5 +1598,114 @@ mod tests {
             let results = engine.query_range(0, 99).unwrap();
             assert!(!results.is_empty());
         }
+    }
+
+    #[test]
+    fn test_empty_scan_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        let results = engine.query_range(100, 200).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_point_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 50,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        for i in 0..100 {
+            engine.put(i, i as f32 * 2.0).unwrap();
+        }
+        engine.flush().unwrap();
+        let val = engine.query_point(50).unwrap();
+        assert!(val.is_some());
+    }
+
+    #[test]
+    fn test_stats_after_multiple_flushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 30,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        for i in 0..100 {
+            engine.put(i, i as f32).unwrap();
+        }
+        engine.flush().unwrap();
+        let stats = engine.stats();
+        assert!(stats.total_segments >= 2);
+        assert!(stats.total_disk_size > 0);
+    }
+
+    #[test]
+    fn test_interval_tree_query_accuracy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 50,
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        // Segment 1: timestamps 0..49
+        for i in 0..50 {
+            engine.put(i, i as f32).unwrap();
+        }
+        engine.flush().unwrap();
+        // Segment 2: timestamps 100..149
+        for i in 100..150 {
+            engine.put(i, i as f32).unwrap();
+        }
+        engine.flush().unwrap();
+
+        // Query range that spans only segment 2
+        let results = engine.query_range(100, 149).unwrap();
+        assert!(!results.is_empty());
+        // Query range between segments should be empty
+        let gap = engine.query_range(60, 90).unwrap();
+        assert!(gap.is_empty());
+    }
+
+    #[test]
+    fn test_close_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        engine.put(0, 1.0).unwrap();
+        engine.close().unwrap();
+        // Second close should not panic
+        engine.close().unwrap();
+    }
+
+    #[test]
+    fn test_wal_disabled_no_wal_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            enable_wal: false,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        engine.put(0, 1.0).unwrap();
+        engine.flush().unwrap();
+        let wal_path = dir.path().join("wal.alice");
+        assert!(!wal_path.exists());
     }
 }

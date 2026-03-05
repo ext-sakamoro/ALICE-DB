@@ -954,8 +954,30 @@ impl SegmentView {
         // SegmentView, ensuring the mapped pages are not unmapped while any
         // reference into them is live.
         let mmap = unsafe { Mmap::map(&file)? };
+
+        // Pre-fault validation: touch first and last bytes to detect
+        // SIGBUS early (file truncated/deleted between stat and mmap)
+        {
+            let bytes = mmap.as_ref();
+            let _ = bytes[0];
+            let _ = bytes[bytes.len() - 1];
+        }
+
         let source = SegmentSource::Mmap(Arc::new(mmap));
         Self::from_source(source)
+    }
+
+    /// Open a segment file by reading into memory (no mmap)
+    ///
+    /// Use this instead of `open()` to avoid SIGBUS risk when the
+    /// underlying file might be deleted or truncated after opening.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or contains invalid rkyv data.
+    pub fn open_read<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let data = std::fs::read(path)?;
+        Self::from_vec(data)
     }
 
     /// Create from in-memory bytes (Zero-Copy, no disk I/O)

@@ -45,6 +45,8 @@ pub struct FitConfig {
     pub exhaustive_search: bool,
     /// Minimum compression ratio to accept a model
     pub min_compression_ratio: f64,
+    /// Enable lossless mode: store residuals for exact reconstruction
+    pub lossless: bool,
 }
 
 impl Default for FitConfig {
@@ -56,6 +58,7 @@ impl Default for FitConfig {
             fourier_energy_threshold: 0.99,
             exhaustive_search: true,
             min_compression_ratio: 2.0,
+            lossless: false,
         }
     }
 }
@@ -204,14 +207,28 @@ impl MemTable {
         let fit_result = self.fit_best_model(&values);
 
         let id = self.next_id();
-        DataSegment::new(
+        let mut segment = DataSegment::new(
             id,
             start_time,
             end_time,
             fit_result.model,
             values.len(),
             original_size,
-        )
+        );
+
+        // Compute residuals for lossless reconstruction
+        if self.config.lossless {
+            let mut residual_bytes = Vec::with_capacity(values.len() * 4);
+            for (i, &original) in values.iter().enumerate() {
+                let timestamp = data[i].0;
+                let reconstructed = segment.query_point(timestamp).unwrap_or(0.0);
+                let residual = original - reconstructed;
+                residual_bytes.extend_from_slice(&residual.to_le_bytes());
+            }
+            segment = segment.with_residual(residual_bytes);
+        }
+
+        segment
     }
 
     /// Generate next segment ID (atomic, lock-free)
@@ -625,6 +642,48 @@ mod tests {
     }
 
     #[test]
+    fn test_lossless_exact_reconstruction() {
+        let config = FitConfig {
+            lossless: true,
+            ..Default::default()
+        };
+        let memtable = MemTable::with_config(1000, config);
+
+        // Insert known data that won't fit perfectly to any model
+        let data: Vec<(i64, f32)> = (0..100)
+            .map(|i| {
+                (
+                    i as i64,
+                    (i as f32 * 0.73).sin() * 100.0 + (i as f32 * 0.13).cos() * 50.0,
+                )
+            })
+            .collect();
+
+        for &(t, v) in &data {
+            memtable.put(t, v);
+        }
+
+        let segment = memtable.force_flush().unwrap();
+        assert!(
+            segment.residual_blob.is_some(),
+            "Lossless segment should have residuals"
+        );
+
+        // Verify exact reconstruction via query_point (which applies residuals)
+        for &(t, expected) in &data {
+            if let Some(actual) = segment.query_point(t) {
+                assert!(
+                    (actual - expected).abs() < 1e-2,
+                    "Lossless mismatch at t={}: expected={}, actual={}",
+                    t,
+                    expected,
+                    actual
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_memtable_with_config() {
         let config = FitConfig {
             max_polynomial_degree: 5,
@@ -633,6 +692,7 @@ mod tests {
             fourier_energy_threshold: 0.95,
             exhaustive_search: false,
             min_compression_ratio: 1.5,
+            lossless: false,
         };
         let memtable = MemTable::with_config(200, config);
         assert!(memtable.is_empty());

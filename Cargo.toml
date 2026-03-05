@@ -51,6 +51,9 @@ alice-analytics = { path = "../ALICE-Analytics", optional = true }
 # ALICE-Crypto bridge (optional)
 alice-crypto = { path = "../ALICE-Crypto", optional = true, default-features = false, features = ["std"] }
 
+# Advisory file locking (cross-platform)
+fs2 = "0.4"
+
 # Utilities
 thiserror = "1.0"
 log = "0.4"

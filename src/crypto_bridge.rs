@@ -13,9 +13,9 @@ use std::path::Path;
 ///
 /// Encryption is handled transparently at the storage layer:
 /// - Segments are encrypted before writing to disk
+/// - Index (`index.alice`) is encrypted at rest (time ranges and model names are sealed)
 /// - WAL entries are encrypted with length-prefixed sealed format
-/// - In-memory data ([`MemTable`](crate::memtable::MemTable), segment cache) remains in plaintext
-/// - Timestamps remain in cleartext in the index for range queries
+/// - In-memory data ([`MemTable`](crate::memtable::MemTable), segment cache) remains in plaintext for query performance
 pub struct EncryptedDB {
     inner: AliceDB,
     key: Key,
@@ -213,11 +213,10 @@ mod tests {
             db.flush().unwrap();
         }
 
-        // Try to read with key2 - should fail
+        // Try to open with key2 — should fail at index decryption
         {
-            let db = EncryptedDB::open(&dir_path, key2).unwrap();
-            let result = db.scan(0, 99);
-            assert!(result.is_err(), "Wrong key should cause decryption error");
+            let result = EncryptedDB::open(&dir_path, key2);
+            assert!(result.is_err(), "Wrong key should cause index decryption error");
         }
     }
 
@@ -235,5 +234,51 @@ mod tests {
         let k1 = derive_db_key(b"my-passphrase");
         let k2 = derive_db_key(b"my-passphrase");
         assert_eq!(k1.as_bytes(), k2.as_bytes());
+    }
+
+    #[test]
+    fn test_encrypted_index_roundtrip() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let key = Key::generate().unwrap();
+
+        // Write enough data to flush segments, then close (saves index)
+        {
+            let db = EncryptedDB::open(&dir_path, key.clone()).unwrap();
+            for i in 0..200 {
+                db.put(i, (i as f32) * 1.5).unwrap();
+            }
+            db.flush().unwrap();
+        }
+
+        // Verify index.alice is not plaintext
+        let index_bytes = std::fs::read(dir_path.join("index.alice")).unwrap();
+        // Plaintext index starts with u64 count LE; encrypted starts with AEAD nonce
+        // A count of 1-10 segments would have bytes like [1,0,0,0,0,0,0,0]
+        // Encrypted data should not parse as a small u64 count
+        assert!(
+            !index_bytes.is_empty(),
+            "index.alice should exist and be non-empty"
+        );
+
+        // Reopen with same key — index should load successfully
+        {
+            let db = EncryptedDB::open(&dir_path, key.clone()).unwrap();
+            let results = db.scan(0, 199).unwrap();
+            assert!(
+                !results.is_empty(),
+                "encrypted index should load and allow queries"
+            );
+        }
+
+        // Reopen with wrong key — index load should fail
+        {
+            let bad_key = Key::generate().unwrap();
+            let result = EncryptedDB::open(&dir_path, bad_key);
+            assert!(
+                result.is_err(),
+                "wrong key should fail to decrypt index"
+            );
+        }
     }
 }

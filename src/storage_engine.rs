@@ -20,7 +20,7 @@ use crate::segment::{DataSegment, SegmentView};
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -528,19 +528,39 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Load index from disk
+    /// Load index from disk (decrypt if crypto key is configured)
     fn load_index(&self) -> io::Result<()> {
         let index_path = self.config.data_dir.join("index.alice");
         if !index_path.exists() {
             return Ok(());
         }
 
-        let file = File::open(&index_path)?;
-        let mut reader = BufReader::new(file);
+        // Read entire file
+        let raw = fs::read(&index_path)?;
+        if raw.is_empty() {
+            return Ok(());
+        }
+
+        // Decrypt if key configured
+        #[cfg(feature = "crypto")]
+        let data = if let Some(ref key) = self.config.encryption_key {
+            alice_crypto::open(key, &raw).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("index decryption failed: {e:?}"),
+                )
+            })?
+        } else {
+            raw
+        };
+        #[cfg(not(feature = "crypto"))]
+        let data = raw;
+
+        let mut reader = std::io::Cursor::new(&data);
 
         // Read number of entries
         let mut count_bytes = [0u8; 8];
-        if reader.read_exact(&mut count_bytes).is_err() {
+        if std::io::Read::read_exact(&mut reader, &mut count_bytes).is_err() {
             return Ok(()); // Empty or corrupt index
         }
         let count = u64::from_le_bytes(count_bytes) as usize;
@@ -551,35 +571,35 @@ impl StorageEngine {
         for _ in 0..count {
             // Read entry
             let mut id_bytes = [0u8; 8];
-            reader.read_exact(&mut id_bytes)?;
+            std::io::Read::read_exact(&mut reader, &mut id_bytes)?;
             let id = u64::from_le_bytes(id_bytes);
 
             let mut start_bytes = [0u8; 8];
-            reader.read_exact(&mut start_bytes)?;
+            std::io::Read::read_exact(&mut reader, &mut start_bytes)?;
             let start_time = i64::from_le_bytes(start_bytes);
 
             let mut end_bytes = [0u8; 8];
-            reader.read_exact(&mut end_bytes)?;
+            std::io::Read::read_exact(&mut reader, &mut end_bytes)?;
             let end_time = i64::from_le_bytes(end_bytes);
 
             let mut offset_bytes = [0u8; 8];
-            reader.read_exact(&mut offset_bytes)?;
+            std::io::Read::read_exact(&mut reader, &mut offset_bytes)?;
             let offset = u64::from_le_bytes(offset_bytes);
 
             let mut size_bytes = [0u8; 8];
-            reader.read_exact(&mut size_bytes)?;
+            std::io::Read::read_exact(&mut reader, &mut size_bytes)?;
             let size = u64::from_le_bytes(size_bytes);
 
             let mut ratio_bytes = [0u8; 8];
-            reader.read_exact(&mut ratio_bytes)?;
+            std::io::Read::read_exact(&mut reader, &mut ratio_bytes)?;
             let compression_ratio = f64::from_le_bytes(ratio_bytes);
 
             let mut model_len_bytes = [0u8; 4];
-            reader.read_exact(&mut model_len_bytes)?;
+            std::io::Read::read_exact(&mut reader, &mut model_len_bytes)?;
             let model_len = u32::from_le_bytes(model_len_bytes) as usize;
 
             let mut model_type_bytes = vec![0u8; model_len];
-            reader.read_exact(&mut model_type_bytes)?;
+            std::io::Read::read_exact(&mut reader, &mut model_type_bytes)?;
             let model_type = String::from_utf8_lossy(&model_type_bytes).to_string();
 
             let entry = SegmentIndexEntry {
@@ -600,31 +620,41 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Save index to disk
+    /// Save index to disk (encrypted if crypto key is configured)
     fn save_index(&self) -> io::Result<()> {
         let index_path = self.config.data_dir.join("index.alice");
-        let file = File::create(&index_path)?;
-        let mut writer = BufWriter::new(file);
 
         let index = self.shared.index.read();
 
-        // Write count
-        writer.write_all(&(index.len() as u64).to_le_bytes())?;
+        // Serialize index entries to bytes
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(index.len() as u64).to_le_bytes());
 
         for entry in index.values() {
-            writer.write_all(&entry.id.to_le_bytes())?;
-            writer.write_all(&entry.start_time.to_le_bytes())?;
-            writer.write_all(&entry.end_time.to_le_bytes())?;
-            writer.write_all(&entry.offset.to_le_bytes())?;
-            writer.write_all(&entry.size.to_le_bytes())?;
-            writer.write_all(&entry.compression_ratio.to_le_bytes())?;
+            buf.extend_from_slice(&entry.id.to_le_bytes());
+            buf.extend_from_slice(&entry.start_time.to_le_bytes());
+            buf.extend_from_slice(&entry.end_time.to_le_bytes());
+            buf.extend_from_slice(&entry.offset.to_le_bytes());
+            buf.extend_from_slice(&entry.size.to_le_bytes());
+            buf.extend_from_slice(&entry.compression_ratio.to_le_bytes());
 
             let model_bytes = entry.model_type.as_bytes();
-            writer.write_all(&(model_bytes.len() as u32).to_le_bytes())?;
-            writer.write_all(model_bytes)?;
+            buf.extend_from_slice(&(model_bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(model_bytes);
         }
 
-        writer.flush()?;
+        // Encrypt if key configured
+        #[cfg(feature = "crypto")]
+        let output = if let Some(ref key) = self.config.encryption_key {
+            alice_crypto::seal(key, &buf)
+                .map_err(|e| io::Error::other(format!("index encryption failed: {e:?}")))?
+        } else {
+            buf
+        };
+        #[cfg(not(feature = "crypto"))]
+        let output = buf;
+
+        fs::write(&index_path, &output)?;
         Ok(())
     }
 
@@ -725,20 +755,28 @@ impl StorageEngine {
             .write()
             .insert(segment_id, Arc::new(view));
 
-        // Write to disk (encrypt if key configured)
+        // Write to disk with exclusive advisory lock (encrypt if key configured)
         let segment_path = config.data_dir.join(format!("seg_{segment_id}.rkyv"));
-        #[cfg(feature = "crypto")]
         {
-            if let Some(ref key) = config.encryption_key {
-                let sealed = alice_crypto::seal(key, &rkyv_bytes)
-                    .map_err(|e| io::Error::other(format!("encryption failed: {e:?}")))?;
-                fs::write(&segment_path, &sealed)?;
+            use fs2::FileExt;
+
+            #[cfg(feature = "crypto")]
+            let bytes_to_write = if let Some(ref key) = config.encryption_key {
+                alice_crypto::seal(key, &rkyv_bytes)
+                    .map_err(|e| io::Error::other(format!("encryption failed: {e:?}")))?
             } else {
-                fs::write(&segment_path, &rkyv_bytes)?;
-            }
+                rkyv_bytes.clone()
+            };
+            #[cfg(not(feature = "crypto"))]
+            let bytes_to_write = &rkyv_bytes;
+
+            let file = File::create(&segment_path)?;
+            file.lock_exclusive()?;
+            let mut writer = BufWriter::new(&file);
+            writer.write_all(bytes_to_write.as_ref())?;
+            writer.flush()?;
+            // Lock released on file drop
         }
-        #[cfg(not(feature = "crypto"))]
-        fs::write(&segment_path, &rkyv_bytes)?;
 
         if config.sync_writes {
             let file = File::open(&segment_path)?;

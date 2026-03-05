@@ -216,7 +216,7 @@ impl MemTable {
             original_size,
         );
 
-        // Compute residuals for lossless reconstruction
+        // Compute residuals for lossless reconstruction (LZMA compressed)
         if self.config.lossless {
             let mut residual_bytes = Vec::with_capacity(values.len() * 4);
             for (i, &original) in values.iter().enumerate() {
@@ -225,7 +225,7 @@ impl MemTable {
                 let residual = original - reconstructed;
                 residual_bytes.extend_from_slice(&residual.to_le_bytes());
             }
-            segment = segment.with_residual(residual_bytes);
+            segment = segment.with_residual(crate::segment::compress_residual(&residual_bytes));
         }
 
         segment

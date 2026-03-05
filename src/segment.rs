@@ -153,10 +153,11 @@ impl DataSegment {
 
         let value = self.evaluate_model_at_x(x);
 
-        // Apply residual correction if available
+        // Apply residual correction if available (decompress on-the-fly)
         if let Some(ref residual) = self.residual_blob {
+            let decompressed = decompress_residual(residual);
             let idx = self.timestamp_to_index(timestamp);
-            if let Some(correction) = self.get_residual_at(residual, idx) {
+            if let Some(correction) = self.get_residual_at(&decompressed, idx) {
                 return Some(value + correction);
             }
         }
@@ -283,9 +284,10 @@ impl DataSegment {
             }
         }
 
-        // Apply residuals in separate pass (if needed)
+        // Apply residuals in separate pass (decompress once, then apply)
         if let Some(ref residual) = self.residual_blob {
-            self.apply_residuals(&mut results, residual);
+            let decompressed = decompress_residual(residual);
+            self.apply_residuals(&mut results, &decompressed);
         }
 
         results
@@ -718,14 +720,12 @@ impl DataSegment {
         (ratio * (self.metadata.point_count - 1) as f64).round() as usize
     }
 
-    /// Get residual correction at index
+    /// Get residual correction at index (from decompressed raw f32 bytes)
     #[allow(clippy::unused_self)]
-    fn get_residual_at(&self, residual: &[u8], idx: usize) -> Option<f32> {
-        // Residual is stored as quantized LZMA-compressed data
-        // For now, assume it's been decompressed and stored as f32
+    fn get_residual_at(&self, decompressed: &[u8], idx: usize) -> Option<f32> {
         let offset = idx * 4;
-        if offset + 4 <= residual.len() {
-            let bytes: [u8; 4] = residual[offset..offset + 4].try_into().ok()?;
+        if offset + 4 <= decompressed.len() {
+            let bytes: [u8; 4] = decompressed[offset..offset + 4].try_into().ok()?;
             Some(f32::from_le_bytes(bytes))
         } else {
             None
@@ -833,6 +833,71 @@ impl DataSegment {
 }
 
 // =============================================================================
+// Residual LZMA Compression
+// =============================================================================
+
+/// Magic byte: LZMA compressed
+const RESIDUAL_LZMA: u8 = 0;
+/// Magic byte: raw (uncompressed) f32 LE bytes
+const RESIDUAL_RAW: u8 = 1;
+
+/// Compress residual f32 bytes with LZMA.
+///
+/// Format: `[1 byte magic] [data]`
+/// Falls back to raw if LZMA expansion occurs.
+pub fn compress_residual(raw: &[u8]) -> Vec<u8> {
+    let mut compressed = Vec::new();
+    if lzma_rs::lzma_compress(&mut std::io::Cursor::new(raw), &mut compressed).is_ok()
+        && compressed.len() < raw.len()
+    {
+        let mut out = Vec::with_capacity(1 + compressed.len());
+        out.push(RESIDUAL_LZMA);
+        out.extend_from_slice(&compressed);
+        out
+    } else {
+        let mut out = Vec::with_capacity(1 + raw.len());
+        out.push(RESIDUAL_RAW);
+        out.extend_from_slice(raw);
+        out
+    }
+}
+
+/// Decompress residual blob back to raw f32 LE bytes.
+///
+/// Handles three formats:
+/// - `[0x00][LZMA data]` — LZMA compressed (new format)
+/// - `[0x01][raw data]` — raw with magic byte (new format, LZMA expansion fallback)
+/// - `[raw f32 LE bytes]` — legacy format (no magic byte)
+///
+/// Distinguishes new-format LZMA from legacy by attempting LZMA decompression;
+/// if it fails, treats the entire blob as legacy raw f32 LE bytes.
+pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
+    if blob.is_empty() {
+        return Vec::new();
+    }
+    match blob[0] {
+        RESIDUAL_LZMA => {
+            // Try LZMA decompression; if it fails, this is legacy data where
+            // the first f32 LE byte happens to be 0x00
+            let mut decompressed = Vec::new();
+            if lzma_rs::lzma_decompress(&mut std::io::Cursor::new(&blob[1..]), &mut decompressed)
+                .is_ok()
+            {
+                decompressed
+            } else {
+                // Legacy format fallback
+                blob.to_vec()
+            }
+        }
+        RESIDUAL_RAW => blob[1..].to_vec(),
+        _ => {
+            // Legacy format: no magic byte, raw f32 LE bytes
+            blob.to_vec()
+        }
+    }
+}
+
+// =============================================================================
 // SegmentView: Unified Zero-Copy Access (Phase 1)
 // =============================================================================
 
@@ -843,8 +908,9 @@ impl DataSegment {
 /// of the underlying storage type.
 #[derive(Clone)]
 pub enum SegmentSource {
-    /// Memory-mapped file (best for large segments, lazy loading)
-    Mmap(Arc<Mmap>),
+    /// Memory-mapped file (best for large segments, lazy loading).
+    /// Holds `File` to keep the advisory shared lock alive until drop.
+    Mmap(Arc<Mmap>, Arc<File>),
     /// In-memory bytes (for freshly flushed `MemTable` data)
     Vec(Arc<Vec<u8>>),
     /// Static slice (for embedded/testing)
@@ -855,7 +921,7 @@ impl AsRef<[u8]> for SegmentSource {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         match self {
-            Self::Mmap(m) => m.as_ref(),
+            Self::Mmap(m, _file) => m.as_ref(),
             Self::Vec(v) => v.as_slice(),
             Self::Slice(s) => s,
         }
@@ -915,7 +981,14 @@ impl SegmentView {
     /// valid rkyv archive size. An empty mmap is undefined behaviour on some
     /// platforms; we reject it here before the `unsafe` mmap call.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        #[allow(unused_imports)]
+        use fs2::FileExt;
+
         let file = File::open(path)?;
+
+        // Acquire advisory shared lock to prevent concurrent truncation/deletion.
+        // The lock is held as long as the File lives (stored in SegmentSource::Mmap).
+        file.lock_shared()?;
 
         // Validate file size before mapping.
         //
@@ -963,7 +1036,7 @@ impl SegmentView {
             let _ = bytes[bytes.len() - 1];
         }
 
-        let source = SegmentSource::Mmap(Arc::new(mmap));
+        let source = SegmentSource::Mmap(Arc::new(mmap), Arc::new(file));
         Self::from_source(source)
     }
 
@@ -1090,7 +1163,7 @@ impl SegmentView {
     #[must_use]
     pub fn source_type(&self) -> &'static str {
         match &self.source {
-            SegmentSource::Mmap(_) => "mmap",
+            SegmentSource::Mmap(..) => "mmap",
             SegmentSource::Vec(_) => "vec",
             SegmentSource::Slice(_) => "slice",
         }
@@ -2001,5 +2074,108 @@ mod tests {
         assert_eq!(segment.metadata.original_size, 4004);
         assert!(segment.metadata.created_at > 0);
         assert!(segment.metadata.compression_ratio > 1.0);
+    }
+
+    #[test]
+    fn test_lossless_lzma_roundtrip() {
+        // Create a segment with known residuals
+        let mut segment = DataSegment::new(
+            1,
+            0,
+            99,
+            ModelType::Constant { value: 10.0 },
+            100,
+            400,
+        );
+
+        // Build raw residual f32 bytes
+        let mut raw_residuals = Vec::with_capacity(100 * 4);
+        for i in 0..100 {
+            let r = (i as f32) * 0.001;
+            raw_residuals.extend_from_slice(&r.to_le_bytes());
+        }
+
+        // Compress and attach
+        let compressed = super::compress_residual(&raw_residuals);
+        // Compressed blob should have magic byte prefix
+        assert!(!compressed.is_empty());
+        assert!(compressed[0] == super::RESIDUAL_LZMA || compressed[0] == super::RESIDUAL_RAW);
+        segment = segment.with_residual(compressed.clone());
+
+        // Verify decompression roundtrip
+        let decompressed = super::decompress_residual(&compressed);
+        assert_eq!(decompressed.len(), raw_residuals.len());
+        assert_eq!(decompressed, raw_residuals);
+
+        // Verify query_point applies residual correction
+        let val_at_0 = segment.query_point(0).unwrap();
+        // Constant model = 10.0, residual[0] = 0.0 * 0.001 = 0.0
+        assert!((val_at_0 - 10.0).abs() < 0.01);
+
+        let val_at_50 = segment.query_point(50).unwrap();
+        // Constant model = 10.0, residual[50] = 50 * 0.001 = 0.05
+        assert!((val_at_50 - 10.05).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_compress_decompress_fallback() {
+        // Tiny data: LZMA expansion expected → falls back to raw
+        let tiny = vec![1u8, 2, 3, 4];
+        let compressed = super::compress_residual(&tiny);
+        assert_eq!(compressed[0], super::RESIDUAL_RAW);
+        let decompressed = super::decompress_residual(&compressed);
+        assert_eq!(decompressed, tiny);
+    }
+
+    #[test]
+    fn test_legacy_residual_no_magic_byte() {
+        // Legacy format: no magic byte, just raw f32 LE bytes
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(&1.5f32.to_le_bytes());
+        legacy.extend_from_slice(&2.5f32.to_le_bytes());
+
+        // Should still work (fallback path)
+        let decompressed = super::decompress_residual(&legacy);
+        assert_eq!(decompressed, legacy);
+    }
+
+    #[test]
+    fn test_mmap_file_lock() {
+        use fs2::FileExt;
+
+        // Write a valid segment to a temp file
+        let segment = DataSegment::new(
+            1, 0, 99,
+            ModelType::Constant { value: 42.0 },
+            100, 400,
+        );
+        let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_seg.rkyv");
+        std::fs::write(&path, &rkyv_bytes).unwrap();
+
+        // Open with SegmentView (acquires shared lock)
+        let view = SegmentView::open(&path).unwrap();
+        assert_eq!(view.source_type(), "mmap");
+
+        // Another shared lock should succeed (shared locks are compatible)
+        let file2 = File::open(&path).unwrap();
+        assert!(file2.lock_shared().is_ok());
+        file2.unlock().unwrap();
+
+        // Exclusive lock should fail while shared lock is held
+        let file3 = File::open(&path).unwrap();
+        assert!(
+            file3.try_lock_exclusive().is_err(),
+            "exclusive lock should fail while shared lock is held"
+        );
+
+        // Drop view → shared lock released
+        drop(view);
+
+        // Now exclusive lock should succeed
+        let file4 = File::open(&path).unwrap();
+        assert!(file4.try_lock_exclusive().is_ok());
     }
 }

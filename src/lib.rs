@@ -119,6 +119,8 @@
 
 #[cfg(feature = "analytics")]
 pub mod analytics_bridge;
+pub mod checksum;
+pub mod compaction;
 #[cfg(feature = "crypto")]
 pub mod crypto_bridge;
 pub mod memtable;
@@ -128,6 +130,7 @@ pub mod query_engine;
 pub mod sdf_bridge;
 pub mod segment;
 pub mod storage_engine;
+pub mod transaction;
 
 #[cfg(feature = "ffi")]
 pub mod ffi;
@@ -135,11 +138,19 @@ pub mod ffi;
 // Re-exports for convenience
 #[cfg(feature = "analytics")]
 pub use analytics_bridge::{flush_metrics_to_db, metric_key, AnalyticsSink, VARIANTS_PER_METRIC};
+pub use checksum::{
+    Checksum, ChecksumAlgorithm, ChecksummedHeader, ChecksummedReader, ChecksummedWriter,
+};
+pub use compaction::{
+    CompactionConfig, CompactionPlanner, CompactionStrategy, CompactionTask, LevelState,
+    SegmentInfo,
+};
 pub use memtable::{FitConfig, MemTable};
 pub use model::{DataType, FitResult, ModelType};
 pub use query_engine::{Aggregation, QueryBuilder, QueryInterface, QueryResult};
 pub use segment::DataSegment;
 pub use storage_engine::{StorageConfig, StorageEngine, StorageStats};
+pub use transaction::{LockManager, LockMode, MvccStore, TxnError, TxnId, TxnStatus};
 
 use std::io;
 use std::path::Path;

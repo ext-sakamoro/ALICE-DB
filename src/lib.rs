@@ -126,9 +126,11 @@ pub mod crypto_bridge;
 pub mod memtable;
 pub mod model;
 pub mod query_engine;
+pub mod replication;
 #[cfg(feature = "sdf")]
 pub mod sdf_bridge;
 pub mod segment;
+pub mod seqlock;
 pub mod storage_engine;
 pub mod transaction;
 
@@ -148,7 +150,11 @@ pub use compaction::{
 pub use memtable::{FitConfig, MemTable};
 pub use model::{DataType, FitResult, ModelType};
 pub use query_engine::{Aggregation, QueryBuilder, QueryInterface, QueryResult};
+pub use replication::{
+    Command, LogEntry, LogIndex, NodeId, RaftNode, ReplicationError, Role, Term,
+};
 pub use segment::DataSegment;
+pub use seqlock::{OptimisticError, OptimisticLock, OptimisticTxn, SeqLock, Version};
 pub use storage_engine::{StorageConfig, StorageEngine, StorageStats};
 pub use transaction::{LockManager, LockMode, MvccStore, TxnError, TxnId, TxnStatus};
 

@@ -89,7 +89,7 @@ impl EncryptedDB {
 
     /// Get the encryption key (for key rotation).
     #[must_use]
-    pub fn key(&self) -> &Key {
+    pub const fn key(&self) -> &Key {
         &self.key
     }
 }

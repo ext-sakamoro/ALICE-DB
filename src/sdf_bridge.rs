@@ -47,15 +47,17 @@ pub struct MortonCode(pub u32);
 
 impl MortonCode {
     #[inline]
-    pub fn encode(x: u8, y: u8, z: u8) -> Self {
+    #[must_use]
+    pub const fn encode(x: u8, y: u8, z: u8) -> Self {
         let code = MORTON_SPREAD_LUT[x as usize]
             | (MORTON_SPREAD_LUT[y as usize] << 1)
             | (MORTON_SPREAD_LUT[z as usize] << 2);
-        MortonCode(code)
+        Self(code)
     }
 
     #[inline]
-    pub fn decode(self) -> (u8, u8, u8) {
+    #[must_use]
+    pub const fn decode(self) -> (u8, u8, u8) {
         let c = self.0;
         let x = MORTON_COMPACT_LUT[(c & 0x1FF) as usize]
             | (MORTON_COMPACT_LUT[((c >> 9) & 0x1FF) as usize] << 3)
@@ -70,6 +72,7 @@ impl MortonCode {
     }
 
     #[inline]
+    #[must_use]
     pub fn from_world(wx: f32, wy: f32, wz: f32, world_min: [f32; 3], world_max: [f32; 3]) -> Self {
         let inv_rx = 1.0 / (world_max[0] - world_min[0]);
         let inv_ry = 1.0 / (world_max[1] - world_min[1]);
@@ -86,15 +89,16 @@ impl MortonCode {
         Self::encode(gx, gy, gz)
     }
 
-    /// Get the Morton code as i64 timestamp for AliceDB storage
-    pub fn as_key(self) -> i64 {
+    /// Get the Morton code as i64 timestamp for `AliceDB` storage
+    #[must_use]
+    pub const fn as_key(self) -> i64 {
         self.0 as i64
     }
 }
 
 /// SDF storage for spatial data
 ///
-/// Wraps AliceDB with Morton-code spatial indexing for SDF coefficients.
+/// Wraps `AliceDB` with Morton-code spatial indexing for SDF coefficients.
 pub struct SdfStorage {
     /// Database for SDF coefficient storage (keyframes)
     keyframe_db: AliceDB,

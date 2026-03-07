@@ -294,8 +294,8 @@ mod tests {
 
     #[test]
     fn seqlock_f32() {
-        let lock = SeqLock::new(3.14f32);
-        assert!((lock.read() - 3.14).abs() < f32::EPSILON);
+        let lock = SeqLock::new(3.125_f32);
+        assert!((lock.read() - 3.125).abs() < f32::EPSILON);
         lock.write(2.71);
         assert!((lock.read() - 2.71).abs() < f32::EPSILON);
     }

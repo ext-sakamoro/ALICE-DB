@@ -58,7 +58,8 @@ pub const VARIANTS_PER_METRIC: u8 = 6;
 /// - Supports timestamps up to ~34 years at 1-second granularity
 /// - Supports up to 16 variants per metric
 #[inline]
-pub fn metric_key(name_hash: u64, timestamp: i64, variant: u8) -> i64 {
+#[must_use]
+pub const fn metric_key(name_hash: u64, timestamp: i64, variant: u8) -> i64 {
     let nh = (name_hash & 0xFFFFF) as i64;
     let ts = timestamp & 0xFF_FFFF_FFFF;
     (nh << 44) | (ts << 4) | (variant as i64)
@@ -152,8 +153,8 @@ pub struct AnalyticsSink<const SLOTS: usize, const QUEUE_SIZE: usize> {
 impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZE> {
     /// Create a new analytics sink.
     ///
-    /// - `db`: An opened AliceDB instance
-    /// - `alpha`: DDSketch relative error parameter (e.g., 0.05 for 5%)
+    /// - `db`: An opened `AliceDB` instance
+    /// - `alpha`: `DDSketch` relative error parameter (e.g., 0.05 for 5%)
     pub fn new(db: AliceDB, alpha: f64) -> Self {
         Self {
             pipeline: MetricPipeline::new(alpha),
@@ -165,7 +166,7 @@ impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZ
     /// Open a new analytics sink with a database at the given path.
     ///
     /// - `path`: Database directory path
-    /// - `alpha`: DDSketch relative error parameter
+    /// - `alpha`: `DDSketch` relative error parameter
     pub fn open(path: &str, alpha: f64) -> io::Result<Self> {
         let db = AliceDB::open(path)?;
         Ok(Self::new(db, alpha))
@@ -200,7 +201,7 @@ impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZ
 
     /// Number of completed flush cycles.
     #[inline]
-    pub fn flush_count(&self) -> u64 {
+    pub const fn flush_count(&self) -> u64 {
         self.flush_count
     }
 }

@@ -767,7 +767,7 @@ impl StorageEngine {
                 alice_crypto::seal(key, &rkyv_bytes)
                     .map_err(|e| io::Error::other(format!("encryption failed: {e:?}")))?
             } else {
-                rkyv_bytes.clone()
+                rkyv_bytes
             };
             #[cfg(not(feature = "crypto"))]
             let bytes_to_write = &rkyv_bytes;

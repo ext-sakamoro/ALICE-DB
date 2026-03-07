@@ -110,7 +110,7 @@ struct DbWrapper {
     db: Mutex<Option<AliceDB>>,
 }
 
-fn agg_from_ffi(agg: AggregationType) -> Aggregation {
+const fn agg_from_ffi(agg: AggregationType) -> Aggregation {
     match agg {
         AggregationType::Sum => Aggregation::Sum,
         AggregationType::Avg => Aggregation::Avg,
@@ -146,7 +146,7 @@ where
 
 /// Get version info
 #[no_mangle]
-pub extern "C" fn alice_db_version() -> VersionInfo {
+pub const extern "C" fn alice_db_version() -> VersionInfo {
     VersionInfo {
         major: 0,
         minor: 1,
@@ -235,7 +235,7 @@ pub unsafe extern "C" fn alice_db_close(handle: DbHandle) -> DbResult {
     // SAFETY: `handle` has been checked non-null. The `# Safety` contract
     // requires this to be a handle returned by `alice_db_open`. We reclaim
     // the `Box` to drop the `DbWrapper` after closing.
-    let wrapper = unsafe { Box::from_raw(handle as *mut DbWrapper) };
+    let wrapper = unsafe { Box::from_raw(handle.cast::<DbWrapper>()) };
     let mut guard = match wrapper.db.lock() {
         Ok(g) => g,
         Err(_) => return DbResult::Unknown,

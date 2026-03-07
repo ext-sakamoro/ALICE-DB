@@ -504,6 +504,29 @@ impl std::fmt::Display for ReplicationError {
 
 impl std::error::Error for ReplicationError {}
 
+// テスト用ヘルパー (propose でムーブを避けるため)
+impl RaftNode {
+    #[cfg(test)]
+    fn clone_for_test(&self) -> Self {
+        Self {
+            id: self.id,
+            role: self.role,
+            state: PersistentState {
+                current_term: self.state.current_term,
+                voted_for: self.state.voted_for,
+                log: self.state.log.clone(),
+            },
+            commit_index: self.commit_index,
+            last_applied: self.last_applied,
+            peers: self.peers.clone(),
+            next_index: self.next_index.clone(),
+            match_index: self.match_index.clone(),
+            votes_received: self.votes_received,
+            leader_id: self.leader_id,
+        }
+    }
+}
+
 // ============================================================================
 // テスト
 // ============================================================================
@@ -745,28 +768,5 @@ mod tests {
             })
             .unwrap();
         assert!(idx.0 > 0);
-    }
-}
-
-// テスト用ヘルパー (propose でムーブを避けるため)
-impl RaftNode {
-    #[cfg(test)]
-    fn clone_for_test(&self) -> Self {
-        Self {
-            id: self.id,
-            role: self.role,
-            state: PersistentState {
-                current_term: self.state.current_term,
-                voted_for: self.state.voted_for,
-                log: self.state.log.clone(),
-            },
-            commit_index: self.commit_index,
-            last_applied: self.last_applied,
-            peers: self.peers.clone(),
-            next_index: self.next_index.clone(),
-            match_index: self.match_index.clone(),
-            votes_received: self.votes_received,
-            leader_id: self.leader_id,
-        }
     }
 }

@@ -5,7 +5,6 @@ edition = "2021"
 license = "AGPL-3.0-only"
 authors = ["Moroya Sakamoto"]
 description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
-license-file = "LICENSE"
 publish = false
 repository = "https://github.com/ext-sakamoro/ALICE-DB"
 keywords = ["database", "compression", "procedural-generation", "time-series"]

@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "alice-db"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "alice-analytics",
  "alice-crypto",
@@ -88,6 +88,7 @@ dependencies = [
  "clap",
  "flate2",
  "lzma-rs",
+ "memmap2",
  "rand",
  "rand_chacha",
  "rayon",

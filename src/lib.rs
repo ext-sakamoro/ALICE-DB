@@ -48,6 +48,42 @@
 //!     .execute()?;
 //! ```
 //!
+//! # Quick Start — Blob key-value store (v0.2.0-alpha.1)
+//!
+//! Alongside the time-series API, ALICE-DB now exposes a general
+//! byte-keyed blob store. Values that cross the 200-byte threshold and
+//! that meaningfully shrink under zlib are transparently compressed via
+//! ALICE-Zip; short and high-entropy values are stored raw.
+//!
+//! ```rust,ignore
+//! use alice_db::AliceDB;
+//!
+//! let db = AliceDB::open("./my_data")?;
+//!
+//! // Store an opaque blob keyed by arbitrary bytes.
+//! db.put_blob(b"stub-42", b"todo!(\"implement decode_frame\")")?;
+//!
+//! // Exact lookup.
+//! assert_eq!(
+//!     db.get_blob(b"stub-42")?,
+//!     Some(b"todo!(\"implement decode_frame\")".to_vec())
+//! );
+//!
+//! // Prefix scan returns matching keys in ascending byte order.
+//! db.put_blob(b"stub-01", b"…")?;
+//! db.put_blob(b"stub-99", b"…")?;
+//! let stubs = db.scan_blob_prefix(b"stub-")?;
+//! assert_eq!(stubs.len(), 3);
+//!
+//! // Deletion is immediate (alpha-1 stores a tombstone; alpha-3 will
+//! // physically remove during compaction).
+//! db.delete_blob(b"stub-42");
+//! assert_eq!(db.get_blob(b"stub-42")?, None);
+//! ```
+//!
+//! Alpha-1 keeps blobs in memory only; WAL persistence lands in alpha-2.
+//! See `docs/EXPANSION_PROPOSAL.md` for the roadmap.
+//!
 //! # Quick Start (Python)
 //!
 //! ```python
@@ -119,6 +155,7 @@
 
 #[cfg(feature = "analytics")]
 pub mod analytics_bridge;
+pub mod blob;
 pub mod checksum;
 pub mod compaction;
 #[cfg(feature = "crypto")]
@@ -167,6 +204,10 @@ use std::path::Path;
 /// Provides a simple API for insert, query, and management operations.
 pub struct AliceDB {
     engine: StorageEngine,
+    /// v0.2.0-alpha.1: general blob key-value store shared alongside the
+    /// time-series engine. Backed by [`blob::BlobStorage`] (`Arc`-shared
+    /// internally so clones are cheap and safe to hand across threads).
+    blob: blob::BlobStorage,
 }
 
 impl AliceDB {
@@ -179,7 +220,10 @@ impl AliceDB {
     /// Returns an error if the storage engine cannot be opened at the given path.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let engine = StorageEngine::open(path)?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            blob: blob::BlobStorage::new(),
+        })
     }
 
     /// Open with custom configuration
@@ -189,7 +233,10 @@ impl AliceDB {
     /// Returns an error if the storage engine cannot be initialized with the given config.
     pub fn with_config(config: StorageConfig) -> io::Result<Self> {
         let engine = StorageEngine::new(config)?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            blob: blob::BlobStorage::new(),
+        })
     }
 
     /// Insert a single value
@@ -269,6 +316,73 @@ impl AliceDB {
     /// Get database statistics
     pub fn stats(&self) -> StorageStats {
         self.engine.stats()
+    }
+
+    // === v0.2.0-alpha.1: general blob key-value store ===
+
+    /// Insert or overwrite a blob keyed by opaque bytes.
+    ///
+    /// Values whose length ≥ [`blob::COMPRESS_THRESHOLD_BYTES`] and that
+    /// compress meaningfully are stored via ALICE-Zip zlib; other values
+    /// are stored raw. The choice is transparent — `get_blob` always
+    /// yields the original bytes.
+    ///
+    /// # Errors
+    /// Returns an `io::Error` if the compression path bails unexpectedly.
+    /// Alpha-1 keeps everything in memory; durability lands in alpha-2.
+    pub fn put_blob(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        self.blob.put(key, value)
+    }
+
+    /// Look up a blob by exact key.
+    ///
+    /// Returns `Ok(None)` for missing keys and for keys explicitly
+    /// tombstoned via `delete_blob` — the caller never observes
+    /// tombstones.
+    ///
+    /// # Errors
+    /// Returns an `io::Error` if a stored payload cannot be
+    /// decompressed (indicates on-disk corruption once persistence lands
+    /// in alpha-2; unreachable in alpha-1's in-memory path).
+    pub fn get_blob(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.blob.get(key)
+    }
+
+    /// Enumerate every live blob whose key starts with `prefix`.
+    ///
+    /// Returns `(key, value)` pairs in ascending byte-lex order. Passing
+    /// an empty prefix walks the whole store. Tombstoned keys are
+    /// skipped.
+    ///
+    /// # Errors
+    /// Returns an `io::Error` if any encountered payload fails to
+    /// decompress (see `get_blob`).
+    pub fn scan_blob_prefix(&self, prefix: &[u8]) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.blob.scan_prefix(prefix)
+    }
+
+    /// Mark a blob as deleted.
+    ///
+    /// The entry becomes invisible to `get_blob` and `scan_blob_prefix`
+    /// immediately. Alpha-1 stores an in-memory tombstone; alpha-3 will
+    /// physically remove the record during compaction. Deleting a
+    /// non-existent key is a no-op.
+    pub fn delete_blob(&self, key: &[u8]) {
+        self.blob.delete(key);
+    }
+
+    /// Number of live blobs currently in the store.
+    ///
+    /// Tombstones are excluded from the count.
+    #[must_use]
+    pub fn blob_len(&self) -> usize {
+        self.blob.len()
+    }
+
+    /// Whether the blob store contains any live entries.
+    #[must_use]
+    pub fn blob_is_empty(&self) -> bool {
+        self.blob.is_empty()
     }
 
     /// Close the database

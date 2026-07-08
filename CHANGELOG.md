@@ -2,6 +2,33 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [0.2.0-alpha.9] - 2026-07-08
+
+Downstream-consumability fix — no runtime changes.
+
+### Changed
+
+- `alice_core` (the ALICE-Zip compression crate) is now a `git` dep on
+  `https://github.com/ext-sakamoro/ALICE-Zip` instead of a
+  `../ALICE-Zip/libalice` path dep. Consumers that pull `alice-db`
+  from GitHub (e.g. `alice-tracker-alicedb`) can now resolve the
+  transitive dep without needing a sibling ALICE-Zip checkout.
+- A workspace-level `[patch."https://github.com/ext-sakamoro/ALICE-Zip"]`
+  block redirects the git URL back to the local `../ALICE-Zip/libalice`
+  path when the sibling checkout exists, so in-tree development still
+  gets the live ALICE-Zip bytes.
+
+Same pattern ALICE-CodeTracker adopted in its v0.4.0 shift from path
+to git (`4daa0ef` — "fix(ci): resolve alice-zip via git dep instead of
+local path").
+
+### Backward compatibility
+
+- No code, on-disk format, or API changes.
+- Every alpha.8 test continues to pass unchanged (263 tests green).
+- Consumers already on alpha.8 who build in-tree see identical bytes
+  because the patch block resolves back to the same path dep.
+
 ## [0.2.0-alpha.8] - 2026-07-08
 
 α-3.3b-3 subset: `SSTable` format v3 with tombstone-carrying records, closing the `FlushMode::Append` delete-doesn't-persist limitation carried since v0.2.0-alpha.5. Companion change: `scan_blob_prefix` is now a `BinaryHeap` k-way merge with priority-ordered newest-wins semantics.

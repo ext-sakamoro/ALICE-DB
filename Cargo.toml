@@ -1,6 +1,6 @@
 [package]
 name = "alice-db"
-version = "0.2.0-alpha.8"
+version = "0.2.0-alpha.9"
 edition = "2021"
 license = "AGPL-3.0-only"
 authors = ["Moroya Sakamoto <sakamoro@alicelaw.net>"]
@@ -15,8 +15,13 @@ name = "alice_db"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# ALICE-Zip core (local path)
-alice_core = { package = "alice-zip", path = "../ALICE-Zip/libalice" }
+# ALICE-Zip core. Fetched from GitHub so downstream consumers (e.g.
+# `alice-tracker-alicedb`) can resolve the dep without a sibling
+# ALICE-Zip checkout. In-tree dev overrides this via the workspace-level
+# `[patch]` block below (path takes precedence when the sibling checkout
+# exists). Same pattern ALICE-CodeTracker adopted in its v0.4.0 shift
+# from path to git.
+alice_core = { package = "alice-zip", git = "https://github.com/ext-sakamoro/ALICE-Zip" }
 
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.7", features = ["validation", "std"] }
@@ -95,3 +100,10 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 debug = false
+
+# In-tree developer override. When a sibling ALICE-Zip checkout exists
+# at `../ALICE-Zip/libalice`, cargo uses that instead of the git fetch
+# above. Downstream consumers (which don't clone ALICE-Zip) fall
+# through to the git dep and see published bytes.
+[patch."https://github.com/ext-sakamoro/ALICE-Zip"]
+alice-zip = { path = "../ALICE-Zip/libalice" }

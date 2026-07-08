@@ -35,6 +35,7 @@ use parking_lot::RwLock;
 
 use crate::blob_sstable::{
     enumerate_sstables, max_sstable_seq, sstable_filename_for_seq, BlobSstable, FlushMode,
+    LoadedSstable,
 };
 use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
 
@@ -170,7 +171,16 @@ pub fn should_compress(value: &[u8]) -> bool {
 ///   replay the log to reconstruct prior state.
 #[derive(Debug, Clone, Default)]
 pub struct BlobStorage {
-    inner: Arc<RwLock<BTreeMap<Vec<u8>, BlobValue>>>,
+    /// Post-flush live diff: recently-written entries not yet materialised
+    /// into an `SSTable`. Reads consult this before falling back to the
+    /// on-disk `SSTables`. Tombstones live here to mask keys carried by
+    /// older `SSTables` (see the `flush_to_sstable` docs for the tombstone
+    /// lifetime story).
+    memtable: Arc<RwLock<BTreeMap<Vec<u8>, BlobValue>>>,
+    /// On-disk `SSTables` currently loaded via mmap, in **newest-first**
+    /// order so `get` can iterate and return as soon as any file
+    /// resolves the key.
+    sstables: Arc<RwLock<Vec<Arc<LoadedSstable>>>>,
     /// Optional durable WAL. `None` means the store is in-memory only.
     wal: Option<Arc<BlobWal>>,
     /// Path of the canonical single-`SSTable` produced by
@@ -253,29 +263,28 @@ impl BlobStorage {
             .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
         let wal = BlobWal::open_with_policy(&wal_path, config.sync_policy)?;
 
-        let mut map: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
-
-        // Load every SSTable currently on disk, in sequence order (oldest
-        // first). This covers both the α-3.2a single-file layout (only
-        // `blob.sst` present, seq=0) and the α-3.3 append layout
-        // (`blob-000001.sst`, `blob-000002.sst`, …).
+        // Load every SSTable currently on disk via mmap. `enumerate_sstables`
+        // returns them oldest → newest by sequence; we reverse so the
+        // list is newest-first (matching read-path priority).
+        let mut sstables_oldest_first: Vec<Arc<LoadedSstable>> = Vec::new();
         for sst_path in enumerate_sstables(&dir)? {
-            if let Some(sst) = BlobSstable::open(&sst_path)? {
-                for (key, value) in sst.into_records() {
-                    // Later SSTables win over earlier ones (higher seq is
-                    // newer). `BTreeMap::insert` overwrites naturally.
-                    map.insert(key, value);
-                }
+            if let Some(sst) = LoadedSstable::open_mmap(&sst_path)? {
+                sstables_oldest_first.push(Arc::new(sst));
             }
         }
-        // Replay the WAL on top so any post-flush mutations are visible.
+        sstables_oldest_first.reverse();
+        let sstables_newest_first = sstables_oldest_first;
+
+        // Replay the WAL into the memtable. Reads see WAL state on top of
+        // the mmap'd SSTables.
+        let mut memtable: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
         for record in wal.replay()? {
             match record {
                 WalRecord::Put(key, value) => {
-                    map.insert(key, value);
+                    memtable.insert(key, value);
                 }
                 WalRecord::Delete(key) => {
-                    map.insert(key, BlobValue::Tombstone);
+                    memtable.insert(key, BlobValue::Tombstone);
                 }
             }
         }
@@ -285,7 +294,8 @@ impl BlobStorage {
         let next_seq = max_sstable_seq(&dir)?.map_or(1, |s| s.saturating_add(1));
 
         Ok(Self {
-            inner: Arc::new(RwLock::new(map)),
+            memtable: Arc::new(RwLock::new(memtable)),
+            sstables: Arc::new(RwLock::new(sstables_newest_first)),
             wal: Some(Arc::new(wal)),
             sstable_path: Some(sstable_path),
             wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
@@ -349,54 +359,79 @@ impl BlobStorage {
             return Ok(());
         };
 
-        // Snapshot the current live state (α-3.3a keeps a single unified
-        // in-memory `BTreeMap`, so both flush modes see the same view).
-        let guard = self.inner.read();
-        let entries: Vec<(Vec<u8>, BlobValue)> = guard
-            .iter()
-            .filter_map(|(k, v)| {
-                if matches!(v, BlobValue::Tombstone) {
-                    None
-                } else {
-                    Some((k.clone(), v.clone()))
-                }
-            })
-            .collect();
-        drop(guard);
-
-        let target_path = match self.flush_mode {
-            FlushMode::Overwrite => sstable_path.clone(),
+        match self.flush_mode {
+            FlushMode::Overwrite => {
+                // Overwrite mode: fold memtable + every mmap'd SSTable
+                // into one new `blob.sst`, replace the sstable list,
+                // clear memtable, truncate WAL. Semantically identical
+                // to `compact_all_sstables`; we route through the shared
+                // helper.
+                self.compact_all_sstables()
+            }
             FlushMode::Append => {
-                // Reserve the next sequence number atomically so that
-                // concurrent flushes never collide (today the WAL lock
-                // serialises them, but the counter is still guarded so
-                // future concurrency does not silently break).
-                let mut seq_guard = self.next_sstable_seq.lock();
-                let seq = *seq_guard;
-                *seq_guard = seq.saturating_add(1);
-                drop(seq_guard);
+                // Append mode: memtable's non-tombstone entries become a
+                // new sequentially-numbered SSTable. Existing SSTables
+                // stay untouched.
+                let memtable = self.memtable.read();
+                let entries: Vec<(Vec<u8>, BlobValue)> = memtable
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        if matches!(v, BlobValue::Tombstone) {
+                            None
+                        } else {
+                            Some((k.clone(), v.clone()))
+                        }
+                    })
+                    .collect();
+                drop(memtable);
 
+                // Reserve the next sequence number under the counter
+                // lock so concurrent flushes never collide.
                 let dir = sstable_path
                     .parent()
                     .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
-                dir.join(sstable_filename_for_seq(seq))
+                let target_path = {
+                    let mut seq_guard = self.next_sstable_seq.lock();
+                    let seq = *seq_guard;
+                    *seq_guard = seq.saturating_add(1);
+                    dir.join(sstable_filename_for_seq(seq))
+                };
+
+                BlobSstable::write_from_iter(
+                    &target_path,
+                    entries.iter().map(|(k, v)| (k.as_slice(), v)),
+                )?;
+
+                // Load the new SSTable and prepend it to the list
+                // (newest-first order).
+                let new_sst = LoadedSstable::open_mmap(&target_path)?.ok_or_else(|| {
+                    io::Error::other("newly-written sstable disappeared before it could be loaded")
+                })?;
+                {
+                    let mut sstables = self.sstables.write();
+                    sstables.insert(0, Arc::new(new_sst));
+                }
+
+                // Truncate the WAL. Tombstones are then pruned from the
+                // memtable — this matches v0.2.0-alpha.5 semantics.
+                //
+                // Known limitation (documented in CHANGELOG): under
+                // `FlushMode::Append`, a `delete` followed by a flush and
+                // then a process restart can resurrect the key from an
+                // older SSTable, because the SSTable format cannot store
+                // tombstones. Callers who need durable deletes under
+                // `Append` should invoke `compact_all_sstables` (which
+                // materialises tombstones by rewriting every SSTable) or
+                // switch to `FlushMode::Overwrite`. A proper fix lands
+                // in α-3.3b-3 alongside a tombstone-carrying SSTable
+                // format extension.
+                wal.flush()?;
+                wal.truncate()?;
+                let mut memtable = self.memtable.write();
+                memtable.retain(|_, v| !matches!(v, BlobValue::Tombstone));
+                Ok(())
             }
-        };
-
-        BlobSstable::write_from_iter(&target_path, entries.iter().map(|(k, v)| (k.as_slice(), v)))?;
-
-        // After the SSTable is durably in place we can safely truncate
-        // the WAL. Physical removal of tombstones happens implicitly:
-        // the SSTable write filtered them out and the WAL is about to
-        // be empty.
-        wal.flush()?;
-        wal.truncate()?;
-
-        // Prune tombstones from the in-memory map so future scans do
-        // not re-check them.
-        let mut guard = self.inner.write();
-        guard.retain(|_, v| !matches!(v, BlobValue::Tombstone));
-        Ok(())
+        }
     }
 
     /// Merge every `SSTable` currently on disk (plus the in-memory
@@ -430,19 +465,35 @@ impl BlobStorage {
             .parent()
             .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
 
-        // Snapshot live state.
-        let guard = self.inner.read();
-        let entries: Vec<(Vec<u8>, BlobValue)> = guard
-            .iter()
-            .filter_map(|(k, v)| {
-                if matches!(v, BlobValue::Tombstone) {
-                    None
-                } else {
-                    Some((k.clone(), v.clone()))
+        // Fold everything — old SSTables (oldest → newest) and the
+        // memtable — into a single sorted view. Later inserts overwrite
+        // earlier ones, so tombstones in the memtable correctly mask any
+        // stored values inherited from older SSTables.
+        let mut merged: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
+        {
+            let sstables = self.sstables.read();
+            // `sstables` is newest-first; iterate `rev()` to visit
+            // oldest first so newer values overwrite.
+            for sst in sstables.iter().rev() {
+                for (key, value) in sst.iter() {
+                    merged.insert(key.to_vec(), value);
                 }
-            })
+            }
+        }
+        {
+            let memtable = self.memtable.read();
+            for (key, value) in memtable.iter() {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+
+        // Filter tombstones for the merged on-disk file. Because we
+        // rewrite every SSTable in this operation, any tombstoned key
+        // is truly gone: no older file carries a stale value.
+        let entries: Vec<(Vec<u8>, BlobValue)> = merged
+            .into_iter()
+            .filter(|(_, v)| !matches!(v, BlobValue::Tombstone))
             .collect();
-        drop(guard);
 
         // Enumerate what is currently on disk so we know which files to
         // delete after the merged SSTable is safely in place.
@@ -462,25 +513,47 @@ impl BlobStorage {
 
         BlobSstable::write_from_iter(&target_path, entries.iter().map(|(k, v)| (k.as_slice(), v)))?;
 
-        // Best-effort delete of the older SSTables. A failure here does
-        // not corrupt the store — the merged SSTable already contains
-        // everything — but we still propagate so the caller can
-        // investigate a stuck stale file.
+        // Load the newly-written SSTable via mmap. This becomes the only
+        // entry in the sstable list after the swap below.
+        let new_sst = LoadedSstable::open_mmap(&target_path)?.ok_or_else(|| {
+            io::Error::other("compacted sstable disappeared before it could be loaded")
+        })?;
+
+        // Swap the sstable list first — this drops our references to the
+        // old `LoadedSstable`s and, once no reader still holds a clone,
+        // releases their mmaps.
+        {
+            let mut sstables = self.sstables.write();
+            *sstables = vec![Arc::new(new_sst)];
+        }
+
+        // Now delete the old files. On Unix `unlink` while a mmap is
+        // still held elsewhere is safe (the inode outlives the
+        // directory entry). On Windows a still-mapped file cannot be
+        // deleted — in that case we swallow the error rather than
+        // leaving the caller with a half-compacted store; the next
+        // compaction absorbs the stragglers.
         for old_path in existing {
             if old_path == target_path {
                 continue;
             }
-            std::fs::remove_file(&old_path)?;
+            if let Err(e) = std::fs::remove_file(&old_path) {
+                if e.kind() != io::ErrorKind::NotFound {
+                    log::warn!(
+                        "compact_all_sstables: could not remove stale sstable {}: {e}",
+                        old_path.display()
+                    );
+                }
+            }
         }
 
-        // Reset the WAL: its post-flush diff is now folded into the
-        // merged SSTable.
+        // Reset the WAL: the merged SSTable now owns every live value.
         wal.flush()?;
         wal.truncate()?;
 
-        // Prune tombstones from the in-memory map.
-        let mut guard = self.inner.write();
-        guard.retain(|_, v| !matches!(v, BlobValue::Tombstone));
+        // Clear the memtable — everything landed in the merged SSTable
+        // (or was tombstoned away).
+        self.memtable.write().clear();
         Ok(())
     }
 
@@ -493,13 +566,10 @@ impl BlobStorage {
     /// # Errors
     /// Propagates the underlying directory scan error.
     pub fn sstable_count(&self) -> io::Result<usize> {
-        let Some(sstable_path) = &self.sstable_path else {
-            return Ok(0);
-        };
-        let dir = sstable_path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
-        Ok(enumerate_sstables(dir)?.len())
+        // v0.2.0-alpha.7: the authoritative count is the loaded list.
+        // We keep the same signature for callers still passing through
+        // `io::Result` — an in-memory read cannot fail.
+        Ok(self.sstables.read().len())
     }
 
     /// Whether the durable variant has crossed its auto-flush threshold
@@ -532,7 +602,7 @@ impl BlobStorage {
             wal.append_put(key, &stored)?;
         }
         {
-            let mut guard = self.inner.write();
+            let mut guard = self.memtable.write();
             guard.insert(key.to_vec(), stored);
         }
         self.maybe_auto_flush()?;
@@ -549,15 +619,37 @@ impl BlobStorage {
     /// decompressed (which would indicate on-disk corruption once
     /// persistence lands in alpha-2).
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let guard = self.inner.read();
-        match guard.get(key) {
-            None | Some(BlobValue::Tombstone) => Ok(None),
-            Some(BlobValue::Raw(bytes)) => Ok(Some(bytes.clone())),
-            Some(BlobValue::Compressed(bytes)) => {
-                let raw = zlib_decompress(bytes)?;
-                Ok(Some(raw))
+        // Memtable first: it always carries the freshest state, including
+        // tombstones that must mask any older SSTable value.
+        {
+            let memtable = self.memtable.read();
+            if let Some(v) = memtable.get(key) {
+                return match v {
+                    BlobValue::Tombstone => Ok(None),
+                    BlobValue::Raw(bytes) => Ok(Some(bytes.clone())),
+                    BlobValue::Compressed(bytes) => {
+                        let raw = zlib_decompress(bytes)?;
+                        Ok(Some(raw))
+                    }
+                };
             }
         }
+        // SSTable fallback. Snapshot the list (cheap: `Vec<Arc<...>>`)
+        // so we don't hold the read lock while probing each file.
+        let sstables: Vec<Arc<LoadedSstable>> = self.sstables.read().clone();
+        for sst in &sstables {
+            if let Some(v) = sst.get(key) {
+                return match v {
+                    BlobValue::Tombstone => Ok(None),
+                    BlobValue::Raw(bytes) => Ok(Some(bytes)),
+                    BlobValue::Compressed(bytes) => {
+                        let raw = zlib_decompress(&bytes)?;
+                        Ok(Some(raw))
+                    }
+                };
+            }
+        }
+        Ok(None)
     }
 
     /// Walk every live key whose bytes start with `prefix`.
@@ -570,21 +662,34 @@ impl BlobStorage {
     /// Returns `io::Error` if any encountered `Compressed` payload fails
     /// to decompress (see [`Self::get`]).
     pub fn scan_prefix(&self, prefix: &[u8]) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let guard = self.inner.read();
-        // BTreeMap's range API needs a slice-of-bytes comparator that
-        // treats every key ≥ prefix as a candidate; we stop as soon as
-        // the key no longer starts with the prefix.
-        let mut out = Vec::new();
-        for (key, val) in guard.range(prefix.to_vec()..) {
-            if !key.starts_with(prefix) {
-                break;
+        // Merge every source with newest-wins semantics: iterate old
+        // SSTables first, then newer ones, finally the memtable — each
+        // insert into the accumulator overwrites the previous view.
+        let mut merged: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
+        let sstables: Vec<Arc<LoadedSstable>> = self.sstables.read().clone();
+        for sst in sstables.iter().rev() {
+            for (key, value) in sst.iter_prefix(prefix) {
+                merged.insert(key.to_vec(), value);
             }
-            match val {
+        }
+        {
+            let memtable = self.memtable.read();
+            for (key, value) in memtable.range(prefix.to_vec()..) {
+                if !key.starts_with(prefix) {
+                    break;
+                }
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+        // Materialise live entries; skip tombstones.
+        let mut out = Vec::with_capacity(merged.len());
+        for (key, value) in merged {
+            match value {
                 BlobValue::Tombstone => {}
-                BlobValue::Raw(bytes) => out.push((key.clone(), bytes.clone())),
+                BlobValue::Raw(bytes) => out.push((key, bytes)),
                 BlobValue::Compressed(bytes) => {
-                    let raw = zlib_decompress(bytes)?;
-                    out.push((key.clone(), raw));
+                    let raw = zlib_decompress(&bytes)?;
+                    out.push((key, raw));
                 }
             }
         }
@@ -611,7 +716,7 @@ impl BlobStorage {
             wal.append_delete(key)?;
         }
         {
-            let mut guard = self.inner.write();
+            let mut guard = self.memtable.write();
             guard.insert(key.to_vec(), BlobValue::Tombstone);
         }
         self.maybe_auto_flush()?;
@@ -643,16 +748,29 @@ impl BlobStorage {
 
     /// Number of *live* keys (excludes tombstones).
     ///
-    /// Cheap-ish (walks every entry) — for perf-critical paths you would
-    /// keep a live-key counter alongside the map, but alpha-1 favours
-    /// simplicity.
+    /// Walks every entry — memtable keys and each mmap'd `SSTable`'s
+    /// offset index — resolving newest-wins. For perf-critical paths a
+    /// live-key counter would be cheaper, but the alpha semantics
+    /// favour simplicity and honest tombstone handling.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner
-            .read()
-            .values()
-            .filter(|v| !matches!(v, BlobValue::Tombstone))
-            .count()
+        // Reuse the scan_prefix merge logic, but stay in-memory:
+        // materialising values is what makes scan_prefix expensive, so
+        // do the merge without decompressing.
+        let mut seen: BTreeMap<Vec<u8>, bool> = BTreeMap::new(); // key → is_live
+        let sstables: Vec<Arc<LoadedSstable>> = self.sstables.read().clone();
+        for sst in sstables.iter().rev() {
+            for (key, value) in sst.iter() {
+                seen.insert(key.to_vec(), !matches!(value, BlobValue::Tombstone));
+            }
+        }
+        {
+            let memtable = self.memtable.read();
+            for (key, value) in memtable.iter() {
+                seen.insert(key.clone(), !matches!(value, BlobValue::Tombstone));
+            }
+        }
+        seen.values().filter(|live| **live).count()
     }
 
     /// Whether there are any live keys.

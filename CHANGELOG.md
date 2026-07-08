@@ -2,6 +2,78 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [0.2.0-alpha.7] - 2026-07-08
+
+α-3.3b-2 subset: on-disk read fast path via memory-mapped SSTables and the `BlobStorage` architectural split.
+
+`BlobStorage` now separates its state into a `memtable` (recent writes replayed from the WAL) and a newest-first `Vec<Arc<LoadedSstable>>` (settled state, held via mmap). Reads consult the memtable first, then fall through to each SSTable in order, using the Bloom filter shipped in v0.2.0-alpha.6 to reject absent keys before touching the mmap. Only key offsets stay in memory; the value bytes remain on disk until a read actually copies them out. Existing databases (α-3.2a onwards) open unchanged.
+
+### Added
+
+- `blob_sstable::LoadedSstable` — mmap-backed `SSTable` reader.
+  - `open_mmap(path)` — walks the records section once to verify per-record CRCs and build the key → offset index. Missing files return `Ok(None)` so a fresh directory opens cleanly.
+  - `get(key) -> Option<BlobValue>` — Bloom-guarded point lookup; returns `None` without touching the index when the Bloom rejects. On a hit, copies the value bytes out of the mmap into an owned `BlobValue`.
+  - `iter()` / `iter_prefix(prefix)` — ordered walks used by compaction and `scan_blob_prefix`.
+  - `bloom()` / `path()` / `len()` / `is_empty()` accessors.
+  - `Debug` impl surfaces the summary (path, mmap length, Bloom presence, record count) without dumping the raw bytes.
+- `blob_sstable::build_offset_index` — internal helper that walks the records slice and returns a `BTreeMap<Vec<u8>, RecordOffset>` (private).
+- 6 unit tests in `src/blob_sstable.rs::tests` covering: raw value round-trip, compressed value round-trip verbatim, absent-key resolution, full-range iteration, prefix-range iteration, legacy v1 open path (hand-written to alpha.5 bytes).
+- 8 integration tests in `tests/blob_mmap_read.rs`:
+  - Flush + reopen serves both `Raw` and `Compressed` values through the mmap path.
+  - `FlushMode::Append` multi-`SSTable` reads return newest-wins across two flushes.
+  - A memtable tombstone masks a live value in an older `SSTable`, both live and after reopen (WAL replay).
+  - Bloom-guarded absent keys return `None` (functional coverage; a perf benchmark is out of scope for α-3.3b-2).
+  - `scan_blob_prefix` merges memtable and multiple `SSTables` with newest-wins semantics and stable ascending order.
+  - `compact_all_blob_sstables` after four `Append` flushes folds every live key into one file, all values preserved.
+  - 8-thread concurrent read/write against a shared store observes a consistent view.
+- `memmap2 = "0.9"` dependency (was already declared for a future migration; now actively used).
+
+### Changed
+
+- `BlobStorage` fields:
+  - `inner: Arc<RwLock<BTreeMap<Vec<u8>, BlobValue>>>` (which held every live value in memory) is replaced by
+  - `memtable: Arc<RwLock<BTreeMap<Vec<u8>, BlobValue>>>` (WAL-replayed diff since the last flush) and
+  - `sstables: Arc<RwLock<Vec<Arc<LoadedSstable>>>>` (newest-first).
+- `BlobStorage::open_with_config`: enumerates every `SSTable` on disk, opens each via `LoadedSstable::open_mmap`, and reverses the list to newest-first. The WAL replay populates only the memtable — record values living inside `SSTables` stay on disk until a read touches them.
+- `BlobStorage::get`: memtable first, then iterates `sstables` newest-first calling `LoadedSstable::get`. Snapshots the sstable list (a cheap `Vec<Arc<_>>` clone) so the read lock does not span the probes.
+- `BlobStorage::put` / `BlobStorage::delete`: mutate the memtable only. The WAL still records every change so a reopen reconstructs the same memtable state.
+- `BlobStorage::flush_to_sstable`:
+  - `FlushMode::Overwrite`: delegates to `compact_all_sstables` — the merged file replaces every prior `SSTable` and the memtable clears.
+  - `FlushMode::Append`: writes the memtable's non-tombstone entries to a fresh sequentially-numbered `SSTable` file, mmap-opens it, prepends it to the sstable list, prunes tombstones from the memtable, and truncates the WAL. Semantically identical to v0.2.0-alpha.5.
+- `BlobStorage::compact_all_sstables`: folds every mmap'd `SSTable` (walking `sstables` in `rev()` for oldest-first order) plus the memtable into a merged `BTreeMap`. Tombstones drop out safely because we rewrite every file in one operation. The new file is written to a `.tmp` sibling, atomically renamed into place, mmap-opened, and swapped into `sstables` **before** the older files are unlinked. On Unix an unlink under a live mmap is safe; on Windows the deletion may fail and is logged rather than propagated, leaving stragglers to be absorbed by the next compaction.
+- `BlobStorage::scan_prefix`: merges memtable and every `SSTable`'s prefix window into a `BTreeMap` accumulator with newest-wins semantics (`sstables.iter().rev()` for oldest-first, then memtable on top). Materialises values (decompressing where needed) and skips tombstones.
+- `BlobStorage::len`: reuses the merge approach — walks every source without decompressing and counts non-tombstoned survivors.
+- `BlobStorage::sstable_count`: now reports the length of the loaded list (`self.sstables.read().len()`) rather than a directory scan; the signature retains `io::Result` so callers do not need to change.
+
+### Backward compatibility
+
+- Existing databases (v0.2.0-alpha.2 through v0.2.0-alpha.6) open unchanged. `LoadedSstable::open_mmap` accepts both format v1 and v2 files.
+- `FlushMode::Overwrite` (the default) preserves v0.2.0-alpha.5 semantics exactly: every flush rewrites `blob.sst` and clears the memtable.
+- `FlushMode::Append` preserves v0.2.0-alpha.5 semantics including the pre-existing limitation that a delete-then-flush cycle cannot survive a process restart (see below). No new tombstone bug is introduced.
+- Public API (`AliceDB::open` / `open_with_blob_config` / `get_blob` / `put_blob` / `delete_blob` / `scan_blob_prefix` / `flush_blobs` / `compact_blob_sstable` / `compact_all_blob_sstables`) is source-compatible.
+
+### Known limitation carried forward
+
+`FlushMode::Append` cannot persist tombstones across a process restart: the `SSTable` format has no tombstone record, so a `delete_blob` followed by a flush and then a reopen may resurrect the value from an older `SSTable`. Same behaviour as v0.2.0-alpha.5. Workarounds:
+
+- Call `compact_all_blob_sstables` after any batch of deletes under `Append`; the merged file drops tombstoned keys.
+- Switch to `FlushMode::Overwrite` (the default) if durable deletes are required.
+
+α-3.3b-3 lifts this limitation by extending the `SSTable` format to carry tombstone records.
+
+### Design decisions
+
+- **Key offsets in memory, values on disk**: the `LoadedSstable` index holds one entry per record (`BTreeMap<Vec<u8>, RecordOffset>`), where `RecordOffset` is 32 bytes. Value bytes stay in the mmap and are copied into an owned `BlobValue` only when a read materialises them. For workloads with large values (e.g. compressed `Stub` JSON in ALICE-CodeTracker) this is the significant memory savings.
+- **Newest-first sstable list**: reads walk the list in stored order and return as soon as any `SSTable` resolves the key. Compaction visits the list in `rev()` for merge semantics. Keeping newest-first matches the read-path priority and avoids repeated reversals.
+- **Bloom-guarded lookup at the SSTable layer**: `LoadedSstable::get` probes the Bloom first (when present) before touching the index. For v1 files (`bloom() == None`) the Bloom is treated as always-accept — correctness is preserved, no acceleration.
+- **`Arc<LoadedSstable>` for cheap sharing**: `get` clones the sstable list under the read lock and drops the lock before probing. Cloning a `Vec<Arc<_>>` is O(N) reference bumps, cheap enough for the alpha and future concurrency stories.
+- **Swap-then-delete for compaction**: the merged file is materialised and swapped into `sstables` before old files are unlinked. On Unix this is safe against live mmaps (the inode outlives the directory entry). On Windows a still-mapped file cannot be deleted; we log and continue rather than fail the whole compaction, and the next compaction absorbs the leftovers.
+- **`scan_prefix` accumulates into a `BTreeMap`**: correct newest-wins semantics with tombstone masking, at the cost of O(N log N) merging. α-3.3b-3 introduces a sorted-run merge iterator that avoids the accumulator.
+
+### α-3 roadmap remainder
+
+- **α-3.3b-3**: sparse index / prefix trie inside each `SSTable` for accelerated `scan_blob_prefix` + tombstone-carrying `SSTable` format extension to lift the `Append`-mode delete limitation.
+
 ## [0.2.0-alpha.6] - 2026-07-08
 
 α-3.3b-1 subset: durable investment for the on-disk read fast path. Introduces `SSTable` format v2 with an embedded Bloom filter per file and a longer 24-byte footer (`records_size` + `bloom_size` + magic). Format v1 files written by v0.2.0-alpha.2 through v0.2.0-alpha.5 continue to open and are transparently upgraded to v2 on the next flush or compaction. The read path itself continues to load records into memory — mmap + Bloom-guarded point lookups land in α-3.3b-2.

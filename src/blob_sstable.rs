@@ -53,9 +53,12 @@
 //! across the same filesystem, so a reader never observes a partially
 //! written `SSTable`.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+use memmap2::Mmap;
 
 use crate::blob::BlobValue;
 use crate::bloom::BloomFilter;
@@ -513,6 +516,409 @@ impl BlobSstable {
     }
 }
 
+/// Byte offset + shape of a single record within a mmap'd `SSTable`.
+///
+/// Introduced in v0.2.0-alpha.7 alongside [`LoadedSstable`]. The offset
+/// index lives in memory (one entry per record) but the *value bytes*
+/// stay on disk, faulted in only when a read actually touches them.
+#[derive(Debug, Clone, Copy)]
+struct RecordOffset {
+    /// Byte offset of the record header (`key_len`, `value_len`,
+    /// `value_kind`) within the mmap.
+    record_start: u64,
+    key_len: u32,
+    value_len: u32,
+    value_kind: u8,
+}
+
+/// An `SSTable` loaded via memory-mapped I/O.
+///
+/// Introduced in v0.2.0-alpha.7 as the read-path replacement for
+/// [`BlobSstable`]'s materialised `records` vector. The mmap keeps the
+/// file's bytes accessible without pulling them all into the process
+/// heap; only an in-memory key → offset index is retained.
+///
+/// Point lookups consult the Bloom filter first (when present), so keys
+/// that were never inserted are rejected without touching the index —
+/// let alone the mmap. When the key survives the Bloom, the index
+/// resolves it to an offset in one `BTreeMap` lookup and the value
+/// bytes are copied out of the mmap on demand.
+///
+/// # Legacy v1 files
+///
+/// Files written by v0.2.0-alpha.2 through v0.2.0-alpha.5 have no Bloom
+/// section; [`LoadedSstable::bloom`] reports `None` and lookups fall
+/// through to the index directly (correct, just not accelerated).
+pub struct LoadedSstable {
+    path: PathBuf,
+    /// Kept alive for the lifetime of the mmap. Some platforms release
+    /// the file handle when it drops; the mmap must outlive it.
+    _file: File,
+    mmap: Mmap,
+    bloom: Option<BloomFilter>,
+    /// Key → offset within the mmap. Built once at open time.
+    index: BTreeMap<Vec<u8>, RecordOffset>,
+}
+
+impl std::fmt::Debug for LoadedSstable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `mmap`, `_file`, and `index` are intentionally elided — the
+        // raw bytes and the offset table are noisy in log output. We
+        // still surface the summary that matters (file size, record
+        // count, whether the file carries a Bloom).
+        f.debug_struct("LoadedSstable")
+            .field("path", &self.path)
+            .field("mmap_len", &self.mmap.len())
+            .field("bloom", &self.bloom.is_some())
+            .field("records", &self.index.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LoadedSstable {
+    /// Open the `SSTable` at `path` via mmap. Returns `Ok(None)` if the
+    /// file does not exist (mirrors [`BlobSstable::open`] semantics).
+    ///
+    /// The whole records section is walked once to verify per-record
+    /// CRCs and build the offset index. After that point-lookups touch
+    /// only the mmap + the `BTreeMap`.
+    ///
+    /// # Errors
+    /// Returns an `io::Error` if the file exists but is malformed
+    /// (header/footer magic, section sizes, per-record CRC, or Bloom
+    /// section CRC). The file is treated as corrupt in that case.
+    ///
+    /// # Safety
+    /// The mmap is created via `memmap2::Mmap::map`, which relies on the
+    /// underlying file *not* being modified while mapped. Our writer
+    /// path uses `.tmp` + `rename`, so the file we mmap is never
+    /// mutated in place. Concurrent readers within the same process
+    /// observe consistent bytes; the file may safely be unlinked while
+    /// still mapped on Unix.
+    pub fn open_mmap(path: impl AsRef<Path>) -> io::Result<Option<Self>> {
+        let path = path.as_ref().to_path_buf();
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        // SAFETY: see the `Safety` note above.
+        let mmap = unsafe { Mmap::map(&file)? };
+
+        if mmap.len() < HEADER_LEN + FOOTER_LEN_V1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sstable is smaller than the fixed header + v1 footer",
+            ));
+        }
+        if &mmap[0..8] != HEADER_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sstable header magic mismatch",
+            ));
+        }
+        let version = u32::from_le_bytes([mmap[8], mmap[9], mmap[10], mmap[11]]);
+        let num_records = u64::from_le_bytes([
+            mmap[12], mmap[13], mmap[14], mmap[15], mmap[16], mmap[17], mmap[18], mmap[19],
+        ]);
+
+        let (records_end, bloom) = match version {
+            FORMAT_VERSION_V1 => {
+                let footer_start = mmap.len() - FOOTER_LEN_V1;
+                if &mmap[footer_start + 8..] != FOOTER_MAGIC {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v1 footer magic mismatch",
+                    ));
+                }
+                let footer_records_size = u64::from_le_bytes([
+                    mmap[footer_start],
+                    mmap[footer_start + 1],
+                    mmap[footer_start + 2],
+                    mmap[footer_start + 3],
+                    mmap[footer_start + 4],
+                    mmap[footer_start + 5],
+                    mmap[footer_start + 6],
+                    mmap[footer_start + 7],
+                ]);
+                let end = HEADER_LEN
+                    + usize::try_from(footer_records_size).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "sstable v1 records_size exceeds usize",
+                        )
+                    })?;
+                if end != footer_start {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v1 records_size does not match section length",
+                    ));
+                }
+                (end, None)
+            }
+            FORMAT_VERSION_V2 => {
+                if mmap.len() < HEADER_LEN + FOOTER_LEN_V2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v2 is smaller than the fixed header + v2 footer",
+                    ));
+                }
+                let footer_start = mmap.len() - FOOTER_LEN_V2;
+                if &mmap[footer_start + 16..] != FOOTER_MAGIC {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v2 footer magic mismatch",
+                    ));
+                }
+                let footer_records_size = u64::from_le_bytes([
+                    mmap[footer_start],
+                    mmap[footer_start + 1],
+                    mmap[footer_start + 2],
+                    mmap[footer_start + 3],
+                    mmap[footer_start + 4],
+                    mmap[footer_start + 5],
+                    mmap[footer_start + 6],
+                    mmap[footer_start + 7],
+                ]);
+                let footer_bloom_size = u64::from_le_bytes([
+                    mmap[footer_start + 8],
+                    mmap[footer_start + 9],
+                    mmap[footer_start + 10],
+                    mmap[footer_start + 11],
+                    mmap[footer_start + 12],
+                    mmap[footer_start + 13],
+                    mmap[footer_start + 14],
+                    mmap[footer_start + 15],
+                ]);
+                let records_end = HEADER_LEN
+                    + usize::try_from(footer_records_size).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "sstable v2 records_size exceeds usize",
+                        )
+                    })?;
+                let bloom_end = records_end
+                    + usize::try_from(footer_bloom_size).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "sstable v2 bloom_size exceeds usize",
+                        )
+                    })?;
+                if bloom_end != footer_start {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v2 section sizes do not add up to file size",
+                    ));
+                }
+                let bloom = parse_bloom(&mmap[records_end..bloom_end])?;
+                (records_end, Some(bloom))
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unsupported sstable version {other}; expected 1 or 2"),
+                ));
+            }
+        };
+
+        let index = build_offset_index(&mmap[HEADER_LEN..records_end], num_records, HEADER_LEN)?;
+
+        Ok(Some(Self {
+            path,
+            _file: file,
+            mmap,
+            bloom,
+            index,
+        }))
+    }
+
+    /// On-disk location of the file backing this `SSTable`.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The Bloom filter attached to this file, if any (format v2+).
+    #[must_use]
+    pub fn bloom(&self) -> Option<&BloomFilter> {
+        self.bloom.as_ref()
+    }
+
+    /// Number of records in the file.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    /// Whether the file contains any records.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.index.is_empty()
+    }
+
+    /// Point lookup by key.
+    ///
+    /// Consults the Bloom filter first (when present); on a Bloom miss
+    /// returns `None` without touching the index. On a Bloom hit
+    /// resolves the offset in one `BTreeMap` lookup and copies the
+    /// value bytes out of the mmap.
+    ///
+    /// Returns `None` for absent keys. `SSTable` files never store
+    /// [`BlobValue::Tombstone`], so `Some(...)` always carries a live
+    /// value.
+    #[must_use]
+    pub fn get(&self, key: &[u8]) -> Option<BlobValue> {
+        if let Some(bloom) = &self.bloom {
+            if !bloom.contains(key) {
+                return None;
+            }
+        }
+        let offset = self.index.get(key)?;
+        self.value_at(offset)
+    }
+
+    /// Iterate every `(key, value)` pair in ascending key order.
+    ///
+    /// Value bytes are copied out of the mmap into an owned `BlobValue`
+    /// per element (unavoidable while `BlobValue` owns its bytes; a
+    /// future iteration could expose a borrowing view).
+    pub fn iter(&self) -> impl Iterator<Item = (&[u8], BlobValue)> + '_ {
+        self.index
+            .iter()
+            .filter_map(|(k, offset)| self.value_at(offset).map(|v| (k.as_slice(), v)))
+    }
+
+    /// Iterate `(key, value)` pairs whose keys start with `prefix`, in
+    /// ascending key order.
+    pub fn iter_prefix<'a>(
+        &'a self,
+        prefix: &'a [u8],
+    ) -> impl Iterator<Item = (&'a [u8], BlobValue)> + 'a {
+        self.index
+            .range(prefix.to_vec()..)
+            .take_while(move |(k, _)| k.starts_with(prefix))
+            .filter_map(move |(k, offset)| self.value_at(offset).map(|v| (k.as_slice(), v)))
+    }
+
+    /// Materialise the [`BlobValue`] at `offset` by copying bytes out
+    /// of the mmap. Returns `None` only if the stored `value_kind` byte
+    /// is unrecognised (which would indicate on-disk corruption not
+    /// caught at open time — should not happen in practice).
+    fn value_at(&self, offset: &RecordOffset) -> Option<BlobValue> {
+        let record_start = usize::try_from(offset.record_start).ok()?;
+        let key_len = offset.key_len as usize;
+        let value_len = offset.value_len as usize;
+        let value_start = record_start.checked_add(9)?.checked_add(key_len)?;
+        let value_end = value_start.checked_add(value_len)?;
+        if value_end > self.mmap.len() {
+            return None;
+        }
+        let bytes = self.mmap[value_start..value_end].to_vec();
+        match offset.value_kind {
+            VALUE_KIND_RAW => Some(BlobValue::Raw(bytes)),
+            VALUE_KIND_COMPRESSED => Some(BlobValue::Compressed(bytes)),
+            _ => None,
+        }
+    }
+}
+
+/// Walk the records section once, verifying each per-record CRC and
+/// recording each key's byte offset within the mmap.
+///
+/// `records_slice` is the raw records section (between the fixed header
+/// and the footer / Bloom section). `records_slice_file_offset` is the
+/// offset of `records_slice[0]` within the mmap so the returned
+/// [`RecordOffset::record_start`] values are file-relative.
+fn build_offset_index(
+    records_slice: &[u8],
+    expected_count: u64,
+    records_slice_file_offset: usize,
+) -> io::Result<BTreeMap<Vec<u8>, RecordOffset>> {
+    let mut out: BTreeMap<Vec<u8>, RecordOffset> = BTreeMap::new();
+    let mut cursor = 0_usize;
+    let mut seen: u64 = 0;
+    while cursor < records_slice.len() {
+        if records_slice.len() - cursor < 9 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sstable record header truncated",
+            ));
+        }
+        let key_len = u32::from_le_bytes([
+            records_slice[cursor],
+            records_slice[cursor + 1],
+            records_slice[cursor + 2],
+            records_slice[cursor + 3],
+        ]);
+        let value_len = u32::from_le_bytes([
+            records_slice[cursor + 4],
+            records_slice[cursor + 5],
+            records_slice[cursor + 6],
+            records_slice[cursor + 7],
+        ]);
+        let value_kind = records_slice[cursor + 8];
+
+        let key_end = cursor + 9 + key_len as usize;
+        let payload_end = key_end + value_len as usize;
+        let crc_end = payload_end + 4;
+        if crc_end > records_slice.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sstable record body truncated",
+            ));
+        }
+
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&records_slice[cursor..payload_end]);
+        let expected_crc = u32::from_le_bytes([
+            records_slice[payload_end],
+            records_slice[payload_end + 1],
+            records_slice[payload_end + 2],
+            records_slice[payload_end + 3],
+        ]);
+        if hasher.finalize() != expected_crc {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sstable record CRC32C mismatch",
+            ));
+        }
+        if value_kind != VALUE_KIND_RAW && value_kind != VALUE_KIND_COMPRESSED {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("sstable record has unknown value_kind {value_kind:#04x}"),
+            ));
+        }
+
+        let key = records_slice[cursor + 9..key_end].to_vec();
+        let record_start_file = records_slice_file_offset + cursor;
+        let record_start = u64::try_from(record_start_file).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sstable record offset exceeds u64",
+            )
+        })?;
+        out.insert(
+            key,
+            RecordOffset {
+                record_start,
+                key_len,
+                value_len,
+                value_kind,
+            },
+        );
+        seen += 1;
+        cursor = crc_end;
+    }
+    if seen != expected_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("sstable header claims {expected_count} records but body contains {seen}"),
+        ));
+    }
+    Ok(out)
+}
+
 /// Emit the byte encoding of one record plus its trailing CRC32C.
 fn serialise_record(key: &[u8], value_kind: u8, value: &[u8]) -> io::Result<Vec<u8>> {
     let key_len = u32::try_from(key.len())
@@ -858,5 +1264,151 @@ mod tests {
             (80..=100).contains(&size),
             "expected a v2 file in the 80..=100 byte range; got {size}"
         );
+    }
+
+    // ---------- LoadedSstable (v0.2.0-alpha.7) ----------
+
+    /// Write a small v2 file with a single Raw record, mmap-open it, and
+    /// probe a couple of round-trip properties.
+    #[test]
+    fn loaded_sstable_opens_and_serves_raw_value_via_mmap() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+        let raw = BlobValue::Raw(b"hello".to_vec());
+        BlobSstable::write_from_iter(&path, [(b"greeting".as_slice(), &raw)]).unwrap();
+
+        let sst = LoadedSstable::open_mmap(&path).unwrap().unwrap();
+        assert_eq!(sst.len(), 1);
+        assert!(!sst.is_empty());
+        assert_eq!(sst.path(), path.as_path());
+        assert!(sst.bloom().is_some(), "v2 files must expose a Bloom");
+
+        match sst.get(b"greeting").expect("key must resolve") {
+            BlobValue::Raw(bytes) => assert_eq!(bytes, b"hello"),
+            other => panic!("expected Raw, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loaded_sstable_serves_compressed_value_bytes_verbatim() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+        // Any bytes work; the SSTable does not decompress them.
+        let compressed_bytes = vec![0x78, 0x9c, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x02];
+        let comp = BlobValue::Compressed(compressed_bytes.clone());
+        BlobSstable::write_from_iter(&path, [(b"payload".as_slice(), &comp)]).unwrap();
+
+        let sst = LoadedSstable::open_mmap(&path).unwrap().unwrap();
+        match sst.get(b"payload").unwrap() {
+            BlobValue::Compressed(bytes) => assert_eq!(bytes, compressed_bytes),
+            other => panic!("expected Compressed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loaded_sstable_reports_none_for_absent_key() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+        let raw = BlobValue::Raw(b"v".to_vec());
+        BlobSstable::write_from_iter(&path, [(b"present".as_slice(), &raw)]).unwrap();
+        let sst = LoadedSstable::open_mmap(&path).unwrap().unwrap();
+        assert!(
+            sst.get(b"absent").is_none(),
+            "absent key must resolve to None"
+        );
+    }
+
+    #[test]
+    fn loaded_sstable_iter_returns_all_records_in_sorted_order() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+        let a = BlobValue::Raw(b"1".to_vec());
+        let b = BlobValue::Raw(b"2".to_vec());
+        let c = BlobValue::Raw(b"3".to_vec());
+        // Keys must be sorted for write_from_iter to accept them; here
+        // they already are.
+        BlobSstable::write_from_iter(
+            &path,
+            [
+                (b"alpha".as_slice(), &a),
+                (b"beta".as_slice(), &b),
+                (b"gamma".as_slice(), &c),
+            ],
+        )
+        .unwrap();
+        let sst = LoadedSstable::open_mmap(&path).unwrap().unwrap();
+
+        let observed: Vec<(Vec<u8>, BlobValue)> =
+            sst.iter().map(|(k, v)| (k.to_vec(), v)).collect();
+        assert_eq!(observed.len(), 3);
+        assert_eq!(observed[0].0, b"alpha");
+        assert_eq!(observed[1].0, b"beta");
+        assert_eq!(observed[2].0, b"gamma");
+    }
+
+    #[test]
+    fn loaded_sstable_iter_prefix_walks_matching_keys_only() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+        let v = BlobValue::Raw(b"x".to_vec());
+        BlobSstable::write_from_iter(
+            &path,
+            [
+                (b"cat".as_slice(), &v),
+                (b"catamaran".as_slice(), &v),
+                (b"category".as_slice(), &v),
+                (b"dog".as_slice(), &v),
+            ],
+        )
+        .unwrap();
+        let sst = LoadedSstable::open_mmap(&path).unwrap().unwrap();
+
+        let observed: Vec<Vec<u8>> = sst.iter_prefix(b"cat").map(|(k, _)| k.to_vec()).collect();
+        assert_eq!(
+            observed,
+            vec![b"cat".to_vec(), b"catamaran".to_vec(), b"category".to_vec()],
+        );
+    }
+
+    /// Format v1 file (hand-written to alpha.5 bytes) must open through
+    /// the mmap path with `bloom() == None` and still surface records.
+    #[test]
+    fn loaded_sstable_opens_legacy_v1_files_without_bloom() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+
+        // Manually assemble a v1 file with one Raw record.
+        let key = b"legacy";
+        let value = b"value";
+        let mut record: Vec<u8> = Vec::new();
+        record.extend_from_slice(&u32::to_le_bytes(u32::try_from(key.len()).unwrap()));
+        record.extend_from_slice(&u32::to_le_bytes(u32::try_from(value.len()).unwrap()));
+        record.push(0x00); // Raw
+        record.extend_from_slice(key);
+        record.extend_from_slice(value);
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&record);
+        let crc = hasher.finalize();
+        record.extend_from_slice(&crc.to_le_bytes());
+
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(HEADER_MAGIC).unwrap();
+        file.write_all(&FORMAT_VERSION_V1.to_le_bytes()).unwrap();
+        file.write_all(&1_u64.to_le_bytes()).unwrap();
+        file.write_all(&0_u32.to_le_bytes()).unwrap();
+        file.write_all(&record).unwrap();
+        let records_size = u64::try_from(record.len()).unwrap();
+        file.write_all(&records_size.to_le_bytes()).unwrap();
+        file.write_all(FOOTER_MAGIC).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        let sst = LoadedSstable::open_mmap(&path).unwrap().unwrap();
+        assert!(sst.bloom().is_none(), "v1 files predate the Bloom section");
+        assert_eq!(sst.len(), 1);
+        match sst.get(b"legacy").unwrap() {
+            BlobValue::Raw(bytes) => assert_eq!(bytes, b"value"),
+            other => panic!("expected Raw, got {other:?}"),
+        }
     }
 }

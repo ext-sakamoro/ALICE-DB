@@ -2,6 +2,42 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [0.2.0-beta.1] - 2026-07-08
+
+**β entry** for the `0.2.x` line. No code changes vs. `0.2.0-alpha.9`; runtime bytes are identical.
+
+### Meaning of β
+
+The α-3 blob KV programme is feature-complete as of `0.2.0-alpha.8` and dep-consumable as of `0.2.0-alpha.9`:
+
+- Durable WAL (`0.2.0-alpha.2`).
+- Batched fsync + cross-process advisory file lock (`0.2.0-alpha.3`).
+- `SSTable` format v1 + WAL rotation (`0.2.0-alpha.4`).
+- Multi-`SSTable` layout with full-merge compaction (`0.2.0-alpha.5`).
+- Format v2 with per-`SSTable` Bloom filter (`0.2.0-alpha.6`).
+- mmap read fast path + `LoadedSstable` / `BlobStorage` architectural split (`0.2.0-alpha.7`).
+- Format v3 with persistent tombstones + heap-based `scan_prefix` (`0.2.0-alpha.8`).
+- `alice_core` transitive dep switched to git for downstream consumability (`0.2.0-alpha.9`).
+
+The β line is a **stability + performance focus**. Explicit β commitments:
+
+- **No new public API surface**. Every new symbol lands in `1.0` or later.
+- **No new on-disk format**. `SSTable` format v3 and the WAL record layout are the format contract for the `0.2.x` line. Any future format work ships as a separate `0.3.x` line, with a documented one-way migration path from v3.
+- **Bug fixes ship as `0.2.0-beta.2` / `0.2.0-beta.3` / …**. A patch bump means "same API and format, safer implementation".
+- **Perf work is welcome under β**. Better mmap advise, streaming k-way merge, per-op benchmarks, etc. — as long as the observable semantics stay the same.
+- **`1.0.0`** ships after the β line proves stable against a downstream workload (currently ALICE-CodeTracker's `alice-tracker-alicedb` backend is the primary consumer).
+
+### Changed
+
+- `Cargo.toml`: `version = "0.2.0-alpha.9"` → `version = "0.2.0-beta.1"`.
+- No other changes.
+
+### Backward compatibility
+
+- Every `0.2.0-alpha.9` test continues to pass unchanged (263 tests green).
+- `SSTable` format v3 databases roundtrip identically.
+- Downstream consumers (e.g. ALICE-CodeTracker's `alice-tracker-alicedb`) can point their git tag from `v0.2.0-alpha.9` to `v0.2.0-beta.1` with no other changes.
+
 ## [0.2.0-alpha.9] - 2026-07-08
 
 Downstream-consumability fix — no runtime changes.

@@ -1,6 +1,6 @@
 [package]
 name = "alice-db"
-version = "0.2.0-alpha.9"
+version = "0.2.0-beta.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 authors = ["Moroya Sakamoto <sakamoro@alicelaw.net>"]

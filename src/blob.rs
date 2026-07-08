@@ -25,7 +25,8 @@
 //! callers who need durability today should manually flush via a WAL of
 //! their own or wait for those releases.
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -369,19 +370,16 @@ impl BlobStorage {
                 self.compact_all_sstables()
             }
             FlushMode::Append => {
-                // Append mode: memtable's non-tombstone entries become a
-                // new sequentially-numbered SSTable. Existing SSTables
-                // stay untouched.
+                // Append mode: the whole memtable — including
+                // tombstones — moves into a new sequentially-numbered
+                // SSTable so deletes survive a process restart. As of
+                // v0.2.0-alpha.8 (`FORMAT_VERSION_V3`), tombstones are
+                // a first-class record kind and no longer need to live
+                // only in the WAL / memtable.
                 let memtable = self.memtable.read();
                 let entries: Vec<(Vec<u8>, BlobValue)> = memtable
                     .iter()
-                    .filter_map(|(k, v)| {
-                        if matches!(v, BlobValue::Tombstone) {
-                            None
-                        } else {
-                            Some((k.clone(), v.clone()))
-                        }
-                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 drop(memtable);
 
@@ -412,23 +410,14 @@ impl BlobStorage {
                     sstables.insert(0, Arc::new(new_sst));
                 }
 
-                // Truncate the WAL. Tombstones are then pruned from the
-                // memtable — this matches v0.2.0-alpha.5 semantics.
-                //
-                // Known limitation (documented in CHANGELOG): under
-                // `FlushMode::Append`, a `delete` followed by a flush and
-                // then a process restart can resurrect the key from an
-                // older SSTable, because the SSTable format cannot store
-                // tombstones. Callers who need durable deletes under
-                // `Append` should invoke `compact_all_sstables` (which
-                // materialises tombstones by rewriting every SSTable) or
-                // switch to `FlushMode::Overwrite`. A proper fix lands
-                // in α-3.3b-3 alongside a tombstone-carrying SSTable
-                // format extension.
+                // Truncate the WAL and clear the memtable — every
+                // record now lives in the SSTable. On reopen the WAL
+                // replay finds nothing to add and reads route through
+                // the sstable path, where tombstones mask stale values
+                // from older SSTables just as they did in memory.
                 wal.flush()?;
                 wal.truncate()?;
-                let mut memtable = self.memtable.write();
-                memtable.retain(|_, v| !matches!(v, BlobValue::Tombstone));
+                self.memtable.write().clear();
                 Ok(())
             }
         }
@@ -661,35 +650,98 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if any encountered `Compressed` payload fails
     /// to decompress (see [`Self::get`]).
+    /// # Panics
+    /// Never in production. The internal merge asserts an invariant
+    /// (`sources[i].advance()` yields `Some` whenever the heap holds a
+    /// reference to `sources[i]`) via `expect`; a violation would mean
+    /// the heap grew out of sync with the source vector, which the
+    /// implementation forbids by construction.
     pub fn scan_prefix(&self, prefix: &[u8]) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        // Merge every source with newest-wins semantics: iterate old
-        // SSTables first, then newer ones, finally the memtable — each
-        // insert into the accumulator overwrites the previous view.
-        let mut merged: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
+        // v0.2.0-alpha.8: k-way merge across the memtable and every
+        // mmap'd SSTable, priority-ordered so that the newest observation
+        // of each key wins. The heap holds one `(key, source_index)`
+        // entry per non-empty source; each pop advances the winning
+        // source and, if any other source peeks at the same key, drains
+        // it too (older duplicates are masked).
+        //
+        // Priority ordering (lower index = higher priority):
+        //   0                → memtable
+        //   1 ..= sstables.len() → sstables in newest-first order
+        //     (sstables[0] is priority 1, oldest is priority N)
+        //
+        // Wrapping key and priority in `Reverse` turns the max-heap
+        // into a min-heap on `(key, priority)`.
         let sstables: Vec<Arc<LoadedSstable>> = self.sstables.read().clone();
-        for sst in sstables.iter().rev() {
-            for (key, value) in sst.iter_prefix(prefix) {
-                merged.insert(key.to_vec(), value);
-            }
-        }
+
+        // Collect each source into a sorted Vec of `(key, value)` pairs
+        // upfront. Streaming from the mmap directly across the heap
+        // would fight the borrow checker; a materialised Vec keeps the
+        // merge simple. The keys are already sorted (memtable via
+        // BTreeMap range, sstables via BTreeMap index) so no per-source
+        // sort is needed.
+        let mut sources: Vec<SortedRun> = Vec::with_capacity(1 + sstables.len());
         {
             let memtable = self.memtable.read();
-            for (key, value) in memtable.range(prefix.to_vec()..) {
-                if !key.starts_with(prefix) {
-                    break;
-                }
-                merged.insert(key.clone(), value.clone());
+            let memtable_entries: Vec<(Vec<u8>, BlobValue)> = memtable
+                .range(prefix.to_vec()..)
+                .take_while(|(k, _)| k.starts_with(prefix))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            sources.push(SortedRun {
+                entries: memtable_entries,
+                pos: 0,
+            });
+        }
+        for sst in &sstables {
+            let sst_entries: Vec<(Vec<u8>, BlobValue)> = sst
+                .iter_prefix(prefix)
+                .map(|(k, v)| (k.to_vec(), v))
+                .collect();
+            sources.push(SortedRun {
+                entries: sst_entries,
+                pos: 0,
+            });
+        }
+
+        // Seed the heap with the first key from each non-empty source.
+        let mut heap: BinaryHeap<(Reverse<Vec<u8>>, Reverse<usize>)> = BinaryHeap::new();
+        for (idx, source) in sources.iter().enumerate() {
+            if let Some(peek) = source.peek() {
+                heap.push((Reverse(peek.0.clone()), Reverse(idx)));
             }
         }
-        // Materialise live entries; skip tombstones.
-        let mut out = Vec::with_capacity(merged.len());
-        for (key, value) in merged {
-            match value {
+
+        let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        while let Some((Reverse(winner_key), Reverse(winner_idx))) = heap.pop() {
+            // Consume the winning source's entry.
+            let winner_value = sources[winner_idx]
+                .advance()
+                .expect("heap entry must reference a live source position")
+                .1;
+            if let Some(next) = sources[winner_idx].peek() {
+                heap.push((Reverse(next.0.clone()), Reverse(winner_idx)));
+            }
+
+            // Drain any other sources peeking at the same key — they
+            // are older observations that the winner masks.
+            while let Some(&(Reverse(ref top_key), Reverse(top_idx))) = heap.peek() {
+                if top_key != &winner_key {
+                    break;
+                }
+                heap.pop();
+                sources[top_idx].advance();
+                if let Some(next) = sources[top_idx].peek() {
+                    heap.push((Reverse(next.0.clone()), Reverse(top_idx)));
+                }
+            }
+
+            // Emit the winner if it is a live value.
+            match winner_value {
                 BlobValue::Tombstone => {}
-                BlobValue::Raw(bytes) => out.push((key, bytes)),
+                BlobValue::Raw(bytes) => out.push((winner_key, bytes)),
                 BlobValue::Compressed(bytes) => {
                     let raw = zlib_decompress(&bytes)?;
-                    out.push((key, raw));
+                    out.push((winner_key, raw));
                 }
             }
         }
@@ -794,6 +846,28 @@ fn sibling_sstable_path(wal_path: &Path) -> PathBuf {
     with_ext.push(".sst");
     sst.set_file_name(with_ext);
     sst
+}
+
+/// A pre-materialised sorted sequence used as one arm of the k-way
+/// merge in [`BlobStorage::scan_prefix`]. Introduced in
+/// v0.2.0-alpha.8. Kept internal because the merge is the only caller.
+struct SortedRun {
+    entries: Vec<(Vec<u8>, BlobValue)>,
+    pos: usize,
+}
+
+impl SortedRun {
+    fn peek(&self) -> Option<&(Vec<u8>, BlobValue)> {
+        self.entries.get(self.pos)
+    }
+
+    fn advance(&mut self) -> Option<(Vec<u8>, BlobValue)> {
+        let out = self.entries.get(self.pos).cloned();
+        if out.is_some() {
+            self.pos += 1;
+        }
+        out
+    }
 }
 
 #[cfg(test)]

@@ -71,10 +71,16 @@ const FOOTER_MAGIC: &[u8; 8] = b"ALICEEND";
 /// no Bloom section.
 const FORMAT_VERSION_V1: u32 = 1;
 /// v0.2.0-alpha.6+: header + records + Bloom section + extended footer
-/// (`records_size` + `bloom_size` + magic).
+/// (`records_size` + `bloom_size` + magic). Records only carry live
+/// (Raw / Compressed) values; tombstones are rejected on write.
 const FORMAT_VERSION_V2: u32 = 2;
-/// Every new write stamps this. Readers accept both v1 and v2.
-const CURRENT_VERSION: u32 = FORMAT_VERSION_V2;
+/// v0.2.0-alpha.8+: same file layout as v2, but tombstone records are
+/// accepted (`value_kind = 0x02`, `value_len = 0`) so that Append-mode
+/// deletes survive a process restart. Bloom filter includes every
+/// stored key (tombstones included) so probes still work.
+const FORMAT_VERSION_V3: u32 = 3;
+/// Every new write stamps this. Readers accept v1, v2, and v3.
+const CURRENT_VERSION: u32 = FORMAT_VERSION_V3;
 /// Bytes occupied by the fixed-size header.
 const HEADER_LEN: usize = 24;
 /// Bytes occupied by the v1 footer: `records_size (u64) + magic (8)`.
@@ -85,6 +91,9 @@ const FOOTER_LEN_V2: usize = 24;
 const VALUE_KIND_RAW: u8 = 0x00;
 /// Encoded flag for `BlobValue::Compressed`.
 const VALUE_KIND_COMPRESSED: u8 = 0x01;
+/// Encoded flag for `BlobValue::Tombstone` (v3+). The record still
+/// carries a key + CRC; `value_len` is zero.
+const VALUE_KIND_TOMBSTONE: u8 = 0x02;
 
 /// Prelude of the Bloom section:
 /// `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + crc32c (u32)`.
@@ -274,10 +283,15 @@ impl BlobSstable {
 
     /// Write a new `SSTable` atomically at `path`.
     ///
-    /// `iter` must yield entries in ascending key order and must not
-    /// contain [`BlobValue::Tombstone`] — tombstones are a WAL-only
-    /// concept and are physically dropped at flush time. The caller is
-    /// responsible for filtering them out.
+    /// `iter` must yield entries in ascending key order.
+    ///
+    /// As of v0.2.0-alpha.8 (`FORMAT_VERSION_V3`), [`BlobValue::Tombstone`]
+    /// entries are accepted and persisted as `value_kind = 0x02`
+    /// records with `value_len = 0`. The Bloom filter records every
+    /// key — tombstones included — so probes still work. Older
+    /// alpha releases rejected tombstones on write; callers that
+    /// relied on that check to guard against accidental tombstone
+    /// persistence must filter their inputs themselves.
     ///
     /// # Errors
     /// Returns any underlying I/O error. Failed writes leave the sibling
@@ -300,20 +314,6 @@ impl BlobSstable {
                 "sstable exceeds u64 record count",
             )
         })?;
-
-        // Reject tombstones early with a diagnostic instead of writing a
-        // silently broken file.
-        for (key, value) in &entries {
-            if matches!(value, BlobValue::Tombstone) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "attempted to write tombstone key {:?} to sstable — tombstones are WAL-only",
-                        String::from_utf8_lossy(key)
-                    ),
-                ));
-            }
-        }
 
         let file = OpenOptions::new()
             .write(true)
@@ -338,7 +338,7 @@ impl BlobSstable {
             let (kind, bytes): (u8, &[u8]) = match value {
                 BlobValue::Raw(b) => (VALUE_KIND_RAW, b.as_slice()),
                 BlobValue::Compressed(b) => (VALUE_KIND_COMPRESSED, b.as_slice()),
-                BlobValue::Tombstone => unreachable!("filtered above"),
+                BlobValue::Tombstone => (VALUE_KIND_TOMBSTONE, &[]),
             };
             bloom.insert(key);
             let record = serialise_record(key, kind, bytes)?;
@@ -440,18 +440,23 @@ impl BlobSstable {
                 }
                 (records_slice, None)
             }
-            FORMAT_VERSION_V2 => {
+            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 => {
+                // v2 and v3 share the on-disk layout (header + records
+                // + Bloom + 24-byte footer). Only the record encoding
+                // differs: v3 records may carry `value_kind = 0x02`
+                // (tombstone). `parse_records` reads that unified
+                // encoding.
                 if bytes.len() < HEADER_LEN + FOOTER_LEN_V2 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "sstable v2 is smaller than the fixed header + v2 footer",
+                        "sstable v2/v3 is smaller than the fixed header + footer",
                     ));
                 }
                 let footer_start = bytes.len() - FOOTER_LEN_V2;
                 if &bytes[footer_start + 16..] != FOOTER_MAGIC {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "sstable v2 footer magic mismatch",
+                        "sstable v2/v3 footer magic mismatch",
                     ));
                 }
                 let footer_records_size = u64::from_le_bytes([
@@ -478,20 +483,20 @@ impl BlobSstable {
                     + usize::try_from(footer_records_size).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "sstable v2 records_size exceeds usize",
+                            "sstable v2/v3 records_size exceeds usize",
                         )
                     })?;
                 let bloom_end = records_end
                     + usize::try_from(footer_bloom_size).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "sstable v2 bloom_size exceeds usize",
+                            "sstable v2/v3 bloom_size exceeds usize",
                         )
                     })?;
                 if bloom_end != footer_start {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "sstable v2 section sizes do not add up to file size",
+                        "sstable v2/v3 section sizes do not add up to file size",
                     ));
                 }
                 let records_slice = &bytes[HEADER_LEN..records_end];
@@ -502,7 +507,7 @@ impl BlobSstable {
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("unsupported sstable version {other}; expected 1 or 2"),
+                    format!("unsupported sstable version {other}; expected 1, 2, or 3"),
                 ));
             }
         };
@@ -657,18 +662,20 @@ impl LoadedSstable {
                 }
                 (end, None)
             }
-            FORMAT_VERSION_V2 => {
+            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 => {
+                // v2 and v3 share the on-disk layout — see the matching
+                // branch in `BlobSstable::open` for the full rationale.
                 if mmap.len() < HEADER_LEN + FOOTER_LEN_V2 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "sstable v2 is smaller than the fixed header + v2 footer",
+                        "sstable v2/v3 is smaller than the fixed header + footer",
                     ));
                 }
                 let footer_start = mmap.len() - FOOTER_LEN_V2;
                 if &mmap[footer_start + 16..] != FOOTER_MAGIC {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "sstable v2 footer magic mismatch",
+                        "sstable v2/v3 footer magic mismatch",
                     ));
                 }
                 let footer_records_size = u64::from_le_bytes([
@@ -695,20 +702,20 @@ impl LoadedSstable {
                     + usize::try_from(footer_records_size).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "sstable v2 records_size exceeds usize",
+                            "sstable v2/v3 records_size exceeds usize",
                         )
                     })?;
                 let bloom_end = records_end
                     + usize::try_from(footer_bloom_size).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "sstable v2 bloom_size exceeds usize",
+                            "sstable v2/v3 bloom_size exceeds usize",
                         )
                     })?;
                 if bloom_end != footer_start {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "sstable v2 section sizes do not add up to file size",
+                        "sstable v2/v3 section sizes do not add up to file size",
                     ));
                 }
                 let bloom = parse_bloom(&mmap[records_end..bloom_end])?;
@@ -717,7 +724,7 @@ impl LoadedSstable {
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("unsupported sstable version {other}; expected 1 or 2"),
+                    format!("unsupported sstable version {other}; expected 1, 2, or 3"),
                 ));
             }
         };
@@ -814,6 +821,11 @@ impl LoadedSstable {
         if value_end > self.mmap.len() {
             return None;
         }
+        // Tombstones carry no value bytes; short-circuit before
+        // materialising a slice.
+        if offset.value_kind == VALUE_KIND_TOMBSTONE {
+            return Some(BlobValue::Tombstone);
+        }
         let bytes = self.mmap[value_start..value_end].to_vec();
         match offset.value_kind {
             VALUE_KIND_RAW => Some(BlobValue::Raw(bytes)),
@@ -883,10 +895,20 @@ fn build_offset_index(
                 "sstable record CRC32C mismatch",
             ));
         }
-        if value_kind != VALUE_KIND_RAW && value_kind != VALUE_KIND_COMPRESSED {
+        if value_kind != VALUE_KIND_RAW
+            && value_kind != VALUE_KIND_COMPRESSED
+            && value_kind != VALUE_KIND_TOMBSTONE
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("sstable record has unknown value_kind {value_kind:#04x}"),
+            ));
+        }
+        // Tombstone records must have `value_len = 0`.
+        if value_kind == VALUE_KIND_TOMBSTONE && value_len != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("sstable tombstone record has non-zero value_len {value_len}"),
             ));
         }
 
@@ -1070,6 +1092,15 @@ fn parse_records(bytes: &[u8], expected_count: u64) -> io::Result<Vec<(Vec<u8>, 
         let value = match value_kind {
             VALUE_KIND_RAW => BlobValue::Raw(value_bytes),
             VALUE_KIND_COMPRESSED => BlobValue::Compressed(value_bytes),
+            VALUE_KIND_TOMBSTONE => {
+                if value_len != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("sstable tombstone record has non-zero value_len {value_len}"),
+                    ));
+                }
+                BlobValue::Tombstone
+            }
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -1196,13 +1227,20 @@ mod tests {
         assert_eq!(recs[0].1, &compressed);
     }
 
+    /// v0.2.0-alpha.8 (`FORMAT_VERSION_V3`): tombstones are a
+    /// first-class record kind. This test confirms the write path
+    /// accepts them and the read path surfaces them via
+    /// `BlobValue::Tombstone`.
     #[test]
-    fn write_rejects_tombstone_entries() {
+    fn write_accepts_tombstone_entries_as_v3_records() {
         let tmp = TempDir::new().unwrap();
         let path = sst_path(&tmp);
-        let err = BlobSstable::write_from_iter(&path, [(b"k".as_slice(), &BlobValue::Tombstone)])
-            .expect_err("tombstones are WAL-only");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        BlobSstable::write_from_iter(&path, [(b"k".as_slice(), &BlobValue::Tombstone)]).unwrap();
+        let sst = BlobSstable::open(&path).unwrap().unwrap();
+        let recs: Vec<_> = sst.iter().collect();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].0, b"k");
+        assert!(matches!(recs[0].1, BlobValue::Tombstone));
     }
 
     #[test]

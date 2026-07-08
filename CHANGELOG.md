@@ -2,6 +2,66 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [0.2.0-alpha.8] - 2026-07-08
+
+α-3.3b-3 subset: `SSTable` format v3 with tombstone-carrying records, closing the `FlushMode::Append` delete-doesn't-persist limitation carried since v0.2.0-alpha.5. Companion change: `scan_blob_prefix` is now a `BinaryHeap` k-way merge with priority-ordered newest-wins semantics.
+
+### Added
+
+- `FORMAT_VERSION_V3` (const `3`) and `VALUE_KIND_TOMBSTONE` (`0x02`).
+  - v3 shares the on-disk layout with v2 (header + records + Bloom + 24-byte footer). Only the record encoding differs: tombstone records carry `value_kind = 0x02` and `value_len = 0`. The Bloom filter includes every key — tombstones included — so probes still work.
+- `BlobSstable::write_from_iter` now accepts `BlobValue::Tombstone` entries and persists them as v3 tombstone records. The previous behaviour (reject with `InvalidInput`) applied when the format could not carry them; callers that fed a tombstone in expected an error, so this is technically a source-compatible loosening, not a break.
+- `BlobSstable::open` / `LoadedSstable::open_mmap` accept v3 files (same 24-byte footer as v2) and expose `BlobValue::Tombstone` through `iter()` / `get()`.
+- `LoadedSstable::get` returns `Some(BlobValue::Tombstone)` when the record is a tombstone, so `BlobStorage::get` masks correctly through the existing `Tombstone → Ok(None)` arm.
+- 4 integration tests in `tests/blob_tombstone_persistence.rs`:
+  - `FlushMode::Append` + delete + flush + reopen keeps the key deleted (this is the primary bug the release fixes).
+  - `compact_all_blob_sstables` after a delete under `Append` folds the tombstone out — 1 file, no leftover tombstone.
+  - `FlushMode::Overwrite` delete + reopen regression proof.
+  - `Append` round-trip: put A → flush → delete A → flush → reopen → put A' → flush → reopen returns A'.
+- 5 integration tests in `tests/blob_scan_kway_merge.rs`:
+  - Multi-`SSTable` prefix scan returns sorted, deduped `(key, value)` pairs matching a hand-computed reference.
+  - Memtable tombstone masks an older `SSTable` value.
+  - Newer-`SSTable` tombstone masks an older-`SSTable` value.
+  - Empty prefix → empty result.
+  - Post-reopen (empty memtable) scan still surfaces every live key.
+- Internal `SortedRun` helper in `blob.rs` — a peekable materialised sorted sequence, used as one arm of the k-way merge.
+
+### Changed
+
+- **`FlushMode::Append` now persists tombstones**. Previously, `flush_to_sstable(Append)` filtered tombstones out of the memtable, dropped them from memory, and truncated the WAL — meaning a delete followed by a flush and then a process restart resurrected the key from an older `SSTable`. As of v0.2.0-alpha.8 the whole memtable (including tombstones) is written into the new `SSTable` file. On reopen the tombstone surfaces through the sstable read path and correctly masks any stale value in an older file.
+- `BlobStorage::scan_prefix` is now a k-way `BinaryHeap` merge across the memtable and each mmap'd `SSTable`. The heap is keyed on `(Reverse<Vec<u8>>, Reverse<usize>)` — smaller keys pop first, and within the same key the smaller source index (higher priority) wins. Older duplicates of the same key are drained after each winner emission. Complexity is O(N log R) where R is the number of sources (memtable + sstables). This replaces the O(N log N) `BTreeMap` accumulator used in v0.2.0-alpha.7.
+- Every new `SSTable` write stamps `CURRENT_VERSION = FORMAT_VERSION_V3`. Existing databases from v0.2.0-alpha.2 through v0.2.0-alpha.7 open unchanged (their v1 / v2 files are still readable); the next flush or compaction upgrades their on-disk files to v3, at which point tombstones become persistent.
+- `parse_records` and `build_offset_index` accept `VALUE_KIND_TOMBSTONE` and validate that its `value_len` is zero (fail-loud on corruption).
+- The `expected 1 or 2` diagnostic on unknown version bytes now reads `expected 1, 2, or 3`.
+
+### Backward compatibility
+
+- Databases written by v0.2.0-alpha.2 through v0.2.0-alpha.7 open unchanged. Their `SSTable` files are v1 / v2 and continue to read via the same code paths.
+- New writes are v3. Files that never receive a tombstone are byte-compatible with v2 readers *except for the version stamp* — an alpha.6 or alpha.7 process reading an alpha.8 file would fail with `unsupported sstable version 3`. This is a forward-compat break, not a backward-compat break; alpha.8+ processes read every prior format.
+- Public API (`AliceDB` / `BlobStorage`) is source-compatible. `BlobSstable::write_from_iter` no longer errors on tombstone inputs — this is a source-compatible loosening for the one internal caller.
+- `FlushMode::Overwrite` (the default) has identical semantics to v0.2.0-alpha.7. Only `FlushMode::Append` gains new behaviour (persistent tombstones).
+
+### Design decisions
+
+- **Same layout for v2 and v3**: keeping the 24-byte footer means `LoadedSstable::open_mmap` only needs to branch on the version stamp for the presence of a Bloom section; the offset-index build and Bloom parse are unified. This kept the α-3.3b-3 diff small.
+- **Tombstones inside the Bloom**: keys that ever appeared in this `SSTable` — live or tombstoned — must be probeable, otherwise `get(key)` would fall through to older `SSTables` and see stale data. Including tombstones in the Bloom is a one-line change on the write side.
+- **k-way merge over BTreeMap accumulator**: for scan workloads dominated by a small K (result size) and moderate R (sstable count), `log R` beats `log N`. The heap also gives a natural place to enforce newest-wins priority, whereas the `BTreeMap::insert` approach relied on iteration order.
+- **Materialised `SortedRun` sources**: streaming iterators from `LoadedSstable::iter_prefix` across the heap would fight the borrow checker (each source needs `&self`, but the heap holds them alongside `winner_idx` indices). Collecting each source into a `Vec<(Vec<u8>, BlobValue)>` upfront trades some memory for simplicity; a fully streaming implementation is a future optimisation.
+- **`Append`-mode compaction still drops tombstones**: `compact_all_sstables` merges every source into a `BTreeMap`, so a tombstone in a newer source correctly overrides a value in an older one, and the final `filter(!Tombstone)` drops both. Post-compaction files contain no tombstones — matching the LSM canonical.
+
+### α-3 roadmap
+
+α-3.3b-3 was the last step in the α-3 (blob KV) work. The blob store now supports:
+
+- On-disk read fast path via mmap'd `SSTables` (α-3.3b-2).
+- Bloom-guarded point lookups per `SSTable` (α-3.3b-1).
+- Multi-`SSTable` accumulation and full-merge compaction under `FlushMode::Append` (α-3.3a).
+- Batched fsync policies and cross-process file locks (α-3.1).
+- Durable WAL persistence (α-3.0 / α-2 / α-alpha.2).
+- Persistent tombstones and a heap-based `scan_prefix` (this release).
+
+The α-4 line — starting with the ALICE-CodeTracker `alice-tracker-alicedb` backend, then benchmarks, then a formal β entry — is now unblocked.
+
 ## [0.2.0-alpha.7] - 2026-07-08
 
 α-3.3b-2 subset: on-disk read fast path via memory-mapped SSTables and the `BlobStorage` architectural split.

@@ -33,7 +33,9 @@ use std::sync::Arc;
 use alice_core::compression::{zlib_compress, zlib_decompress};
 use parking_lot::RwLock;
 
-use crate::blob_sstable::BlobSstable;
+use crate::blob_sstable::{
+    enumerate_sstables, max_sstable_seq, sstable_filename_for_seq, BlobSstable, FlushMode,
+};
 use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
 
 /// Default byte threshold above which a subsequent `put` / `delete`
@@ -45,9 +47,15 @@ use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
 /// [`BlobStorage::open_with_config`].
 pub const DEFAULT_WAL_FLUSH_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Default upper bound on the number of `SSTable` files that may
+/// accumulate under `FlushMode::Append` before an auto-compaction runs.
+pub const DEFAULT_MAX_SSTABLES_BEFORE_COMPACTION: usize = 4;
+
 /// Persistence configuration for the blob store.
 ///
 /// Introduced in v0.2.0-alpha.4 alongside `SSTable`-backed flushes.
+/// `flush_mode` / `max_sstables_before_compaction` arrived in
+/// v0.2.0-alpha.5 for the multi-`SSTable` path.
 #[derive(Debug, Clone, Copy)]
 pub struct BlobStorageConfig {
     /// See [`crate::blob_wal::SyncPolicy`].
@@ -57,6 +65,15 @@ pub struct BlobStorageConfig {
     /// a fresh `SSTable` and truncates the WAL. Set to `u64::MAX` to
     /// disable auto-flush entirely.
     pub wal_flush_threshold_bytes: u64,
+    /// How flushes interact with existing `SSTable` files. See
+    /// [`FlushMode`].
+    pub flush_mode: FlushMode,
+    /// Under `FlushMode::Append`, an auto-compaction kicks in once the
+    /// number of `SSTable` files reaches this value. Ignored for
+    /// `FlushMode::Overwrite`. Set to `usize::MAX` to disable
+    /// auto-compaction and rely on manual
+    /// [`BlobStorage::compact_all_sstables`] calls instead.
+    pub max_sstables_before_compaction: usize,
 }
 
 impl Default for BlobStorageConfig {
@@ -64,6 +81,8 @@ impl Default for BlobStorageConfig {
         Self {
             sync_policy: SyncPolicy::default(),
             wal_flush_threshold_bytes: DEFAULT_WAL_FLUSH_THRESHOLD_BYTES,
+            flush_mode: FlushMode::default(),
+            max_sstables_before_compaction: DEFAULT_MAX_SSTABLES_BEFORE_COMPACTION,
         }
     }
 }
@@ -154,13 +173,22 @@ pub struct BlobStorage {
     inner: Arc<RwLock<BTreeMap<Vec<u8>, BlobValue>>>,
     /// Optional durable WAL. `None` means the store is in-memory only.
     wal: Option<Arc<BlobWal>>,
-    /// Path of the `SSTable` produced by each flush. `None` for the
-    /// in-memory variant. Alpha-3.2a keeps at most one `SSTable` per
-    /// store; α-3.3 will expose multi-`SSTable` layouts and compaction.
+    /// Path of the canonical single-`SSTable` produced by
+    /// `FlushMode::Overwrite`. Retained even under `FlushMode::Append`
+    /// so backward-compat reads still work; `Append` also uses this
+    /// path's parent directory to place its numbered `SSTables`.
     sstable_path: Option<PathBuf>,
     /// Auto-flush threshold (see [`BlobStorageConfig`]). Only consulted
     /// on the durable variant.
     wal_flush_threshold_bytes: u64,
+    /// See [`FlushMode`]. Set at open time and immutable afterwards.
+    flush_mode: FlushMode,
+    /// See [`BlobStorageConfig::max_sstables_before_compaction`].
+    max_sstables_before_compaction: usize,
+    /// Next sequence number to hand out for an append-mode flush.
+    /// Wrapped in an `Arc<Mutex>` so cloned `BlobStorage` handles agree
+    /// on the counter.
+    next_sstable_seq: Arc<parking_lot::Mutex<u64>>,
 }
 
 impl BlobStorage {
@@ -204,7 +232,7 @@ impl BlobStorage {
             wal_path,
             BlobStorageConfig {
                 sync_policy,
-                wal_flush_threshold_bytes: DEFAULT_WAL_FLUSH_THRESHOLD_BYTES,
+                ..BlobStorageConfig::default()
             },
         )
     }
@@ -220,13 +248,24 @@ impl BlobStorage {
     ) -> io::Result<Self> {
         let wal_path = wal_path.as_ref().to_path_buf();
         let sstable_path = sibling_sstable_path(&wal_path);
+        let dir = wal_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
         let wal = BlobWal::open_with_policy(&wal_path, config.sync_policy)?;
 
         let mut map: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
-        // Load the settled snapshot first — it never contains tombstones.
-        if let Some(sst) = BlobSstable::open(&sstable_path)? {
-            for (key, value) in sst.into_records() {
-                map.insert(key, value);
+
+        // Load every SSTable currently on disk, in sequence order (oldest
+        // first). This covers both the α-3.2a single-file layout (only
+        // `blob.sst` present, seq=0) and the α-3.3 append layout
+        // (`blob-000001.sst`, `blob-000002.sst`, …).
+        for sst_path in enumerate_sstables(&dir)? {
+            if let Some(sst) = BlobSstable::open(&sst_path)? {
+                for (key, value) in sst.into_records() {
+                    // Later SSTables win over earlier ones (higher seq is
+                    // newer). `BTreeMap::insert` overwrites naturally.
+                    map.insert(key, value);
+                }
             }
         }
         // Replay the WAL on top so any post-flush mutations are visible.
@@ -240,11 +279,19 @@ impl BlobStorage {
                 }
             }
         }
+
+        // Pre-compute the next append-mode sequence number so
+        // `flush_to_sstable` need only bump the counter under a lock.
+        let next_seq = max_sstable_seq(&dir)?.map_or(1, |s| s.saturating_add(1));
+
         Ok(Self {
             inner: Arc::new(RwLock::new(map)),
             wal: Some(Arc::new(wal)),
             sstable_path: Some(sstable_path),
             wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
+            flush_mode: config.flush_mode,
+            max_sstables_before_compaction: config.max_sstables_before_compaction,
+            next_sstable_seq: Arc::new(parking_lot::Mutex::new(next_seq)),
         })
     }
 
@@ -302,7 +349,8 @@ impl BlobStorage {
             return Ok(());
         };
 
-        // Snapshot the current live state.
+        // Snapshot the current live state (α-3.3a keeps a single unified
+        // in-memory `BTreeMap`, so both flush modes see the same view).
         let guard = self.inner.read();
         let entries: Vec<(Vec<u8>, BlobValue)> = guard
             .iter()
@@ -316,9 +364,26 @@ impl BlobStorage {
             .collect();
         drop(guard);
 
-        // The SSTable writer expects borrows; hand it a view over the
-        // owned copies we just collected.
-        BlobSstable::write_from_iter(sstable_path, entries.iter().map(|(k, v)| (k.as_slice(), v)))?;
+        let target_path = match self.flush_mode {
+            FlushMode::Overwrite => sstable_path.clone(),
+            FlushMode::Append => {
+                // Reserve the next sequence number atomically so that
+                // concurrent flushes never collide (today the WAL lock
+                // serialises them, but the counter is still guarded so
+                // future concurrency does not silently break).
+                let mut seq_guard = self.next_sstable_seq.lock();
+                let seq = *seq_guard;
+                *seq_guard = seq.saturating_add(1);
+                drop(seq_guard);
+
+                let dir = sstable_path
+                    .parent()
+                    .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+                dir.join(sstable_filename_for_seq(seq))
+            }
+        };
+
+        BlobSstable::write_from_iter(&target_path, entries.iter().map(|(k, v)| (k.as_slice(), v)))?;
 
         // After the SSTable is durably in place we can safely truncate
         // the WAL. Physical removal of tombstones happens implicitly:
@@ -332,6 +397,109 @@ impl BlobStorage {
         let mut guard = self.inner.write();
         guard.retain(|_, v| !matches!(v, BlobValue::Tombstone));
         Ok(())
+    }
+
+    /// Merge every `SSTable` currently on disk (plus the in-memory
+    /// state) into a single new `SSTable` file, and delete the older
+    /// ones. Available on the durable variant only; no-op otherwise.
+    ///
+    /// This is what `FlushMode::Append` eventually funnels into when
+    /// the number of files reaches
+    /// [`BlobStorageConfig::max_sstables_before_compaction`]. Callers
+    /// can also invoke it manually — e.g. at shutdown — to keep next
+    /// reopen fast.
+    ///
+    /// Crash safety: the new `SSTable` is written to a sibling `.tmp`
+    /// path and atomically renamed into `blob-{next_seq:06}.sst`
+    /// (Append mode) or `blob.sst` (Overwrite mode). Only after the
+    /// rename succeeds do we delete the older `SSTables`. A crash
+    /// between the rename and any of the deletes leaves an idempotent
+    /// state: the next open sees the new `SSTable` plus one or more
+    /// redundant older ones, and the next compaction absorbs them.
+    ///
+    /// # Errors
+    /// Propagates any `SSTable` write or delete error.
+    pub fn compact_all_sstables(&self) -> io::Result<()> {
+        let Some(sstable_path) = &self.sstable_path else {
+            return Ok(());
+        };
+        let Some(wal) = &self.wal else {
+            return Ok(());
+        };
+        let dir = sstable_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+
+        // Snapshot live state.
+        let guard = self.inner.read();
+        let entries: Vec<(Vec<u8>, BlobValue)> = guard
+            .iter()
+            .filter_map(|(k, v)| {
+                if matches!(v, BlobValue::Tombstone) {
+                    None
+                } else {
+                    Some((k.clone(), v.clone()))
+                }
+            })
+            .collect();
+        drop(guard);
+
+        // Enumerate what is currently on disk so we know which files to
+        // delete after the merged SSTable is safely in place.
+        let existing = enumerate_sstables(&dir)?;
+
+        // Pick the target path for the merged SSTable.
+        let target_path = match self.flush_mode {
+            FlushMode::Overwrite => sstable_path.clone(),
+            FlushMode::Append => {
+                let mut seq_guard = self.next_sstable_seq.lock();
+                let seq = *seq_guard;
+                *seq_guard = seq.saturating_add(1);
+                drop(seq_guard);
+                dir.join(sstable_filename_for_seq(seq))
+            }
+        };
+
+        BlobSstable::write_from_iter(&target_path, entries.iter().map(|(k, v)| (k.as_slice(), v)))?;
+
+        // Best-effort delete of the older SSTables. A failure here does
+        // not corrupt the store — the merged SSTable already contains
+        // everything — but we still propagate so the caller can
+        // investigate a stuck stale file.
+        for old_path in existing {
+            if old_path == target_path {
+                continue;
+            }
+            std::fs::remove_file(&old_path)?;
+        }
+
+        // Reset the WAL: its post-flush diff is now folded into the
+        // merged SSTable.
+        wal.flush()?;
+        wal.truncate()?;
+
+        // Prune tombstones from the in-memory map.
+        let mut guard = self.inner.write();
+        guard.retain(|_, v| !matches!(v, BlobValue::Tombstone));
+        Ok(())
+    }
+
+    /// Number of `SSTable` files currently on disk.
+    ///
+    /// Exposed for tests and dashboards; `FlushMode::Overwrite` always
+    /// reports 0 or 1, `FlushMode::Append` reports the accumulating
+    /// count before the next compaction fires.
+    ///
+    /// # Errors
+    /// Propagates the underlying directory scan error.
+    pub fn sstable_count(&self) -> io::Result<usize> {
+        let Some(sstable_path) = &self.sstable_path else {
+            return Ok(0);
+        };
+        let dir = sstable_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        Ok(enumerate_sstables(dir)?.len())
     }
 
     /// Whether the durable variant has crossed its auto-flush threshold
@@ -461,6 +629,14 @@ impl BlobStorage {
     fn maybe_auto_flush(&self) -> io::Result<()> {
         if self.wal_needs_flush()? {
             self.flush_to_sstable()?;
+        }
+        // Under FlushMode::Append the per-flush cost is O(delta) but
+        // SSTable files accumulate; roll them back into one when the
+        // count reaches the configured cap.
+        if self.flush_mode == FlushMode::Append
+            && self.sstable_count()? >= self.max_sstables_before_compaction
+        {
+            self.compact_all_sstables()?;
         }
         Ok(())
     }

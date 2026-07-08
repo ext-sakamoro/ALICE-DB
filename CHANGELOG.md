@@ -2,6 +2,54 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [0.2.0-alpha.5] - 2026-07-08
+
+α-3.3a subset: multi-SSTable path with sequential numbering and simple full-merge compaction. Query-side acceleration (Bloom filter / prefix trie) remains scheduled for α-3.3b. `FlushMode::Overwrite` — matching v0.2.0-alpha.4 semantics — stays the default so pre-α-3.3 callers observe no behaviour change.
+
+### Added
+
+- `blob_sstable::FlushMode` enum (`Copy` + `Default = Overwrite`).
+- `blob_sstable::parse_sstable_seq(name)` / `sstable_filename_for_seq(seq)` / `enumerate_sstables(dir)` / `max_sstable_seq(dir)` — helpers that make the sequentially numbered blob SSTable filenames (`blob-{seq:06}.sst`) explicit. `blob.sst` is treated as sequence 0 so pre-α-3.3 databases upgrade in place without a migration step.
+- `blob::BlobStorageConfig::flush_mode` (default `Overwrite`) and `blob::BlobStorageConfig::max_sstables_before_compaction` (default 4).
+- `blob::DEFAULT_MAX_SSTABLES_BEFORE_COMPACTION` constant.
+- `blob::BlobStorage::compact_all_sstables()` — merge every existing SSTable + the in-memory state into one new SSTable and delete the older ones.
+- `blob::BlobStorage::sstable_count()` — diagnostic accessor.
+- `AliceDB::compact_all_blob_sstables()` and `AliceDB::blob_sstable_count()` mirroring the storage-layer additions.
+- 9 integration tests in `tests/blob_multi_sstable.rs`:
+  - Filename helper round-trip (`0`, `1`, `42`, `999_999`, `1_000_000`, `u64::MAX`).
+  - `blob.sst` recognised as sequence 0; unrelated filenames rejected.
+  - `FlushMode::Append` produces sequentially numbered files and leaves prior ones alone.
+  - Reopen after multi-flush honours last-write-wins across sequence order.
+  - Manual `compact_all_sstables` collapses to one file, all keys preserved.
+  - Auto-compaction fires when SSTable count reaches `max_sstables_before_compaction`.
+  - Pre-α-3.3 `blob.sst` co-exists with `blob-000001.sst` under `FlushMode::Append`.
+  - Corrupted sequential SSTable surfaces on open (fail-loud).
+
+### Changed
+
+- `BlobStorage::open_with_config` now loads every SSTable file present in the WAL's parent directory (in ascending sequence order) before replaying the WAL. Under the default `FlushMode::Overwrite` this reduces to the α-3.2a behaviour (only `blob.sst` is present).
+- `BlobStorage::flush_to_sstable` branches on `flush_mode`: `Overwrite` continues to rewrite `blob.sst` in place; `Append` reserves the next sequence number and writes `blob-{seq:06}.sst`, leaving prior SSTables untouched.
+- `BlobStorage`'s auto-flush tail on `put` / `delete` now additionally triggers `compact_all_sstables` once `sstable_count() >= max_sstables_before_compaction` (Append only).
+- `BlobStorageConfig` gained two new fields; existing struct-literal callers must switch to `..BlobStorageConfig::default()` or provide the new fields explicitly.
+
+### Backward compatibility
+
+- Pre-α-3.3 databases (single `blob.sst` file) open unchanged under either flush mode:
+  - `FlushMode::Overwrite` (default): every flush continues to rewrite `blob.sst` — behaviour identical to v0.2.0-alpha.4.
+  - `FlushMode::Append`: the legacy `blob.sst` is treated as sequence 0 and preserved until the next `compact_all_sstables` folds it into the merged file. First flush produces `blob-000001.sst` alongside it.
+- `AliceDB::open` and `AliceDB::open_with_blob_sync_policy` inherit the `Overwrite` default via `BlobStorageConfig::default()`, so callers that never opt into Append see no behaviour change.
+
+### Design decisions
+
+- **Single unified in-memory `BTreeMap` retained**: α-3.3a keeps the whole live state in memory just like α-3.2a, so multi-SSTable is currently just an on-disk layout change. The real benefits (mmap-backed reads, bloom-guarded point lookups) land in α-3.3b.
+- **Directory scan over manifest**: with at most `max_sstables_before_compaction` files at any time, a directory scan on open is O(N) tiny and there is no manifest to keep consistent with disk state.
+- **Crash-safety ordering**: the merged SSTable is renamed into place first; only then are the older SSTables deleted one by one. A crash between the rename and the deletes leaves an idempotent state — the next open sees the merged SSTable plus one or more redundant older ones, and the next compaction folds them in.
+- **Fail-loud on any SSTable corruption**: same policy as α-3.2a. Even a single corrupted file bubbles out of `AliceDB::open` as `InvalidData`.
+
+### α-3 roadmap remainder
+
+- **α-3.3b**: on-disk read path (mmap) + Bloom filter per SSTable (point lookup fast path) + prefix trie or sparse index (scan acceleration).
+
 ## [0.2.0-alpha.4] - 2026-07-08
 
 α-3.2a subset: single blob SSTable + WAL rotation. Multi-SSTable, compaction, and read-side query acceleration (Bloom filter / prefix trie) remain scheduled for α-3.3.

@@ -284,7 +284,7 @@ impl AliceDB {
             path,
             blob::BlobStorageConfig {
                 sync_policy: blob_sync_policy,
-                wal_flush_threshold_bytes: blob::DEFAULT_WAL_FLUSH_THRESHOLD_BYTES,
+                ..blob::BlobStorageConfig::default()
             },
         )
     }
@@ -362,6 +362,31 @@ impl AliceDB {
     /// Propagates the underlying `SSTable` rewrite error.
     pub fn compact_blob_sstable(&self) -> io::Result<()> {
         self.blob.flush_to_sstable()
+    }
+
+    /// Merge every existing blob `SSTable` file plus the current
+    /// in-memory state into a single new `SSTable`, deleting the older
+    /// ones. Available in v0.2.0-alpha.5+.
+    ///
+    /// Meaningful only under
+    /// [`blob::blob_sstable::FlushMode::Append`]; under `Overwrite`
+    /// there is at most one `SSTable` file at any time and this
+    /// devolves to a rewrite of `blob.sst`. Callers can use this to
+    /// keep next-open latency bounded when auto-compaction is disabled.
+    ///
+    /// # Errors
+    /// Propagates the underlying merge error.
+    pub fn compact_all_blob_sstables(&self) -> io::Result<()> {
+        self.blob.compact_all_sstables()
+    }
+
+    /// Number of blob `SSTable` files currently on disk. Handy for
+    /// diagnostics.
+    ///
+    /// # Errors
+    /// Propagates the underlying directory scan error.
+    pub fn blob_sstable_count(&self) -> io::Result<usize> {
+        self.blob.sstable_count()
     }
 
     /// Insert a single value

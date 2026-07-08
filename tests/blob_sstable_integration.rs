@@ -129,6 +129,7 @@ fn auto_flush_triggers_after_wal_crosses_threshold() {
     let cfg = BlobStorageConfig {
         sync_policy: SyncPolicy::EveryWrite,
         wal_flush_threshold_bytes: 256,
+        ..BlobStorageConfig::default()
     };
     let db = AliceDB::open_with_blob_config(tmp.path(), cfg).unwrap();
 

@@ -75,6 +75,119 @@ const VALUE_KIND_RAW: u8 = 0x00;
 /// Encoded flag for `BlobValue::Compressed`.
 const VALUE_KIND_COMPRESSED: u8 = 0x01;
 
+/// Number of decimal digits in the zero-padded sequence part of an
+/// `Append`-mode `SSTable` filename (`blob-{seq:06}.sst`).
+const SSTABLE_SEQ_WIDTH: usize = 6;
+
+/// How a flush should treat the existing `SSTable` files in the store.
+///
+/// Introduced in v0.2.0-alpha.5.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FlushMode {
+    /// Every flush rewrites the single canonical `blob.sst`. Matches
+    /// v0.2.0-alpha.4 behaviour and remains the default so pre-α-3.3
+    /// databases and callers observe no change.
+    #[default]
+    Overwrite,
+    /// Every flush produces a new sequentially numbered `SSTable` file
+    /// (`blob-000001.sst`, `blob-000002.sst`, …). Older `SSTables` are
+    /// left in place until [`crate::blob::BlobStorage::compact_all_sstables`]
+    /// (or the auto-compaction threshold on
+    /// [`crate::blob::BlobStorageConfig`]) merges them back into one.
+    /// This makes each flush O(delta) rather than O(N), at the cost of
+    /// eventually running a full merge.
+    Append,
+}
+
+/// Return the sequence number encoded in a blob `SSTable` filename, if
+/// the filename matches the expected format.
+///
+/// Accepted forms:
+/// - `blob.sst` — treated as sequence `0` for backward compatibility
+///   with v0.2.0-alpha.2 through v0.2.0-alpha.4 stores.
+/// - `blob-{seq:06}.sst` — the α-3.3 append-mode form; `seq` may be any
+///   decimal value that fits in a `u64`.
+///
+/// Any other filename (temp files, unrelated `.sst`, etc.) yields
+/// `None` so the caller can skip it.
+#[must_use]
+pub fn parse_sstable_seq(name: &str) -> Option<u64> {
+    if name == "blob.sst" {
+        return Some(0);
+    }
+    let rest = name.strip_prefix("blob-")?;
+    let digits = rest.strip_suffix(".sst")?;
+    if digits.len() < SSTABLE_SEQ_WIDTH || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok()
+}
+
+/// Generate the filename for a new append-mode `SSTable` with the given
+/// sequence number, zero-padded to [`SSTABLE_SEQ_WIDTH`] digits.
+#[must_use]
+pub fn sstable_filename_for_seq(seq: u64) -> String {
+    let width = SSTABLE_SEQ_WIDTH;
+    format!("blob-{seq:0width$}.sst")
+}
+
+/// Enumerate every blob `SSTable` currently living in `dir`, sorted by
+/// sequence number ascending.
+///
+/// Non-`SSTable` files are silently skipped. Callers that expect only
+/// the α-3.2a single-file layout can either continue to use `blob.sst`
+/// directly or opt into `FlushMode::Append` and let this helper walk
+/// the directory.
+///
+/// # Errors
+/// Propagates the underlying [`std::fs::read_dir`] error.
+pub fn enumerate_sstables(dir: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
+    let dir = dir.as_ref();
+    let mut hits: Vec<(u64, PathBuf)> = Vec::new();
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    for entry in read {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if let Some(seq) = parse_sstable_seq(name) {
+            hits.push((seq, entry.path()));
+        }
+    }
+    hits.sort_by_key(|(seq, _)| *seq);
+    Ok(hits.into_iter().map(|(_, p)| p).collect())
+}
+
+/// Highest sequence number in use for `SSTables` under `dir`, if any.
+///
+/// Callers that need the next sequence number for an append-mode flush
+/// can add one to this value (saturating at `u64::MAX`).
+///
+/// # Errors
+/// Propagates the underlying [`enumerate_sstables`] error.
+pub fn max_sstable_seq(dir: impl AsRef<Path>) -> io::Result<Option<u64>> {
+    let hits = enumerate_sstables(dir)?;
+    let mut max: Option<u64> = None;
+    for path in hits {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .and_then(parse_sstable_seq);
+        if let Some(seq) = name {
+            max = Some(match max {
+                Some(prev) => prev.max(seq),
+                None => seq,
+            });
+        }
+    }
+    Ok(max)
+}
+
 /// Owned representation of a blob `SSTable`'s on-disk contents after
 /// [`BlobSstable::open`].
 ///

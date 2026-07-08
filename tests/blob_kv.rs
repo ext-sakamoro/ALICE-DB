@@ -59,7 +59,7 @@ fn delete_hides_the_value_from_get_and_scan() {
     db.put_blob(b"stub-b", b"two").unwrap();
     db.put_blob(b"stub-c", b"three").unwrap();
 
-    db.delete_blob(b"stub-b");
+    db.delete_blob(b"stub-b").unwrap();
 
     assert_eq!(db.get_blob(b"stub-b").unwrap(), None);
     let scan = db.scan_blob_prefix(b"stub-").unwrap();

@@ -27,10 +27,13 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 
 use alice_core::compression::{zlib_compress, zlib_decompress};
 use parking_lot::RwLock;
+
+use crate::blob_wal::{BlobWal, WalRecord};
 
 /// Minimum byte length that triggers compression.
 ///
@@ -99,39 +102,84 @@ pub fn should_compress(value: &[u8]) -> bool {
     value.len() >= COMPRESS_THRESHOLD_BYTES
 }
 
-/// In-memory blob key-value store.
+/// Blob key-value store.
 ///
 /// Backed by a sorted `BTreeMap<Vec<u8>, BlobValue>` so that prefix scans
 /// can walk contiguous key ranges. Cheap to clone: internally holds an
 /// `Arc<RwLock<...>>` so every clone shares the same map.
 ///
-/// Not persistent in alpha-1; process exit loses all data. See module docs.
+/// # Persistence
+///
+/// - [`Self::new`] returns an ephemeral in-memory instance (the alpha-1
+///   default). Process exit loses all data.
+/// - [`Self::open`] (introduced in alpha-2) attaches a
+///   [`crate::blob_wal::BlobWal`] on disk. Every mutation is durably
+///   logged before the in-memory map is updated, and calls to `open`
+///   replay the log to reconstruct prior state.
 #[derive(Debug, Clone, Default)]
 pub struct BlobStorage {
     inner: Arc<RwLock<BTreeMap<Vec<u8>, BlobValue>>>,
+    /// Optional durable WAL. `None` means the store is in-memory only.
+    wal: Option<Arc<BlobWal>>,
 }
 
 impl BlobStorage {
-    /// Create an empty blob store.
+    /// Create an ephemeral in-memory blob store.
+    ///
+    /// No WAL is attached; data does not survive process exit. Use
+    /// [`Self::open`] for durability.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Insert or overwrite a key with a value, compressing if worthwhile.
+    /// Open a durable blob store backed by a WAL at `wal_path`.
     ///
-    /// The write takes an exclusive lock. Concurrent readers block until
-    /// this call returns.
+    /// The WAL is created if missing. Any pre-existing records are
+    /// replayed in file order so the in-memory map matches the state
+    /// the previous writer left behind; truncated tails and corrupted
+    /// records are handled per the WAL's contract (see
+    /// [`crate::blob_wal`] module docs).
     ///
     /// # Errors
-    /// Returns `io::Error` only if the underlying compression call bails
-    /// with an unexpected error; the alpha-1 path is best-effort and
-    /// falls back to `Raw` on any compression hiccup.
+    /// Returns `io::Error` if the WAL cannot be created or replayed.
+    pub fn open(wal_path: impl AsRef<Path>) -> io::Result<Self> {
+        let wal = BlobWal::open(wal_path)?;
+        let mut map: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
+        for record in wal.replay()? {
+            match record {
+                WalRecord::Put(key, value) => {
+                    map.insert(key, value);
+                }
+                WalRecord::Delete(key) => {
+                    // Store the tombstone so subsequent replays and
+                    // subsequent live reads observe the deletion.
+                    map.insert(key, BlobValue::Tombstone);
+                }
+            }
+        }
+        Ok(Self {
+            inner: Arc::new(RwLock::new(map)),
+            wal: Some(Arc::new(wal)),
+        })
+    }
+
+    /// Insert or overwrite a key with a value, compressing if worthwhile.
+    ///
+    /// If the store was opened via [`Self::open`], the record is durably
+    /// logged before the in-memory map is updated. On a WAL write
+    /// failure the in-memory state is left untouched.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if the WAL append fails.
     pub fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
         let stored = match compress_if_worthwhile(value) {
             Some(bytes) => BlobValue::Compressed(bytes),
             None => BlobValue::Raw(value.to_vec()),
         };
+        if let Some(wal) = &self.wal {
+            wal.append_put(key, &stored)?;
+        }
         let mut guard = self.inner.write();
         guard.insert(key.to_vec(), stored);
         Ok(())
@@ -191,12 +239,26 @@ impl BlobStorage {
 
     /// Mark a key as deleted.
     ///
-    /// Alpha-1 stores a `BlobValue::Tombstone` so lookups immediately see
-    /// the absence; alpha-3 will physically remove the entry during
+    /// Stores a `BlobValue::Tombstone` so subsequent lookups observe the
+    /// absence; alpha-3 will physically remove the entry during
     /// compaction. Deleting a non-existent key is a no-op (idempotent).
-    pub fn delete(&self, key: &[u8]) {
+    ///
+    /// If the store was opened via [`Self::open`], the delete is durably
+    /// logged before the in-memory map is updated. On a WAL write
+    /// failure the in-memory state is left untouched.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if the WAL append fails. The infallible
+    /// alpha-1 signature (`fn delete(&self, &[u8])`) was widened to
+    /// `Result` in alpha-2 to surface WAL failures instead of dropping
+    /// them silently.
+    pub fn delete(&self, key: &[u8]) -> io::Result<()> {
+        if let Some(wal) = &self.wal {
+            wal.append_delete(key)?;
+        }
         let mut guard = self.inner.write();
         guard.insert(key.to_vec(), BlobValue::Tombstone);
+        Ok(())
     }
 
     /// Number of *live* keys (excludes tombstones).

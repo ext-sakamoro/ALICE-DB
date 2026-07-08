@@ -48,12 +48,15 @@
 //!     .execute()?;
 //! ```
 //!
-//! # Quick Start — Blob key-value store (v0.2.0-alpha.1)
+//! # Quick Start — Blob key-value store (v0.2.0-alpha.2)
 //!
-//! Alongside the time-series API, ALICE-DB now exposes a general
-//! byte-keyed blob store. Values that cross the 200-byte threshold and
-//! that meaningfully shrink under zlib are transparently compressed via
-//! ALICE-Zip; short and high-entropy values are stored raw.
+//! Alongside the time-series API, ALICE-DB exposes a general byte-keyed
+//! blob store with durable WAL persistence. Values that cross the
+//! 200-byte threshold and shrink meaningfully under zlib are
+//! transparently compressed via ALICE-Zip; short and high-entropy
+//! values are stored raw. Every `put_blob` / `delete_blob` is
+//! flushed to the WAL before the in-memory map is updated, and reopens
+//! replay the WAL to reconstruct prior state.
 //!
 //! ```rust,ignore
 //! use alice_db::AliceDB;
@@ -75,14 +78,20 @@
 //! let stubs = db.scan_blob_prefix(b"stub-")?;
 //! assert_eq!(stubs.len(), 3);
 //!
-//! // Deletion is immediate (alpha-1 stores a tombstone; alpha-3 will
-//! // physically remove during compaction).
-//! db.delete_blob(b"stub-42");
+//! // Deletion is immediate and durable.
+//! db.delete_blob(b"stub-42")?;
 //! assert_eq!(db.get_blob(b"stub-42")?, None);
+//!
+//! // Data survives a reopen.
+//! drop(db);
+//! let db = AliceDB::open("./my_data")?;
+//! assert_eq!(db.blob_len(), 2);
 //! ```
 //!
-//! Alpha-1 keeps blobs in memory only; WAL persistence lands in alpha-2.
-//! See `docs/EXPANSION_PROPOSAL.md` for the roadmap.
+//! Alpha-2 caveats: single-writer per data directory (no cross-process
+//! file lock), one fsync per operation (no group commit). File
+//! locking and batched fsync land in alpha-3. See
+//! `docs/EXPANSION_PROPOSAL.md` for the full roadmap.
 //!
 //! # Quick Start (Python)
 //!
@@ -156,6 +165,7 @@
 #[cfg(feature = "analytics")]
 pub mod analytics_bridge;
 pub mod blob;
+pub mod blob_wal;
 pub mod checksum;
 pub mod compaction;
 #[cfg(feature = "crypto")]
@@ -211,32 +221,39 @@ pub struct AliceDB {
 }
 
 impl AliceDB {
-    /// Open a database at the specified path
+    /// Open a database at the specified path.
     ///
-    /// Creates the directory if it doesn't exist.
+    /// Creates the directory if it doesn't exist. The blob key-value
+    /// store is opened durably at `<path>/blob.wal` (v0.2.0-alpha.2+),
+    /// replaying any pre-existing WAL records so blob state survives
+    /// process restarts. The time-series engine and blob store use
+    /// independent files, so neither one disturbs the other.
     ///
     /// # Errors
     ///
-    /// Returns an error if the storage engine cannot be opened at the given path.
+    /// Returns an error if the storage engine cannot be opened or the
+    /// blob WAL cannot be created / replayed.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let blob_wal_path = path.as_ref().join("blob.wal");
         let engine = StorageEngine::open(path)?;
-        Ok(Self {
-            engine,
-            blob: blob::BlobStorage::new(),
-        })
+        let blob = blob::BlobStorage::open(blob_wal_path)?;
+        Ok(Self { engine, blob })
     }
 
-    /// Open with custom configuration
+    /// Open with custom configuration.
+    ///
+    /// The blob WAL is placed at `config.data_dir/blob.wal`, mirroring
+    /// [`Self::open`]'s layout.
     ///
     /// # Errors
     ///
-    /// Returns an error if the storage engine cannot be initialized with the given config.
+    /// Returns an error if the storage engine cannot be initialised with
+    /// the given config, or if the blob WAL cannot be created / replayed.
     pub fn with_config(config: StorageConfig) -> io::Result<Self> {
+        let blob_wal_path = config.data_dir.join("blob.wal");
         let engine = StorageEngine::new(config)?;
-        Ok(Self {
-            engine,
-            blob: blob::BlobStorage::new(),
-        })
+        let blob = blob::BlobStorage::open(blob_wal_path)?;
+        Ok(Self { engine, blob })
     }
 
     /// Insert a single value
@@ -364,11 +381,17 @@ impl AliceDB {
     /// Mark a blob as deleted.
     ///
     /// The entry becomes invisible to `get_blob` and `scan_blob_prefix`
-    /// immediately. Alpha-1 stores an in-memory tombstone; alpha-3 will
-    /// physically remove the record during compaction. Deleting a
+    /// immediately. In v0.2.0-alpha.2 the delete is logged to the WAL
+    /// before the tombstone is written to the in-memory map; alpha-3
+    /// will physically remove the record during compaction. Deleting a
     /// non-existent key is a no-op.
-    pub fn delete_blob(&self, key: &[u8]) {
-        self.blob.delete(key);
+    ///
+    /// # Errors
+    /// Returns an `io::Error` if the WAL append fails. The alpha-1
+    /// signature (`fn delete_blob(&self, &[u8])`) was widened to
+    /// `Result` in alpha-2 to surface WAL failures.
+    pub fn delete_blob(&self, key: &[u8]) -> io::Result<()> {
+        self.blob.delete(key)
     }
 
     /// Number of live blobs currently in the store.

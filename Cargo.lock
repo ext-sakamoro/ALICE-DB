@@ -53,13 +53,14 @@ dependencies = [
 
 [[package]]
 name = "alice-db"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "alice-analytics",
  "alice-crypto",
  "alice-zip",
  "bincode",
  "bytemuck",
+ "crc32fast",
  "criterion",
  "crossbeam-channel",
  "fs2",

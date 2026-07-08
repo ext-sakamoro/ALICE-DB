@@ -1,6 +1,6 @@
 [package]
 name = "alice-db"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 edition = "2021"
 license = "AGPL-3.0-only"
 authors = ["Moroya Sakamoto <sakamoro@alicelaw.net>"]
@@ -53,6 +53,9 @@ alice-crypto = { path = "../ALICE-Crypto", optional = true, default-features = f
 
 # Advisory file locking (cross-platform)
 fs2 = "0.4"
+
+# v0.2.0-alpha.2: blob WAL record checksum (fast, pure-Rust CRC32C).
+crc32fast = "1.4"
 
 # Utilities
 thiserror = "1.0"

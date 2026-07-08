@@ -113,7 +113,7 @@
 //! db.flush_blobs()?;
 //! ```
 //!
-//! Alpha-3.2 and alpha-3.3 add SSTable format v2 / compaction and
+//! Alpha-3.2 and alpha-3.3 add `SSTable` format v2 / compaction and
 //! query acceleration (Bloom filter, prefix trie) respectively. See
 //! `docs/EXPANSION_PROPOSAL.md` for the full roadmap.
 //!
@@ -189,6 +189,7 @@
 #[cfg(feature = "analytics")]
 pub mod analytics_bridge;
 pub mod blob;
+pub mod blob_sstable;
 pub mod blob_wal;
 pub mod checksum;
 pub mod compaction;
@@ -279,9 +280,28 @@ impl AliceDB {
         path: P,
         blob_sync_policy: blob_wal::SyncPolicy,
     ) -> io::Result<Self> {
+        Self::open_with_blob_config(
+            path,
+            blob::BlobStorageConfig {
+                sync_policy: blob_sync_policy,
+                wal_flush_threshold_bytes: blob::DEFAULT_WAL_FLUSH_THRESHOLD_BYTES,
+            },
+        )
+    }
+
+    /// Open with a fully specified [`blob::BlobStorageConfig`], covering
+    /// both the [`blob_wal::SyncPolicy`] and the WAL-to-`SSTable` auto
+    /// flush threshold introduced in v0.2.0-alpha.4.
+    ///
+    /// # Errors
+    /// See [`Self::open`].
+    pub fn open_with_blob_config<P: AsRef<Path>>(
+        path: P,
+        blob_config: blob::BlobStorageConfig,
+    ) -> io::Result<Self> {
         let blob_wal_path = path.as_ref().join("blob.wal");
         let engine = StorageEngine::open(path)?;
-        let blob = blob::BlobStorage::open_with_policy(blob_wal_path, blob_sync_policy)?;
+        let blob = blob::BlobStorage::open_with_config(blob_wal_path, blob_config)?;
         Ok(Self { engine, blob })
     }
 
@@ -315,17 +335,33 @@ impl AliceDB {
         Ok(Self { engine, blob })
     }
 
-    /// Force a durable fsync of any pending blob WAL writes.
+    /// Force a durable fsync of any pending blob WAL writes and, if
+    /// the WAL has grown past the configured threshold, roll the
+    /// current in-memory state into a fresh `SSTable` and truncate the
+    /// WAL.
     ///
-    /// Only meaningful when the store was opened with
-    /// [`blob_wal::SyncPolicy::Batched`] or
-    /// [`blob_wal::SyncPolicy::Manual`]. For the default
-    /// `EveryWrite` policy this is a fast no-op.
+    /// Meaningful for `SyncPolicy::Batched` / `SyncPolicy::Manual`
+    /// (WAL fsync) *and* for `EveryWrite` when the WAL has grown large
+    /// enough that a rewrite would speed up subsequent reopens.
     ///
     /// # Errors
-    /// Propagates the underlying `sync_data` error.
+    /// Propagates the underlying `sync_data` / `SSTable` rewrite error.
     pub fn flush_blobs(&self) -> io::Result<()> {
         self.blob.flush()
+    }
+
+    /// Unconditionally rewrite the current in-memory blob state into a
+    /// fresh `SSTable` and truncate the WAL.
+    ///
+    /// Use this to keep next-open latency bounded regardless of the WAL
+    /// size threshold; for example at process shutdown or after a
+    /// bulk-load phase. Returns `Ok(())` even if there is nothing to
+    /// flush (empty store).
+    ///
+    /// # Errors
+    /// Propagates the underlying `SSTable` rewrite error.
+    pub fn compact_blob_sstable(&self) -> io::Result<()> {
+        self.blob.flush_to_sstable()
     }
 
     /// Insert a single value

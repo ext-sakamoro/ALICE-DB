@@ -2,6 +2,48 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [0.2.0-alpha.4] - 2026-07-08
+
+α-3.2a subset: single blob SSTable + WAL rotation. Multi-SSTable, compaction, and read-side query acceleration (Bloom filter / prefix trie) remain scheduled for α-3.3.
+
+### Added
+
+- `blob_sstable` module — sorted, immutable snapshot of the blob key-value store on disk.
+  - `BlobSstable::write_from_iter(path, iter)` atomically writes a sorted, tombstone-free snapshot via `<path>.tmp` + `rename`.
+  - `BlobSstable::open(path)` verifies header + footer magic + per-record CRC32C; returns `Ok(None)` for missing files (so pre-α-3.2a DBs upgrade cleanly).
+  - File format: `ALICEBBS` header + records + `ALICEEND` footer. See `src/blob_sstable.rs` for the layout table.
+- `blob::BlobStorageConfig { sync_policy, wal_flush_threshold_bytes }` — persistence configuration bundle.
+- `blob::DEFAULT_WAL_FLUSH_THRESHOLD_BYTES` (4 MiB).
+- `BlobStorage::open_with_config(path, config)` — the new canonical open. `open_with_policy` is retained as a thin shim that supplies the default threshold.
+- `BlobStorage::flush_to_sstable()` — force a rewrite of the current in-memory snapshot into the SSTable and truncate the WAL.
+- `BlobStorage::wal_needs_flush()` — probe the auto-flush threshold; used internally after every `put` / `delete`.
+- `BlobWal::size_on_disk()` / `BlobWal::truncate()` — the primitives that let `flush_to_sstable` reset the WAL after a successful SSTable write.
+- `AliceDB::open_with_blob_config(path, config)` — surface the full `BlobStorageConfig` at the top-level API.
+- `AliceDB::compact_blob_sstable()` — user-facing wrapper for `BlobStorage::flush_to_sstable`.
+- 8 unit tests in `src/blob_sstable.rs::tests` (round-trip empty / two raw / compressed / tombstone reject / missing file / corrupted footer / corrupted CRC / size probe).
+- 6 integration tests in `tests/blob_sstable_integration.rs` (manual flush + WAL truncate / reopen after flush / SSTable + WAL replay / auto-flush threshold / α-3.3 WAL-only DB upgrade / corrupted SSTable detected on open).
+
+### Changed
+
+- `AliceDB::open` and `AliceDB::open_with_blob_sync_policy` are now thin wrappers over `AliceDB::open_with_blob_config`. The default behaviour is unchanged: `SyncPolicy::EveryWrite` + 4 MiB auto-flush threshold.
+- `BlobStorage::put` and `BlobStorage::delete` invoke `maybe_auto_flush` at their tail. When the WAL crosses the configured threshold the current in-memory snapshot is rewritten into the SSTable and the WAL is truncated. Cost is one `metadata` syscall per successful mutation while below the threshold.
+- `AliceDB::flush_blobs` may now trigger an SSTable rewrite in addition to the WAL fsync when the threshold has been crossed.
+
+### Backward compatibility
+
+Databases written by v0.2.0-alpha.3 have a `blob.wal` but no `blob.sst`. Alpha-3.2a treats a missing SSTable file as an empty snapshot, so opening such a database succeeds and the WAL alone drives the load. The first `compact_blob_sstable` (or auto-flush) materialises the SSTable in place. No manual migration is required.
+
+### Design decisions
+
+- **Single SSTable per store**: α-3.2a keeps one SSTable per `BlobStorage`. Every flush is effectively a full compaction (tombstones drop out, values are rewritten sorted). Cheap for the ALICE-CodeTracker workload (thousands of blobs, not millions); α-3.3 replaces this with a real LSM (multi-level SSTables + incremental compaction).
+- **Atomic rewrite via rename**: `write_from_iter` writes to a sibling `.tmp` path and renames over the destination. On POSIX (Linux, macOS) `rename(2)` is atomic within a filesystem, so a reader never observes a partially written SSTable. A crash between rename and WAL truncate is safe: reopen re-applies the WAL on top of the (already-current) SSTable, and the next auto-flush truncates the WAL again.
+- **No manifest**: with only one SSTable per store there is nothing to enumerate. α-3.3 will introduce a manifest when multi-SSTable landing arrives.
+- **Fail-loud on SSTable corruption**: a corrupted SSTable footer or record CRC bubbles out of `AliceDB::open` as `InvalidData`. Silent fallback to WAL-only load was considered but rejected because it would mask a serious integrity failure from the dogfooding consumer.
+
+### α-3 roadmap remainder
+
+- **α-3.3**: Multi-SSTable levels + incremental compaction + Bloom filter (point lookup fast path) + prefix trie (scan acceleration).
+
 ## [0.2.0-alpha.3] - 2026-07-08
 
 Hardens the blob WAL shipped in alpha-2 with cross-process safety and a configurable durability / throughput trade-off. Alpha-3.1 subset — SSTable format v2 and query acceleration remain scheduled for alpha-3.2 / alpha-3.3.

@@ -232,6 +232,42 @@ impl BlobWal {
         Ok(())
     }
 
+    /// Current on-disk size of the WAL in bytes.
+    ///
+    /// Used by [`crate::blob::BlobStorage`] to decide whether the WAL has
+    /// grown past the configured flush threshold. Reflects only bytes
+    /// that have already reached the kernel; buffered writes on their
+    /// way to `write_all` are not counted (the mutex serialises writes
+    /// so this ambiguity never affects a single caller).
+    ///
+    /// # Errors
+    /// Propagates the underlying `metadata` error.
+    pub fn size_on_disk(&self) -> io::Result<u64> {
+        let state = self.state.lock();
+        state.file.metadata().map(|m| m.len())
+    }
+
+    /// Truncate the WAL back to zero bytes.
+    ///
+    /// Intended to be called immediately after a successful `SSTable`
+    /// rewrite: the "settled" bytes now live in `blob.sst` and the WAL
+    /// should start recording the next diff from empty. The pending
+    /// counter is reset because there is nothing to fsync after the
+    /// truncate returns.
+    ///
+    /// # Errors
+    /// Propagates any `seek` / `set_len` / `sync_all` error.
+    pub fn truncate(&self) -> io::Result<()> {
+        let mut state = self.state.lock();
+        state.file.seek(SeekFrom::Start(0))?;
+        state.file.set_len(0)?;
+        // sync_all here so the truncation reaches disk before we
+        // consider the WAL "empty" from the caller's point of view.
+        state.file.sync_all()?;
+        state.pending_ops = 0;
+        Ok(())
+    }
+
     /// The on-disk location of the WAL. Handy for diagnostics.
     #[must_use]
     pub fn path(&self) -> &Path {

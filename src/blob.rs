@@ -27,13 +27,46 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use alice_core::compression::{zlib_compress, zlib_decompress};
 use parking_lot::RwLock;
 
+use crate::blob_sstable::BlobSstable;
 use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
+
+/// Default byte threshold above which a subsequent `put` / `delete`
+/// triggers an implicit flush of the WAL into an `SSTable`.
+///
+/// Chosen to keep the WAL replay cost bounded on reopen while not
+/// firing on typical short-burst workloads. Callers who want a
+/// different budget open the store through
+/// [`BlobStorage::open_with_config`].
+pub const DEFAULT_WAL_FLUSH_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Persistence configuration for the blob store.
+///
+/// Introduced in v0.2.0-alpha.4 alongside `SSTable`-backed flushes.
+#[derive(Debug, Clone, Copy)]
+pub struct BlobStorageConfig {
+    /// See [`crate::blob_wal::SyncPolicy`].
+    pub sync_policy: SyncPolicy,
+    /// Once the WAL grows past this many bytes, the next mutation
+    /// triggers an automatic flush of the current in-memory state into
+    /// a fresh `SSTable` and truncates the WAL. Set to `u64::MAX` to
+    /// disable auto-flush entirely.
+    pub wal_flush_threshold_bytes: u64,
+}
+
+impl Default for BlobStorageConfig {
+    fn default() -> Self {
+        Self {
+            sync_policy: SyncPolicy::default(),
+            wal_flush_threshold_bytes: DEFAULT_WAL_FLUSH_THRESHOLD_BYTES,
+        }
+    }
+}
 
 /// Minimum byte length that triggers compression.
 ///
@@ -121,6 +154,13 @@ pub struct BlobStorage {
     inner: Arc<RwLock<BTreeMap<Vec<u8>, BlobValue>>>,
     /// Optional durable WAL. `None` means the store is in-memory only.
     wal: Option<Arc<BlobWal>>,
+    /// Path of the `SSTable` produced by each flush. `None` for the
+    /// in-memory variant. Alpha-3.2a keeps at most one `SSTable` per
+    /// store; α-3.3 will expose multi-`SSTable` layouts and compaction.
+    sstable_path: Option<PathBuf>,
+    /// Auto-flush threshold (see [`BlobStorageConfig`]). Only consulted
+    /// on the durable variant.
+    wal_flush_threshold_bytes: u64,
 }
 
 impl BlobStorage {
@@ -134,42 +174,68 @@ impl BlobStorage {
     }
 
     /// Open a durable blob store backed by a WAL at `wal_path` using
-    /// the default [`SyncPolicy::EveryWrite`].
+    /// the default [`SyncPolicy::EveryWrite`] and default flush
+    /// threshold.
     ///
-    /// The WAL is created if missing. Any pre-existing records are
-    /// replayed in file order so the in-memory map matches the state
-    /// the previous writer left behind; truncated tails and corrupted
-    /// records are handled per the WAL's contract (see
-    /// [`crate::blob_wal`] module docs).
+    /// The WAL and (optional) sibling `<wal_path stem>.sst` `SSTable` are
+    /// created if missing. On load, the `SSTable` is read first to
+    /// populate the in-memory map, then the WAL is replayed on top so
+    /// that state written after the last flush is visible again. This
+    /// makes v0.2.0-alpha.3 databases (which never wrote an `SSTable`)
+    /// upgrade transparently: the missing `SSTable` is treated as empty.
     ///
     /// # Errors
-    /// Returns `io::Error` if the WAL cannot be created or replayed.
+    /// Returns `io::Error` if either the WAL or the `SSTable` cannot be
+    /// opened, locked, or parsed.
     pub fn open(wal_path: impl AsRef<Path>) -> io::Result<Self> {
-        Self::open_with_policy(wal_path, SyncPolicy::default())
+        Self::open_with_config(wal_path, BlobStorageConfig::default())
     }
 
-    /// Same as [`Self::open`] with an explicit [`SyncPolicy`] override.
-    ///
-    /// See the [`crate::blob_wal`] module docs for the trade-offs
-    /// between each policy.
+    /// Deprecated alias kept for α-3.1 callers. Prefer
+    /// [`Self::open_with_config`].
     ///
     /// # Errors
-    /// Returns `io::Error` if the WAL cannot be created, locked, or
-    /// replayed.
+    /// See [`Self::open_with_config`].
     pub fn open_with_policy(
         wal_path: impl AsRef<Path>,
         sync_policy: SyncPolicy,
     ) -> io::Result<Self> {
-        let wal = BlobWal::open_with_policy(wal_path, sync_policy)?;
+        Self::open_with_config(
+            wal_path,
+            BlobStorageConfig {
+                sync_policy,
+                wal_flush_threshold_bytes: DEFAULT_WAL_FLUSH_THRESHOLD_BYTES,
+            },
+        )
+    }
+
+    /// Open with an explicit [`BlobStorageConfig`].
+    ///
+    /// # Errors
+    /// Returns `io::Error` if the WAL or `SSTable` cannot be opened,
+    /// locked, or parsed.
+    pub fn open_with_config(
+        wal_path: impl AsRef<Path>,
+        config: BlobStorageConfig,
+    ) -> io::Result<Self> {
+        let wal_path = wal_path.as_ref().to_path_buf();
+        let sstable_path = sibling_sstable_path(&wal_path);
+        let wal = BlobWal::open_with_policy(&wal_path, config.sync_policy)?;
+
         let mut map: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
+        // Load the settled snapshot first — it never contains tombstones.
+        if let Some(sst) = BlobSstable::open(&sstable_path)? {
+            for (key, value) in sst.into_records() {
+                map.insert(key, value);
+            }
+        }
+        // Replay the WAL on top so any post-flush mutations are visible.
         for record in wal.replay()? {
             match record {
                 WalRecord::Put(key, value) => {
                     map.insert(key, value);
                 }
                 WalRecord::Delete(key) => {
-                    // Store the tombstone so subsequent replays and
-                    // subsequent live reads observe the deletion.
                     map.insert(key, BlobValue::Tombstone);
                 }
             }
@@ -177,25 +243,108 @@ impl BlobStorage {
         Ok(Self {
             inner: Arc::new(RwLock::new(map)),
             wal: Some(Arc::new(wal)),
+            sstable_path: Some(sstable_path),
+            wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
         })
     }
 
-    /// Force a durable fsync of all pending WAL writes.
+    /// Force a durable fsync of the WAL and, if the WAL has grown past
+    /// the configured threshold, roll the current in-memory state into
+    /// a fresh `SSTable` and truncate the WAL.
     ///
-    /// Only meaningful when the store was opened with
-    /// [`SyncPolicy::Batched`] or [`SyncPolicy::Manual`]. For the
-    /// default `EveryWrite` policy this is a fast no-op (the pending
-    /// counter is always zero).
+    /// The `SSTable` rewrite is skipped when the store is below the
+    /// threshold — that path is what `SyncPolicy::EveryWrite` already
+    /// keeps durable. Callers who want to force a rewrite unconditionally
+    /// should use [`Self::flush_to_sstable`] directly.
     ///
     /// Returns `Ok(())` for in-memory stores created via [`Self::new`].
     ///
     /// # Errors
-    /// Propagates the underlying WAL fsync error.
+    /// Propagates the underlying WAL / `SSTable` error.
     pub fn flush(&self) -> io::Result<()> {
-        match &self.wal {
-            Some(wal) => wal.flush(),
-            None => Ok(()),
+        let Some(wal) = &self.wal else {
+            return Ok(());
+        };
+        wal.flush()?;
+
+        // Auto-flush if the WAL has grown past the threshold. We ignore
+        // the `sstable_path == None` case defensively; a durable store
+        // always has one set by `open_with_config`.
+        if let Some(_sst_path) = &self.sstable_path {
+            let size = wal.size_on_disk()?;
+            if size >= self.wal_flush_threshold_bytes {
+                self.flush_to_sstable()?;
+            }
         }
+        Ok(())
+    }
+
+    /// Rewrite the in-memory snapshot into a fresh `SSTable` and truncate
+    /// the WAL. Callers can invoke this at will (e.g. at shutdown, or
+    /// after a large bulk load) to keep reopen latency low.
+    ///
+    /// The write is atomic against readers via a rename dance: the new
+    /// `SSTable` is first materialised in a sibling `.tmp` path and then
+    /// renamed over the destination. A crash between rename and
+    /// truncate is safe: the WAL replay on next open produces the same
+    /// state (`SSTable` + full WAL), the auto-flush simply re-runs.
+    ///
+    /// Returns `Ok(())` for in-memory stores created via [`Self::new`].
+    ///
+    /// # Errors
+    /// Propagates any `SSTable` write, WAL truncate, or `SSTable` rename
+    /// error.
+    pub fn flush_to_sstable(&self) -> io::Result<()> {
+        let Some(sstable_path) = &self.sstable_path else {
+            return Ok(());
+        };
+        let Some(wal) = &self.wal else {
+            return Ok(());
+        };
+
+        // Snapshot the current live state.
+        let guard = self.inner.read();
+        let entries: Vec<(Vec<u8>, BlobValue)> = guard
+            .iter()
+            .filter_map(|(k, v)| {
+                if matches!(v, BlobValue::Tombstone) {
+                    None
+                } else {
+                    Some((k.clone(), v.clone()))
+                }
+            })
+            .collect();
+        drop(guard);
+
+        // The SSTable writer expects borrows; hand it a view over the
+        // owned copies we just collected.
+        BlobSstable::write_from_iter(sstable_path, entries.iter().map(|(k, v)| (k.as_slice(), v)))?;
+
+        // After the SSTable is durably in place we can safely truncate
+        // the WAL. Physical removal of tombstones happens implicitly:
+        // the SSTable write filtered them out and the WAL is about to
+        // be empty.
+        wal.flush()?;
+        wal.truncate()?;
+
+        // Prune tombstones from the in-memory map so future scans do
+        // not re-check them.
+        let mut guard = self.inner.write();
+        guard.retain(|_, v| !matches!(v, BlobValue::Tombstone));
+        Ok(())
+    }
+
+    /// Whether the durable variant has crossed its auto-flush threshold
+    /// and should be re-rolled into an `SSTable`. Public for tests and
+    /// diagnostic uses.
+    ///
+    /// # Errors
+    /// Propagates the underlying WAL size query.
+    pub fn wal_needs_flush(&self) -> io::Result<bool> {
+        let Some(wal) = &self.wal else {
+            return Ok(false);
+        };
+        Ok(wal.size_on_disk()? >= self.wal_flush_threshold_bytes)
     }
 
     /// Insert or overwrite a key with a value, compressing if worthwhile.
@@ -214,8 +363,11 @@ impl BlobStorage {
         if let Some(wal) = &self.wal {
             wal.append_put(key, &stored)?;
         }
-        let mut guard = self.inner.write();
-        guard.insert(key.to_vec(), stored);
+        {
+            let mut guard = self.inner.write();
+            guard.insert(key.to_vec(), stored);
+        }
+        self.maybe_auto_flush()?;
         Ok(())
     }
 
@@ -290,8 +442,26 @@ impl BlobStorage {
         if let Some(wal) = &self.wal {
             wal.append_delete(key)?;
         }
-        let mut guard = self.inner.write();
-        guard.insert(key.to_vec(), BlobValue::Tombstone);
+        {
+            let mut guard = self.inner.write();
+            guard.insert(key.to_vec(), BlobValue::Tombstone);
+        }
+        self.maybe_auto_flush()?;
+        Ok(())
+    }
+
+    /// If the WAL has grown past the configured threshold, roll the
+    /// current in-memory state into a fresh `SSTable` and truncate the
+    /// WAL. Called at the tail of every successful `put` / `delete`.
+    ///
+    /// Cheap when the WAL is small: a single `metadata` syscall. A
+    /// pathological workload that hovers just under the threshold
+    /// pays for that syscall on every write; α-3.3 introduces a
+    /// cheaper heuristic (per-record counter) alongside compaction.
+    fn maybe_auto_flush(&self) -> io::Result<()> {
+        if self.wal_needs_flush()? {
+            self.flush_to_sstable()?;
+        }
         Ok(())
     }
 
@@ -314,6 +484,22 @@ impl BlobStorage {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Derive the `SSTable` path from the WAL path.
+///
+/// The convention is `blob.wal` -> `blob.sst`. Any other stem is
+/// preserved verbatim so a caller passing `foo.wal` sees `foo.sst`.
+fn sibling_sstable_path(wal_path: &Path) -> PathBuf {
+    let mut sst = wal_path.to_path_buf();
+    let file_stem = sst
+        .file_stem()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    let mut with_ext = file_stem;
+    with_ext.push(".sst");
+    sst.set_file_name(with_ext);
+    sst
 }
 
 #[cfg(test)]

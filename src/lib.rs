@@ -191,6 +191,7 @@ pub mod analytics_bridge;
 pub mod blob;
 pub mod blob_sstable;
 pub mod blob_wal;
+pub mod bloom;
 pub mod checksum;
 pub mod compaction;
 #[cfg(feature = "crypto")]

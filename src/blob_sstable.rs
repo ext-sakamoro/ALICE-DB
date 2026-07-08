@@ -58,22 +58,38 @@ use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::blob::BlobValue;
+use crate::bloom::BloomFilter;
 
 /// File-format magic marking the start of a blob `SSTable`.
 const HEADER_MAGIC: &[u8; 8] = b"ALICEBBS";
 /// File-format magic marking the end of a blob `SSTable`.
 const FOOTER_MAGIC: &[u8; 8] = b"ALICEEND";
-/// Format version. Every write of the current codebase stamps this;
-/// readers reject anything else.
-const CURRENT_VERSION: u32 = 1;
+/// v0.2.0-alpha.2 through v0.2.0-alpha.5: header + records + footer,
+/// no Bloom section.
+const FORMAT_VERSION_V1: u32 = 1;
+/// v0.2.0-alpha.6+: header + records + Bloom section + extended footer
+/// (`records_size` + `bloom_size` + magic).
+const FORMAT_VERSION_V2: u32 = 2;
+/// Every new write stamps this. Readers accept both v1 and v2.
+const CURRENT_VERSION: u32 = FORMAT_VERSION_V2;
 /// Bytes occupied by the fixed-size header.
 const HEADER_LEN: usize = 24;
-/// Bytes occupied by the fixed-size footer.
-const FOOTER_LEN: usize = 16;
+/// Bytes occupied by the v1 footer: `records_size (u64) + magic (8)`.
+const FOOTER_LEN_V1: usize = 16;
+/// Bytes occupied by the v2 footer: `records_size (u64) + bloom_size (u64) + magic (8)`.
+const FOOTER_LEN_V2: usize = 24;
 /// Encoded flag for `BlobValue::Raw`.
 const VALUE_KIND_RAW: u8 = 0x00;
 /// Encoded flag for `BlobValue::Compressed`.
 const VALUE_KIND_COMPRESSED: u8 = 0x01;
+
+/// Prelude of the Bloom section:
+/// `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + crc32c (u32)`.
+const BLOOM_HEADER_LEN: usize = 8 + 4 + 8 + 4;
+
+/// False-positive rate target for the Bloom filter attached to each
+/// `SSTable`. 1% is the classic sweet spot: ~9.6 bits/key, 7 hashes.
+const BLOOM_FALSE_POSITIVE_RATE: f64 = 0.01;
 
 /// Number of decimal digits in the zero-padded sequence part of an
 /// `Append`-mode `SSTable` filename (`blob-{seq:06}.sst`).
@@ -192,12 +208,18 @@ pub fn max_sstable_seq(dir: impl AsRef<Path>) -> io::Result<Option<u64>> {
 /// [`BlobSstable::open`].
 ///
 /// Alpha-3.2a loads every record into memory so the in-memory `BTreeMap`
-/// can be reconstructed via a single `extend`. A future alpha (α-3.3)
-/// will keep the file mmap'd for point lookups without full load.
+/// can be reconstructed via a single `extend`. Alpha-3.3b-1 additionally
+/// carries the file's Bloom filter (when it is v2); a future alpha
+/// (α-3.3b-2) will keep the file mmap'd for point lookups without full
+/// load.
 #[derive(Debug)]
 pub struct BlobSstable {
     path: PathBuf,
     records: Vec<(Vec<u8>, BlobValue)>,
+    /// Present only for format v2 files. `None` for v1 files written by
+    /// v0.2.0-alpha.2 through v0.2.0-alpha.5 — callers must treat those
+    /// as if the Bloom always accepts every key.
+    bloom: Option<BloomFilter>,
 }
 
 impl BlobSstable {
@@ -205,6 +227,16 @@ impl BlobSstable {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Bloom filter attached to this `SSTable`, if the file was written
+    /// in format v2 or later. `None` when reading a legacy v1 file.
+    ///
+    /// Callers checking membership should treat `None` as
+    /// "the Bloom cannot help — always look in the records".
+    #[must_use]
+    pub fn bloom(&self) -> Option<&BloomFilter> {
+        self.bloom.as_ref()
     }
 
     /// Number of records the `SSTable` holds.
@@ -287,6 +319,10 @@ impl BlobSstable {
             .open(&tmp_path)?;
         let mut writer = BufWriter::new(file);
 
+        // Build the Bloom filter as we iterate — sized for this exact
+        // record count and 1% false-positive rate.
+        let mut bloom = BloomFilter::with_capacity(entries.len(), BLOOM_FALSE_POSITIVE_RATE);
+
         // Header
         writer.write_all(HEADER_MAGIC)?;
         writer.write_all(&CURRENT_VERSION.to_le_bytes())?;
@@ -301,6 +337,7 @@ impl BlobSstable {
                 BlobValue::Compressed(b) => (VALUE_KIND_COMPRESSED, b.as_slice()),
                 BlobValue::Tombstone => unreachable!("filtered above"),
             };
+            bloom.insert(key);
             let record = serialise_record(key, kind, bytes)?;
             writer.write_all(&record)?;
             records_size = records_size
@@ -310,8 +347,17 @@ impl BlobSstable {
                 })?;
         }
 
-        // Footer
+        // Bloom section (v2). We record its total on-disk length so the
+        // reader can partition the file without walking every record.
+        let bloom_section = serialise_bloom(&bloom)?;
+        let bloom_size = u64::try_from(bloom_section.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "bloom section overflows u64")
+        })?;
+        writer.write_all(&bloom_section)?;
+
+        // v2 Footer: records_size + bloom_size + magic.
         writer.write_all(&records_size.to_le_bytes())?;
+        writer.write_all(&bloom_size.to_le_bytes())?;
         writer.write_all(FOOTER_MAGIC)?;
 
         let file = writer
@@ -341,14 +387,15 @@ impl BlobSstable {
             Err(e) => return Err(e),
         };
 
-        // Read the whole file — alpha-3.2a is not memory-frugal by design.
+        // Read the whole file — alpha-3.2a/α-3.3b-1 are not memory-frugal
+        // by design. α-3.3b-2 will keep the file mmap'd instead.
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
 
-        if bytes.len() < HEADER_LEN + FOOTER_LEN {
+        if bytes.len() < HEADER_LEN + FOOTER_LEN_V1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "sstable is smaller than the fixed header + footer",
+                "sstable is smaller than the fixed header + v1 footer",
             ));
         }
         if &bytes[0..8] != HEADER_MAGIC {
@@ -358,43 +405,111 @@ impl BlobSstable {
             ));
         }
         let version = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-        if version != CURRENT_VERSION {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unsupported sstable version {version}; expected {CURRENT_VERSION}"),
-            ));
-        }
         let num_records = u64::from_le_bytes([
             bytes[12], bytes[13], bytes[14], bytes[15], bytes[16], bytes[17], bytes[18], bytes[19],
         ]);
 
-        let footer_start = bytes.len() - FOOTER_LEN;
-        if &bytes[footer_start + 8..] != FOOTER_MAGIC {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "sstable footer magic mismatch",
-            ));
-        }
-        let footer_records_size = u64::from_le_bytes([
-            bytes[footer_start],
-            bytes[footer_start + 1],
-            bytes[footer_start + 2],
-            bytes[footer_start + 3],
-            bytes[footer_start + 4],
-            bytes[footer_start + 5],
-            bytes[footer_start + 6],
-            bytes[footer_start + 7],
-        ]);
-        let records_slice = &bytes[HEADER_LEN..footer_start];
-        if u64::try_from(records_slice.len()).unwrap_or(u64::MAX) != footer_records_size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "sstable footer records_size does not match section length",
-            ));
-        }
+        let (records_slice, bloom) = match version {
+            FORMAT_VERSION_V1 => {
+                let footer_start = bytes.len() - FOOTER_LEN_V1;
+                if &bytes[footer_start + 8..] != FOOTER_MAGIC {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v1 footer magic mismatch",
+                    ));
+                }
+                let footer_records_size = u64::from_le_bytes([
+                    bytes[footer_start],
+                    bytes[footer_start + 1],
+                    bytes[footer_start + 2],
+                    bytes[footer_start + 3],
+                    bytes[footer_start + 4],
+                    bytes[footer_start + 5],
+                    bytes[footer_start + 6],
+                    bytes[footer_start + 7],
+                ]);
+                let records_slice = &bytes[HEADER_LEN..footer_start];
+                if u64::try_from(records_slice.len()).unwrap_or(u64::MAX) != footer_records_size {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v1 footer records_size does not match section length",
+                    ));
+                }
+                (records_slice, None)
+            }
+            FORMAT_VERSION_V2 => {
+                if bytes.len() < HEADER_LEN + FOOTER_LEN_V2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v2 is smaller than the fixed header + v2 footer",
+                    ));
+                }
+                let footer_start = bytes.len() - FOOTER_LEN_V2;
+                if &bytes[footer_start + 16..] != FOOTER_MAGIC {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v2 footer magic mismatch",
+                    ));
+                }
+                let footer_records_size = u64::from_le_bytes([
+                    bytes[footer_start],
+                    bytes[footer_start + 1],
+                    bytes[footer_start + 2],
+                    bytes[footer_start + 3],
+                    bytes[footer_start + 4],
+                    bytes[footer_start + 5],
+                    bytes[footer_start + 6],
+                    bytes[footer_start + 7],
+                ]);
+                let footer_bloom_size = u64::from_le_bytes([
+                    bytes[footer_start + 8],
+                    bytes[footer_start + 9],
+                    bytes[footer_start + 10],
+                    bytes[footer_start + 11],
+                    bytes[footer_start + 12],
+                    bytes[footer_start + 13],
+                    bytes[footer_start + 14],
+                    bytes[footer_start + 15],
+                ]);
+                let records_end = HEADER_LEN
+                    + usize::try_from(footer_records_size).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "sstable v2 records_size exceeds usize",
+                        )
+                    })?;
+                let bloom_end = records_end
+                    + usize::try_from(footer_bloom_size).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "sstable v2 bloom_size exceeds usize",
+                        )
+                    })?;
+                if bloom_end != footer_start {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable v2 section sizes do not add up to file size",
+                    ));
+                }
+                let records_slice = &bytes[HEADER_LEN..records_end];
+                let bloom_slice = &bytes[records_end..bloom_end];
+                let bloom = parse_bloom(bloom_slice)?;
+                (records_slice, Some(bloom))
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unsupported sstable version {other}; expected 1 or 2"),
+                ));
+            }
+        };
 
         let records = parse_records(records_slice, num_records)?;
-        Ok(Some(Self { path, records }))
+        Ok(Some(Self {
+            path,
+            records,
+            bloom,
+        }))
     }
 }
 
@@ -422,6 +537,76 @@ fn serialise_record(key: &[u8], value_kind: u8, value: &[u8]) -> io::Result<Vec<
     let crc = hasher.finalize();
     buf.extend_from_slice(&crc.to_le_bytes());
     Ok(buf)
+}
+
+/// Encode the Bloom filter as a byte sequence with a CRC32C trailer.
+/// Layout: `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + bloom_bits + crc32c`.
+fn serialise_bloom(bloom: &BloomFilter) -> io::Result<Vec<u8>> {
+    let bits = bloom.as_bits();
+    let bits_len = u64::try_from(bits.len()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "bloom bits length exceeds u64")
+    })?;
+    let mut buf = Vec::with_capacity(BLOOM_HEADER_LEN + bits.len());
+    buf.extend_from_slice(&bloom.num_bits().to_le_bytes());
+    buf.extend_from_slice(&bloom.num_hashes().to_le_bytes());
+    buf.extend_from_slice(&bits_len.to_le_bytes());
+    buf.extend_from_slice(bits);
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&buf);
+    let crc = hasher.finalize();
+    buf.extend_from_slice(&crc.to_le_bytes());
+    Ok(buf)
+}
+
+/// Decode a Bloom section produced by [`serialise_bloom`].
+fn parse_bloom(bytes: &[u8]) -> io::Result<BloomFilter> {
+    if bytes.len() < BLOOM_HEADER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sstable bloom section shorter than its header",
+        ));
+    }
+    let num_bits = u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]);
+    let num_hashes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    let bits_len = u64::from_le_bytes([
+        bytes[12], bytes[13], bytes[14], bytes[15], bytes[16], bytes[17], bytes[18], bytes[19],
+    ]);
+    let bits_len_usize = usize::try_from(bits_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sstable bloom bits length exceeds usize",
+        )
+    })?;
+    let expected_total = BLOOM_HEADER_LEN + bits_len_usize;
+    if bytes.len() != expected_total {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sstable bloom section length mismatch",
+        ));
+    }
+    // Verify CRC over everything up to (but not including) the trailer.
+    let crc_start = expected_total - 4;
+    let expected_crc = u32::from_le_bytes([
+        bytes[crc_start],
+        bytes[crc_start + 1],
+        bytes[crc_start + 2],
+        bytes[crc_start + 3],
+    ]);
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&bytes[..crc_start]);
+    if hasher.finalize() != expected_crc {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sstable bloom CRC32C mismatch",
+        ));
+    }
+    // Bits section: after the fixed header, before the CRC.
+    let bits_start = 8 + 4 + 8;
+    let bits_end = bits_start + bits_len_usize;
+    let bits = bytes[bits_start..bits_end].to_vec();
+    Ok(BloomFilter::from_raw(bits, num_bits, num_hashes))
 }
 
 /// Parse the records section into `(key, value)` pairs, verifying the
@@ -534,11 +719,11 @@ pub fn sstable_size_on_disk(path: impl AsRef<Path>) -> io::Result<Option<u64>> {
 
 #[allow(dead_code)]
 fn __sanity_check_footer_len() {
-    // If FOOTER_LEN ever drifts away from `8 (records_size) + 8 (magic)`
-    // the reader logic above will silently misread. This anchor exists
-    // for the human next to touch the format constants; a proper
-    // static assert lands with more format churn in α-3.3.
-    let _: [u8; FOOTER_LEN] = [0_u8; 16];
+    // If either footer length ever drifts away from its documented
+    // layout the reader logic above will silently misread. These
+    // anchors exist for the human next to touch the format constants.
+    let _: [u8; FOOTER_LEN_V1] = [0_u8; 16];
+    let _: [u8; FOOTER_LEN_V2] = [0_u8; 24];
 }
 
 // Silence an "unused" warning for `Seek` and `SeekFrom` when the tests
@@ -662,7 +847,16 @@ mod tests {
         let raw = BlobValue::Raw(b"v".to_vec());
         BlobSstable::write_from_iter(&path, [(b"k".as_slice(), &raw)]).unwrap();
         let size = sstable_size_on_disk(&path).unwrap().unwrap();
-        // Header (24) + 1 record (9 + 1 + 1 + 4) + footer (16) = 55 bytes.
-        assert_eq!(size, 55);
+        // Format v2 (α-3.3b-1):
+        //   Header (24)
+        //   Records = 1 × (9 + key_len=1 + value_len=1 + crc=4) = 15
+        //   Bloom section = 8 + 4 + 8 + bits_len (~2 for n=1) + crc=4 = ~26
+        //   Footer (24 = records_size + bloom_size + magic)
+        // = 89 bytes. Anchor is loose to survive the Bloom sizing
+        // formula tweaking that may land in α-3.3b-2.
+        assert!(
+            (80..=100).contains(&size),
+            "expected a v2 file in the 80..=100 byte range; got {size}"
+        );
     }
 }

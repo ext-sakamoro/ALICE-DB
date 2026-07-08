@@ -2,6 +2,55 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [0.2.0-alpha.6] - 2026-07-08
+
+α-3.3b-1 subset: durable investment for the on-disk read fast path. Introduces `SSTable` format v2 with an embedded Bloom filter per file and a longer 24-byte footer (`records_size` + `bloom_size` + magic). Format v1 files written by v0.2.0-alpha.2 through v0.2.0-alpha.5 continue to open and are transparently upgraded to v2 on the next flush or compaction. The read path itself continues to load records into memory — mmap + Bloom-guarded point lookups land in α-3.3b-2.
+
+### Added
+
+- `src/bloom.rs` — dependency-free Bloom filter.
+  - `BloomFilter::with_capacity(expected_elements, false_positive_rate)` sized via `m = ⌈-n·ln(p)/(ln 2)²⌉`, `k = ⌈m/n·ln 2⌉`.
+  - `BloomFilter::from_raw(bits, num_bits, num_hashes)` reconstructs a filter from its serialised components (used by the SSTable reader).
+  - `insert` / `contains` implemented via Kirsch-Mitzenmacher double hashing over `std::hash::DefaultHasher` (SipHash-2-4), so the crate remains dependency-free.
+  - 5 unit tests: empty filter rejects, no false negatives, false-positive rate stays within 2× of target at n = 4 096 keys, roundtrip through raw bits preserves membership, sizing scales with element count.
+- `blob_sstable::BlobSstable::bloom()` accessor — returns `Some(&BloomFilter)` for v2 files and `None` for legacy v1 files.
+- `blob_sstable` constants: `FORMAT_VERSION_V1` / `FORMAT_VERSION_V2` / `CURRENT_VERSION` / `FOOTER_LEN_V1` / `FOOTER_LEN_V2` / `BLOOM_HEADER_LEN` / `BLOOM_FALSE_POSITIVE_RATE`.
+- 4 integration tests in `tests/blob_sstable_bloom.rs`:
+  - New v2 writes carry a Bloom filter that accepts every inserted key (no false negatives).
+  - Bloom rejects clearly-absent keys (≥ 100 / 128 unrelated probes rejected).
+  - Legacy v1 files (hand-written to alpha.5 bytes) still open; `bloom()` reports `None`; records read back correctly.
+  - `AliceDB::open` on a directory with a legacy v1 `blob.sst` reads it transparently; the first `compact_blob_sstable()` upgrades it to v2.
+
+### Changed
+
+- `BlobSstable::write_from_iter` now:
+  - Builds a Bloom filter during record iteration (sized by observed record count at the classic 1 % false-positive rate).
+  - Writes the Bloom section between the records and the footer.
+  - Emits a v2 footer: `records_size (u64) + bloom_size (u64) + magic (8)` — 24 bytes instead of the v1 16.
+  - Header now stamps `FORMAT_VERSION_V2`.
+- `BlobSstable::open` branches on the header version:
+  - v1: reads the 16-byte footer as `records_size + magic`; `bloom()` returns `None`.
+  - v2: reads the 24-byte footer as `records_size + bloom_size + magic`; parses the Bloom section and stores the reconstructed filter.
+- Any newly-written or newly-compacted SSTable is v2. Read-side callers that need to distinguish should probe `.bloom().is_some()`.
+
+### Backward compatibility
+
+- v1 files (`ALICEBBS` header + 16-byte footer) written by any of v0.2.0-alpha.2 through v0.2.0-alpha.5 continue to open on `BlobStorage::open_with_config` and `AliceDB::open`. The reader simply reports `bloom() == None` — the read path already probes the record map, so a missing Bloom is a semantic no-op (equivalent to a filter that never rejects).
+- The first flush or compaction on such a database rewrites the file as v2 with a Bloom filter attached. No user-visible action is required.
+
+### Design decisions
+
+- **Bloom sized by observed record count**: the writer knows the exact record count once it has iterated the input, so it sizes the filter for that count at the fixed 1 % target rate. This keeps every file's on-disk overhead proportional to its own contents (~1.2 bytes/key).
+- **`std::hash::DefaultHasher` for hashing**: SipHash-2-4 is the standard library's built-in hasher, so we avoid adding a hashing dependency at this stage. `α-3.3b-2` can swap in `xxhash-rust` or `wyhash` if benchmarks justify it.
+- **Kirsch-Mitzenmacher double hashing**: one SipHash call per key produces two `u64` values (via a differentiating suffix on the second call); the `k` bit positions are derived as `h1 + i · h2 mod m`. This preserves the standard false-positive-rate analysis while doing only one hash call per operation.
+- **CRC32C on the Bloom section**: same integrity story as records. Corrupted files fail loudly on open.
+- **Read path unchanged in α-3.3b-1**: the Bloom filter is *loaded and available* but not yet consulted by `get_blob`. That gates on the mmap + `LoadedSstable` split that lands in α-3.3b-2; shipping the format now means α-3.3b-2 does not need a second format migration.
+
+### α-3 roadmap remainder
+
+- **α-3.3b-2**: mmap-backed read path (`LoadedSstable` = `memtable` + `Vec<mmap SSTables>`) + Bloom-guarded point lookups on `get_blob`. The format v2 infrastructure shipped here is a prerequisite.
+- **α-3.3b-3**: sparse index / prefix trie inside each SSTable for accelerated `scan_blob_prefix`.
+
 ## [0.2.0-alpha.5] - 2026-07-08
 
 α-3.3a subset: multi-SSTable path with sequential numbering and simple full-merge compaction. Query-side acceleration (Bloom filter / prefix trie) remains scheduled for α-3.3b. `FlushMode::Overwrite` — matching v0.2.0-alpha.4 semantics — stays the default so pre-α-3.3 callers observe no behaviour change.

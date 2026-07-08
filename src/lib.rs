@@ -48,7 +48,7 @@
 //!     .execute()?;
 //! ```
 //!
-//! # Quick Start — Blob key-value store (v0.2.0-alpha.2)
+//! # Quick Start — Blob key-value store (v0.2.0-alpha.3)
 //!
 //! Alongside the time-series API, ALICE-DB exposes a general byte-keyed
 //! blob store with durable WAL persistence. Values that cross the
@@ -88,9 +88,33 @@
 //! assert_eq!(db.blob_len(), 2);
 //! ```
 //!
-//! Alpha-2 caveats: single-writer per data directory (no cross-process
-//! file lock), one fsync per operation (no group commit). File
-//! locking and batched fsync land in alpha-3. See
+//! ## Alpha-3.1 improvements
+//!
+//! - **Exclusive file lock**: `AliceDB::open` now takes an advisory
+//!   `fs2` lock on the blob WAL. A second `open` on the same path
+//!   fails with `WouldBlock` until the first handle is dropped.
+//! - **Configurable `SyncPolicy`**: choose between per-write fsync
+//!   (default, matches alpha-2), batched fsync every N records, or
+//!   fully manual (`AliceDB::open_with_blob_sync_policy`,
+//!   `AliceDB::flush_blobs`).
+//!
+//! ```rust,ignore
+//! use alice_db::{AliceDB, blob_wal::SyncPolicy};
+//!
+//! // Batch 128 writes per fsync, then flush at the end for durability.
+//! let db = AliceDB::open_with_blob_sync_policy(
+//!     "./my_data",
+//!     SyncPolicy::Batched { max_pending_ops: 128 },
+//! )?;
+//! for (i, payload) in stubs.iter().enumerate() {
+//!     let key = format!("stub-{i:04}");
+//!     db.put_blob(key.as_bytes(), payload)?;
+//! }
+//! db.flush_blobs()?;
+//! ```
+//!
+//! Alpha-3.2 and alpha-3.3 add SSTable format v2 / compaction and
+//! query acceleration (Bloom filter, prefix trie) respectively. See
 //! `docs/EXPANSION_PROPOSAL.md` for the full roadmap.
 //!
 //! # Quick Start (Python)
@@ -226,34 +250,82 @@ impl AliceDB {
     /// Creates the directory if it doesn't exist. The blob key-value
     /// store is opened durably at `<path>/blob.wal` (v0.2.0-alpha.2+),
     /// replaying any pre-existing WAL records so blob state survives
-    /// process restarts. The time-series engine and blob store use
-    /// independent files, so neither one disturbs the other.
+    /// process restarts. In v0.2.0-alpha.3 the WAL takes an exclusive
+    /// advisory lock; a second `AliceDB::open` on the same path from
+    /// any process fails with a `WouldBlock`-flavoured error until the
+    /// first handle is dropped.
+    ///
+    /// The blob WAL uses [`blob::blob_wal::SyncPolicy::EveryWrite`] by
+    /// default; use [`Self::open_with_blob_sync_policy`] to override.
+    /// The time-series engine and blob store use independent files, so
+    /// neither one disturbs the other.
     ///
     /// # Errors
     ///
-    /// Returns an error if the storage engine cannot be opened or the
-    /// blob WAL cannot be created / replayed.
+    /// Returns an error if the storage engine cannot be opened, the
+    /// blob WAL cannot be created / replayed, or the blob WAL is
+    /// already locked by another writer.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Self::open_with_blob_sync_policy(path, blob_wal::SyncPolicy::default())
+    }
+
+    /// Same as [`Self::open`] with an explicit
+    /// [`blob_wal::SyncPolicy`] for the blob WAL. Useful for bulk load
+    /// pipelines that prefer throughput over per-op durability.
+    ///
+    /// # Errors
+    /// See [`Self::open`].
+    pub fn open_with_blob_sync_policy<P: AsRef<Path>>(
+        path: P,
+        blob_sync_policy: blob_wal::SyncPolicy,
+    ) -> io::Result<Self> {
         let blob_wal_path = path.as_ref().join("blob.wal");
         let engine = StorageEngine::open(path)?;
-        let blob = blob::BlobStorage::open(blob_wal_path)?;
+        let blob = blob::BlobStorage::open_with_policy(blob_wal_path, blob_sync_policy)?;
         Ok(Self { engine, blob })
     }
 
     /// Open with custom configuration.
     ///
     /// The blob WAL is placed at `config.data_dir/blob.wal`, mirroring
-    /// [`Self::open`]'s layout.
+    /// [`Self::open`]'s layout, and uses
+    /// [`blob::blob_wal::SyncPolicy::EveryWrite`]. Use
+    /// [`Self::with_config_and_blob_sync_policy`] to override.
     ///
     /// # Errors
     ///
     /// Returns an error if the storage engine cannot be initialised with
     /// the given config, or if the blob WAL cannot be created / replayed.
     pub fn with_config(config: StorageConfig) -> io::Result<Self> {
+        Self::with_config_and_blob_sync_policy(config, blob_wal::SyncPolicy::default())
+    }
+
+    /// Same as [`Self::with_config`] with an explicit blob
+    /// [`blob_wal::SyncPolicy`].
+    ///
+    /// # Errors
+    /// See [`Self::with_config`].
+    pub fn with_config_and_blob_sync_policy(
+        config: StorageConfig,
+        blob_sync_policy: blob_wal::SyncPolicy,
+    ) -> io::Result<Self> {
         let blob_wal_path = config.data_dir.join("blob.wal");
         let engine = StorageEngine::new(config)?;
-        let blob = blob::BlobStorage::open(blob_wal_path)?;
+        let blob = blob::BlobStorage::open_with_policy(blob_wal_path, blob_sync_policy)?;
         Ok(Self { engine, blob })
+    }
+
+    /// Force a durable fsync of any pending blob WAL writes.
+    ///
+    /// Only meaningful when the store was opened with
+    /// [`blob_wal::SyncPolicy::Batched`] or
+    /// [`blob_wal::SyncPolicy::Manual`]. For the default
+    /// `EveryWrite` policy this is a fast no-op.
+    ///
+    /// # Errors
+    /// Propagates the underlying `sync_data` error.
+    pub fn flush_blobs(&self) -> io::Result<()> {
+        self.blob.flush()
     }
 
     /// Insert a single value

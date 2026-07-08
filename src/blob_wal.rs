@@ -1,4 +1,4 @@
-//! Write-ahead log for the blob key-value store (v0.2.0-alpha.2).
+//! Write-ahead log for the blob key-value store (v0.2.0-alpha.3).
 //!
 //! `BlobWal` is an append-only file backing the in-memory
 //! [`crate::blob::BlobStorage`]. Every `put_blob` and `delete_blob`
@@ -38,20 +38,64 @@
 //! # Concurrency and durability
 //!
 //! [`BlobWal::append_put`] / [`BlobWal::append_delete`] serialise the
-//! record, write it in a single `write_all`, and then `sync_data` the
-//! file handle before returning. Alpha-2 does one fsync per operation;
-//! batched fsyncs land in alpha-3.
+//! record and write it in a single `write_all`. When and whether the
+//! file handle is subsequently `sync_data`'d is controlled by the
+//! [`SyncPolicy`] chosen at open time:
 //!
-//! No cross-process locking is applied. Alpha-2 assumes a single writer
-//! per data directory. Multi-writer safety is deferred to alpha-3.
+//! - [`SyncPolicy::EveryWrite`] (default) — fsync after every record.
+//!   Matches alpha-2 behaviour; strongest crash-recovery guarantee, one
+//!   fsync per op.
+//! - [`SyncPolicy::Batched`] — fsync only once every `max_pending_ops`
+//!   records. Trades a bounded window of the newest writes for
+//!   throughput. Callers may still force an fsync with
+//!   [`BlobWal::flush`].
+//! - [`SyncPolicy::Manual`] — never auto-fsync; the caller is fully
+//!   responsible for durability via [`BlobWal::flush`]. Intended for
+//!   bulk-load pipelines that fsync exactly once at the end.
+//!
+//! # Cross-process locking
+//!
+//! On open the WAL takes an exclusive [`fs2`] advisory lock on the file
+//! handle. A second process (or a second call in the same process)
+//! attempting to open the same WAL file receives a
+//! `WouldBlock`-flavoured `io::Error`. Alpha-3 documents this as the
+//! canonical way to detect a running writer; multi-writer coordination
+//! (leases, coordinator process) is out of scope for alpha.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use parking_lot::Mutex;
 
 use crate::blob::BlobValue;
+
+/// How aggressively the WAL should `fsync` after each append.
+///
+/// Introduced in v0.2.0-alpha.3. Alpha-2 was hard-wired to the
+/// [`Self::EveryWrite`] behaviour; existing callers of
+/// [`BlobWal::open`] and [`crate::blob::BlobStorage::open`] get that
+/// default unchanged.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum SyncPolicy {
+    /// `sync_data` after every record. Every append is durable by the
+    /// time it returns; matches alpha-2 semantics.
+    #[default]
+    EveryWrite,
+    /// `sync_data` only after `max_pending_ops` unsynced records have
+    /// been buffered. A power loss can lose the last
+    /// `max_pending_ops - 1` records. Callers can force an fsync
+    /// earlier via [`BlobWal::flush`].
+    Batched {
+        /// Maximum number of unsynced records before an implicit fsync
+        /// is issued.
+        max_pending_ops: usize,
+    },
+    /// Never auto-fsync. Durability is entirely delegated to explicit
+    /// [`BlobWal::flush`] calls. Suitable for one-shot bulk loading.
+    Manual,
+}
 
 /// Record type tag: `put` or `delete`.
 const RECORD_TYPE_PUT: u8 = 0x01;
@@ -87,25 +131,50 @@ pub enum WalRecord {
 ///
 /// Wraps a `File` behind a `parking_lot::Mutex` so multi-threaded writers
 /// serialise their appends. The `Mutex` also guards the `sync_data`
-/// call, so a return from `append_*` implies the record has been flushed
-/// to the OS-level file system.
+/// call and the pending-write counter used by
+/// [`SyncPolicy::Batched`], so callers of `append_*` observe atomic
+/// state transitions.
 #[derive(Debug)]
 pub struct BlobWal {
     path: PathBuf,
-    file: Mutex<File>,
+    state: Mutex<WalState>,
+    sync_policy: SyncPolicy,
+}
+
+/// Interior state guarded by the outer `Mutex`. Kept separate so a
+/// single `lock()` yields access to both the file handle and the
+/// batched-write counter.
+#[derive(Debug)]
+struct WalState {
+    file: File,
+    /// Number of appended records not yet reflected on disk via
+    /// `sync_data`. `EveryWrite` keeps this at zero because it fsyncs
+    /// unconditionally; `Batched` and `Manual` allow it to grow.
+    pending_ops: usize,
 }
 
 impl BlobWal {
-    /// Open (or create) the WAL at `path`.
+    /// Open (or create) the WAL at `path` with the default
+    /// [`SyncPolicy::EveryWrite`].
     ///
     /// Missing parent directories are created. The file is opened in
-    /// read+write+append mode so replay reads and mutation writes share
+    /// read+append mode so replay reads and mutation writes share
     /// a single handle; every append seeks to end implicitly via the
-    /// `append` flag.
+    /// `append` flag. An exclusive `fs2` advisory lock is taken so a
+    /// concurrent open sees a `WouldBlock` error.
     ///
     /// # Errors
-    /// Returns `io::Error` if directory creation or file open fails.
+    /// Returns `io::Error` if directory creation, file open, or lock
+    /// acquisition fails.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::open_with_policy(path, SyncPolicy::default())
+    }
+
+    /// Same as [`Self::open`] but with an explicit [`SyncPolicy`].
+    ///
+    /// # Errors
+    /// See [`Self::open`].
+    pub fn open_with_policy(path: impl AsRef<Path>, sync_policy: SyncPolicy) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -115,10 +184,52 @@ impl BlobWal {
             .create(true)
             .append(true)
             .open(&path)?;
+        // Exclusive advisory lock. If another process (or the same
+        // process) already holds the lock we bail with a descriptive
+        // error so the caller can surface it as "database already open"
+        // rather than a mysterious later corruption.
+        FileExt::try_lock_exclusive(&file).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "blob WAL at `{}` is already locked by another writer: {e}",
+                    path.display()
+                ),
+            )
+        })?;
         Ok(Self {
             path,
-            file: Mutex::new(file),
+            state: Mutex::new(WalState {
+                file,
+                pending_ops: 0,
+            }),
+            sync_policy,
         })
+    }
+
+    /// The sync policy in effect for this WAL. Handy for tests and
+    /// diagnostic output.
+    #[must_use]
+    pub fn sync_policy(&self) -> SyncPolicy {
+        self.sync_policy
+    }
+
+    /// Force an fsync (`sync_data`) of any pending writes.
+    ///
+    /// A no-op if the file has no unsynced records — callers can invoke
+    /// this unconditionally at shutdown without paying a syscall in the
+    /// common `EveryWrite` case.
+    ///
+    /// # Errors
+    /// Propagates the underlying `sync_data` error.
+    pub fn flush(&self) -> io::Result<()> {
+        let mut state = self.state.lock();
+        if state.pending_ops == 0 {
+            return Ok(());
+        }
+        state.file.sync_data()?;
+        state.pending_ops = 0;
+        Ok(())
     }
 
     /// The on-disk location of the WAL. Handy for diagnostics.
@@ -158,12 +269,24 @@ impl BlobWal {
     }
 
     fn write_frame(&self, frame: &[u8]) -> io::Result<()> {
-        let mut file = self.file.lock();
-        file.write_all(frame)?;
-        // sync_data() is enough — we do not need metadata durability
-        // (mtime, etc.) for correctness, only that the record bytes
-        // survive a crash.
-        file.sync_data()?;
+        let mut state = self.state.lock();
+        state.file.write_all(frame)?;
+        state.pending_ops += 1;
+        match self.sync_policy {
+            SyncPolicy::EveryWrite => {
+                state.file.sync_data()?;
+                state.pending_ops = 0;
+            }
+            SyncPolicy::Batched { max_pending_ops } => {
+                if state.pending_ops >= max_pending_ops {
+                    state.file.sync_data()?;
+                    state.pending_ops = 0;
+                }
+            }
+            SyncPolicy::Manual => {
+                // Never auto-sync; caller invokes flush() explicitly.
+            }
+        }
         Ok(())
     }
 
@@ -177,17 +300,32 @@ impl BlobWal {
     /// Any read error (other than end-of-file, which is expected)
     /// propagates.
     pub fn replay(&self) -> io::Result<Vec<WalRecord>> {
-        let mut file = self.file.lock();
+        let mut state = self.state.lock();
         // Seek to start; the append handle keeps subsequent writes going
         // to the end regardless of where we leave the read cursor.
-        file.seek(SeekFrom::Start(0))?;
-        let mut reader = BufReader::new(&*file);
+        state.file.seek(SeekFrom::Start(0))?;
+        let mut reader = BufReader::new(&state.file);
 
         let mut out = Vec::new();
         while let ReadOutcome::Record(rec) = read_one(&mut reader)? {
             out.push(rec);
         }
         Ok(out)
+    }
+}
+
+impl Drop for BlobWal {
+    fn drop(&mut self) {
+        // Release the advisory lock and flush any pending writes. We
+        // deliberately swallow errors here — the process is either
+        // exiting normally (where the lock is released implicitly by
+        // handle close) or in a panic path (where surfacing a secondary
+        // error would obscure the primary panic).
+        let state = self.state.lock();
+        if state.pending_ops > 0 {
+            let _ = state.file.sync_data();
+        }
+        let _ = FileExt::unlock(&state.file);
     }
 }
 
@@ -370,6 +508,10 @@ mod tests {
             .unwrap();
         wal.append_put(b"k2", &BlobValue::Raw(b"v2".to_vec()))
             .unwrap();
+        // Release the exclusive advisory lock before we mutate the file
+        // out-of-band and reopen it. Shadowing alone does not drop the
+        // previous binding.
+        drop(wal);
         // Truncate the file at the size of ~1.5 records.
         let full_size = std::fs::metadata(&path).unwrap().len();
         // Each of our records is HEADER_LEN + 2 (key) + 2 (value) + CRC_LEN = 18 bytes.
@@ -399,7 +541,8 @@ mod tests {
             .unwrap();
         wal.append_put(b"bad", &BlobValue::Raw(b"no".to_vec()))
             .unwrap();
-        // Corrupt one byte inside the second record's payload region.
+        drop(wal); // release exclusive advisory lock before mutating out-of-band
+                   // Corrupt one byte inside the second record's payload region.
         let bytes = std::fs::read(&path).unwrap();
         let first_record_len = HEADER_LEN + 4 + 2 + CRC_LEN; // 4-byte key "good" + 2-byte value "ok"
         let mut corrupted = bytes.clone();

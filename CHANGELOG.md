@@ -2,6 +2,51 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [0.2.0-alpha.3] - 2026-07-08
+
+Hardens the blob WAL shipped in alpha-2 with cross-process safety and a configurable durability / throughput trade-off. Alpha-3.1 subset — SSTable format v2 and query acceleration remain scheduled for alpha-3.2 / alpha-3.3.
+
+### Added
+
+- `blob_wal::SyncPolicy` enum (`Copy` + `Default = EveryWrite`):
+  - `EveryWrite` — `sync_data` after every append (alpha-2 default, unchanged).
+  - `Batched { max_pending_ops }` — buffer up to `max_pending_ops` records, fsync once the threshold is reached. Callers can force an earlier sync with `flush`.
+  - `Manual` — never auto-fsync; caller is fully responsible for durability via `flush`.
+- `BlobWal::open_with_policy(path, sync_policy)` and `BlobWal::flush()`.
+- `blob::BlobStorage::open_with_policy(path, sync_policy)` and `BlobStorage::flush()`.
+- `AliceDB::open_with_blob_sync_policy(path, sync_policy)` /
+  `AliceDB::with_config_and_blob_sync_policy(config, sync_policy)` /
+  `AliceDB::flush_blobs()`.
+- Exclusive `fs2::FileExt::try_lock_exclusive` advisory lock on the blob WAL file, taken at open time. A second in-process or cross-process `AliceDB::open` on the same directory returns an `io::Error` with `ErrorKind::WouldBlock` until the first handle is dropped. Locks are released in `BlobWal::Drop` (and implicitly at handle close).
+- `Drop for BlobWal` that best-effort fsyncs any pending writes and releases the advisory lock.
+- 6 integration tests in `tests/blob_locking_and_sync.rs`:
+  - `second_open_on_same_path_fails_while_first_is_alive` — asserts `WouldBlock`.
+  - `second_open_succeeds_after_first_is_dropped` — verifies clean re-lock.
+  - `batched_policy_persists_after_threshold_is_crossed` (8 puts against `max_pending_ops = 4`).
+  - `batched_policy_uses_flush_to_persist_partial_batch`.
+  - `manual_policy_persists_only_via_explicit_flush` (10 puts, one final `flush_blobs`).
+  - `every_write_policy_is_the_default_and_flush_is_a_no_op`.
+
+### Changed
+
+- `BlobWal` internally moved the file handle and pending-write counter into a `WalState` struct behind a single `parking_lot::Mutex`. This is an internal refactor with no external API change beyond the additions above.
+- `pub mod blob_wal` is now re-exported at the crate root (implicit through `use alice_db::blob_wal::SyncPolicy`).
+
+### Design decisions
+
+- **Advisory lock, not mandatory**: `fs2::FileExt::try_lock_exclusive` cooperates with well-behaved writers but does not protect against writers that ignore the lock. Alpha-3 assumes the tracker/consumer opens through `AliceDB::open`, which always takes the lock.
+- **Count-based batching only**: alpha-3.1 defers time-based batching (e.g. "fsync every 100 ms") to alpha-3.2 so we do not spawn a background thread yet. `Batched { max_pending_ops }` is simple, deterministic, and covers the ALICE-CodeTracker high-throughput scan case (scan of ALICE-* mono-repo tops out around a few hundred writes per second).
+- **Drop-time flush is best-effort**: a panicking process may still lose the last partial batch. Callers who need airtight durability at shutdown should call `flush_blobs` explicitly before the handle drops.
+
+### Alpha-3 roadmap remainder
+
+- **α-3.2**: SSTable format v2, MemTable flush, compaction.
+- **α-3.3**: Bloom filter and prefix trie for `scan_blob_prefix` acceleration.
+
+### Downstream
+
+The exclusive lock closes the multi-writer safety gap flagged in alpha-2 and clears the last blocking dependency for **ALICE-CodeTracker v0.5.0**'s `alice-tracker-alicedb` backend design. Compaction is not strictly required for that consumer; it can adopt alpha-3.1 today and pull in later alpha-3.x point releases as the WAL grows unbounded.
+
 ## [0.2.0-alpha.2] - 2026-07-08
 
 Adds write-ahead log (WAL) persistence to the blob key-value store shipped in alpha-1. Blob state now survives process restarts: on `AliceDB::open` the WAL is replayed and the in-memory `BTreeMap` is rebuilt from scratch. The time-series engine and blob store use independent files (`data.alice` / `wal.alice` for time-series, `blob.wal` for blobs) so neither disturbs the other.

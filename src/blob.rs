@@ -33,7 +33,7 @@ use std::sync::Arc;
 use alice_core::compression::{zlib_compress, zlib_decompress};
 use parking_lot::RwLock;
 
-use crate::blob_wal::{BlobWal, WalRecord};
+use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
 
 /// Minimum byte length that triggers compression.
 ///
@@ -133,7 +133,8 @@ impl BlobStorage {
         Self::default()
     }
 
-    /// Open a durable blob store backed by a WAL at `wal_path`.
+    /// Open a durable blob store backed by a WAL at `wal_path` using
+    /// the default [`SyncPolicy::EveryWrite`].
     ///
     /// The WAL is created if missing. Any pre-existing records are
     /// replayed in file order so the in-memory map matches the state
@@ -144,7 +145,22 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if the WAL cannot be created or replayed.
     pub fn open(wal_path: impl AsRef<Path>) -> io::Result<Self> {
-        let wal = BlobWal::open(wal_path)?;
+        Self::open_with_policy(wal_path, SyncPolicy::default())
+    }
+
+    /// Same as [`Self::open`] with an explicit [`SyncPolicy`] override.
+    ///
+    /// See the [`crate::blob_wal`] module docs for the trade-offs
+    /// between each policy.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if the WAL cannot be created, locked, or
+    /// replayed.
+    pub fn open_with_policy(
+        wal_path: impl AsRef<Path>,
+        sync_policy: SyncPolicy,
+    ) -> io::Result<Self> {
+        let wal = BlobWal::open_with_policy(wal_path, sync_policy)?;
         let mut map: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
         for record in wal.replay()? {
             match record {
@@ -162,6 +178,24 @@ impl BlobStorage {
             inner: Arc::new(RwLock::new(map)),
             wal: Some(Arc::new(wal)),
         })
+    }
+
+    /// Force a durable fsync of all pending WAL writes.
+    ///
+    /// Only meaningful when the store was opened with
+    /// [`SyncPolicy::Batched`] or [`SyncPolicy::Manual`]. For the
+    /// default `EveryWrite` policy this is a fast no-op (the pending
+    /// counter is always zero).
+    ///
+    /// Returns `Ok(())` for in-memory stores created via [`Self::new`].
+    ///
+    /// # Errors
+    /// Propagates the underlying WAL fsync error.
+    pub fn flush(&self) -> io::Result<()> {
+        match &self.wal {
+            Some(wal) => wal.flush(),
+            None => Ok(()),
+        }
     }
 
     /// Insert or overwrite a key with a value, compressing if worthwhile.

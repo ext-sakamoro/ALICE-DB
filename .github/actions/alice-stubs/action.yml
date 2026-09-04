@@ -1,12 +1,11 @@
 name: 'ALICE-DB Optional Bridge Stubs'
 description: |
-  No-op composite action for ALICE-DB (0 sibling path deps).
-  Kept as canonical placeholder to preserve template symmetry across ALICE-* crates.
+  Create empty stub crates for ALICE-DB sibling path deps
+  (alice-analytics / alice-crypto / alice-zip)
 
   Canonical CI template: [[reference_alice_ci_canonical_template]]
-
-  license = "MIT OR Apache-2.0" 必須 (canonical 罠 #2、cargo-deny "unlicensed" reject 予防)
-  今回は sibling path dep 0 のため stub 生成不要 (no-op)
+  license = "MIT OR Apache-2.0" 必須 (canonical 罠 #2)
+  alice-zip は nested path (../ALICE-Zip/libalice) 注意
 
 runs:
   using: composite
@@ -14,4 +13,55 @@ runs:
     - shell: bash
       run: |
         set -euo pipefail
-        echo "ALICE-DB has 0 sibling path deps; alice-stubs is a no-op."
+
+        # ALICE-Analytics stub (optional feature)
+        mkdir -p "../ALICE-Analytics/src"
+        cat > "../ALICE-Analytics/Cargo.toml" <<'TOML'
+        [package]
+        name = "alice-analytics"
+        version = "0.1.0"
+        edition = "2021"
+        license = "MIT OR Apache-2.0"
+
+        [features]
+        default = ["std"]
+        std = []
+
+        [lib]
+        path = "src/lib.rs"
+        TOML
+        : > "../ALICE-Analytics/src/lib.rs"
+
+        # ALICE-Crypto stub (optional feature, std)
+        mkdir -p "../ALICE-Crypto/src"
+        cat > "../ALICE-Crypto/Cargo.toml" <<'TOML'
+        [package]
+        name = "alice-crypto"
+        version = "0.1.0"
+        edition = "2021"
+        license = "MIT OR Apache-2.0"
+
+        [features]
+        default = []
+        std = []
+
+        [lib]
+        path = "src/lib.rs"
+        TOML
+        : > "../ALICE-Crypto/src/lib.rs"
+
+        # ALICE-Zip stub — nested path (../ALICE-Zip/libalice/)
+        mkdir -p "../ALICE-Zip/libalice/src"
+        cat > "../ALICE-Zip/libalice/Cargo.toml" <<'TOML'
+        [package]
+        name = "alice-zip"
+        version = "0.1.0"
+        edition = "2021"
+        license = "MIT OR Apache-2.0"
+
+        [lib]
+        path = "src/lib.rs"
+        TOML
+        : > "../ALICE-Zip/libalice/src/lib.rs"
+
+        echo "Created stubs: alice-analytics / alice-crypto / alice-zip (nested)"

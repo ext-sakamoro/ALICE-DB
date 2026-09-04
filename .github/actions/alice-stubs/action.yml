@@ -1,0 +1,17 @@
+name: 'ALICE-DB Optional Bridge Stubs'
+description: |
+  No-op composite action for ALICE-DB (0 sibling path deps).
+  Kept as canonical placeholder to preserve template symmetry across ALICE-* crates.
+
+  Canonical CI template: [[reference_alice_ci_canonical_template]]
+
+  license = "MIT OR Apache-2.0" 必須 (canonical 罠 #2、cargo-deny "unlicensed" reject 予防)
+  今回は sibling path dep 0 のため stub 生成不要 (no-op)
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        echo "ALICE-DB has 0 sibling path deps; alice-stubs is a no-op."

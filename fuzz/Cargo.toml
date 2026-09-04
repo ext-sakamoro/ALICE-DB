@@ -1,0 +1,42 @@
+[package]
+name = "alice-db-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.alice-db]
+path = ".."
+
+# cargo-machete false-positive 予防 (canonical [[reference_alice_ci_canonical_template]] 罠 #3)
+# libfuzzer-sys は fuzz_target! macro 内でのみ参照されるため machete が誤検知
+# alice-db は現状 public API 未 export だが、fuzz scaffold として path dep を保持
+[package.metadata.cargo-machete]
+ignored = ["libfuzzer-sys", "alice-db"]
+
+# 攻撃者制御 byte 列を query 文字列として parse する経路 (public API 復活後に本体呼び出しへ差替え)
+[[bin]]
+name = "fuzz_query_parse"
+path = "fuzz_targets/fuzz_query_parse.rs"
+doc = false
+
+# 攻撃者制御 byte 列で row serialize / deserialize round-trip が panic せず終端する
+[[bin]]
+name = "fuzz_serialize_roundtrip"
+path = "fuzz_targets/fuzz_serialize_roundtrip.rs"
+doc = false
+
+# 攻撃者制御 index key で任意 key lookup が panic せず終端する
+[[bin]]
+name = "fuzz_index_lookup"
+path = "fuzz_targets/fuzz_index_lookup.rs"
+doc = false
+
+[workspace]
+members = ["."]

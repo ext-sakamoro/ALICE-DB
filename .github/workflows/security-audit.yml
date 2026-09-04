@@ -1,0 +1,217 @@
+name: Security & Hygiene
+
+# canonical CI template: [[reference_alice_ci_canonical_template]]
+# ALICE-SDF v1.7.7 (commit 52d26f9) を base に ALICE-DB 用に調整
+#
+# 目的:
+# - RustSec advisory (CVE) の週次検知
+# - dep license 逸脱 (GPL 侵入等) の block
+# - 未使用依存の炙り出し
+# - 仮実装 (todo! / unimplemented! / panic!(STUB) / dbg!) の CI gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'deny.toml'
+      - '.github/workflows/security-audit.yml'
+      - '.github/actions/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'deny.toml'
+      - '.github/workflows/security-audit.yml'
+      - '.github/actions/**'
+  schedule:
+    # 毎週月曜 09:00 UTC = 18:00 JST
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "5"
+  CARGO_HTTP_MULTIPLEXING: "false"
+
+jobs:
+  audit:
+    name: cargo audit (RustSec CVE scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # advisory-db は audit 実行時に自動取得
+      # yanked crate は deny、unmaintained warning は個別 ignore で管理
+      - name: Run cargo audit
+        run: |
+          cargo audit --deny yanked \
+            --ignore RUSTSEC-2025-0141 \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2026-0192 \
+            --ignore RUSTSEC-2024-0384 \
+            --ignore RUSTSEC-2024-0388 \
+            --ignore RUSTSEC-2024-0370 \
+            --ignore RUSTSEC-2024-0320
+
+  deny:
+    name: cargo-deny (license + advisories + bans + sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+
+      # EmbarkStudios/cargo-deny-action@v2 は Docker container 内で稼働し、
+      # /github/workspace のみ mount するため sibling path dep が見えず fail する
+      # 直接 install で回避 (canonical [[reference_alice_ci_canonical_template]] 罠 #1)
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      - name: Run cargo deny check all
+        run: cargo deny --all-features check all
+
+  unused-deps:
+    name: cargo-machete (unused dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+
+      # false-positive は Cargo.toml の [package.metadata.cargo-machete] ignored で除外
+      - uses: bnjbvr/cargo-machete@main
+
+  stub-guard:
+    name: Stub / mock / dbg guard (grep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # CLAUDE.md「仮実装完了偽装の禁止ルール」準拠
+      # canonical 罠 catalog #9-b/#9-c 準拠 (comment 行は除外)
+      - name: Detect panic!(STUB) / dbg!() in src/** (block)
+        run: |
+          set -eo pipefail
+          # Block: panic!(STUB...) (explicit STUB marker) + dbg!() (debug residual)
+          # comment 行 (// or /*) は除外
+          hits=$(grep -rnE 'panic!\([^)]*STUB|dbg!\(' \
+            src/ --include="*.rs" \
+            --exclude-dir=bin \
+            | grep -v ':[[:space:]]*//' \
+            | grep -vE ':[[:space:]]*/\*' \
+            || true)
+          if [ -n "$hits" ]; then
+            echo "❌ panic!(STUB) / dbg!() detected in src/ (production path):"
+            echo "$hits"
+            echo ""
+            echo "Fix: use ? operator, Result<T, E>, or remove the marker."
+            echo "  See CLAUDE.md § 仮実装完了偽装の禁止ルール"
+            exit 1
+          fi
+          echo "✓ No panic!(STUB) / dbg!() in src/ (excluding src/bin/)"
+
+      - name: Detect todo!() / unimplemented!() in src/** (informational)
+        run: |
+          set -eo pipefail
+          # Informational: todo!() / unimplemented!() は legitimate な fail-fast idiom
+          # (CLAUDE.md「仮実装完了偽装の禁止ルール」§「未実装は必ず fail fast」)
+          hits=$(grep -rnE 'todo!\(|unimplemented!\(' \
+            src/ --include="*.rs" \
+            --exclude-dir=bin \
+            | grep -v ':[[:space:]]*//' \
+            | grep -vE ':[[:space:]]*/\*' \
+            || true)
+          if [ -n "$hits" ]; then
+            count=$(echo "$hits" | wc -l | tr -d ' ')
+            echo "::warning::todo!() / unimplemented!() found in src/ ($count markers, informational):"
+            echo "$hits" | head -50
+          else
+            echo "✓ No todo!() / unimplemented!() in src/"
+          fi
+
+      - name: Detect TODO / FIXME / XXX / HACK (informational)
+        run: |
+          set -eo pipefail
+          hits=$(grep -rnE 'TODO|FIXME|XXX|HACK' src/ --include="*.rs" || true)
+          if [ -n "$hits" ]; then
+            echo "::warning::TODO/FIXME/XXX/HACK found in src/ (informational, not blocking):"
+            echo "$hits" | head -50
+          else
+            echo "✓ No TODO/FIXME/XXX/HACK in src/"
+          fi
+
+  coverage:
+    name: Coverage (cargo-llvm-cov、informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run coverage
+        run: |
+          cargo llvm-cov --lib --summary-only 2>&1 | tee coverage-summary.txt
+
+      - name: Upload coverage summary as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-summary
+          path: coverage-summary.txt
+          retention-days: 30
+
+  semver-checks:
+    name: cargo-semver-checks (API compat、informational)
+    runs-on: ubuntu-latest
+    # informational only (計画的 API 変更を block しない)
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # baseline-rev 比較のため full history 必要
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@cargo-semver-checks
+
+      # HEAD~1 と比較 (informational、break あっても block しない)
+      - name: Run cargo semver-checks
+        run: |
+          cargo semver-checks check-release \
+            --package alice-db \
+            --baseline-rev "HEAD~1" \
+            || true

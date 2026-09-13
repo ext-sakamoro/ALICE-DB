@@ -2,10 +2,9 @@
 name = "alice-db"
 version = "0.2.0-beta.1"
 edition = "2021"
-license = "AGPL-3.0-only"
+license = "AGPL-3.0-or-later"
 authors = ["Moroya Sakamoto <sakamoro@alicelaw.net>"]
 description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
-publish = false
 repository = "https://github.com/ext-sakamoro/ALICE-DB"
 keywords = ["database", "compression", "procedural-generation", "time-series"]
 categories = ["database", "compression"]
@@ -15,13 +14,9 @@ name = "alice_db"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# ALICE-Zip core. Fetched from GitHub so downstream consumers (e.g.
-# `alice-tracker-alicedb`) can resolve the dep without a sibling
-# ALICE-Zip checkout. In-tree dev overrides this via the workspace-level
-# `[patch]` block below (path takes precedence when the sibling checkout
-# exists). Same pattern ALICE-CodeTracker adopted in its v0.4.0 shift
-# from path to git.
-alice_core = { package = "alice-zip", git = "https://github.com/ext-sakamoro/ALICE-Zip" }
+# ALICE-Zip core. 2026-09-13 publish 済 (v0.1.0 crates.io)、git dep → crates.io へ
+# In-tree dev では workspace-level `[patch]` で path 優先切替可
+alice_core = { package = "alice-zip", version = "0.3" }
 
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.7", features = ["validation", "std"] }
@@ -51,10 +46,10 @@ rayon = "1.10"
 parking_lot = "0.12"
 
 # ALICE-Analytics bridge (optional)
-alice-analytics = { path = "../ALICE-Analytics", optional = true }
+alice-analytics = { path = "../ALICE-Analytics", version = "0.1", optional = true }
 
 # ALICE-Crypto bridge (optional)
-alice-crypto = { path = "../ALICE-Crypto", optional = true, default-features = false, features = ["std"] }
+alice-crypto = { path = "../ALICE-Crypto", version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 # Advisory file locking (cross-platform)
 fs2 = "0.4"
@@ -101,9 +96,4 @@ lto = "thin"
 codegen-units = 1
 debug = false
 
-# In-tree developer override. When a sibling ALICE-Zip checkout exists
-# at `../ALICE-Zip/libalice`, cargo uses that instead of the git fetch
-# above. Downstream consumers (which don't clone ALICE-Zip) fall
-# through to the git dep and see published bytes.
-[patch."https://github.com/ext-sakamoro/ALICE-Zip"]
-alice-zip = { path = "../ALICE-Zip/libalice" }
+# alice-zip 0.3.0 crates.io publish 済のため patch 不要 (2026-09-13、旧 git dep から移行)

@@ -61,7 +61,10 @@ jobs:
       # yanked crate は deny、unmaintained warning は個別 ignore で管理
       - name: Run cargo audit
         run: |
+          # RUSTSEC-2026-0235 (rkyv 0.7 Rc/Arc archive validation): alice-db の archived 型
+          # (SegmentMetadata / DataSegment / ModelType) に Rc/Arc は無く非該当、0.8 移行は不要
           cargo audit --deny yanked \
+            --ignore RUSTSEC-2026-0235 \
             --ignore RUSTSEC-2025-0141 \
             --ignore RUSTSEC-2024-0436 \
             --ignore RUSTSEC-2026-0192 \

@@ -560,7 +560,7 @@ impl AliceDB {
 mod python {
     use super::*;
     use ndarray::Array2;
-    use numpy::{PyArray1, PyArray2, PyArrayMethods};
+    use numpy::PyArray2;
     use parking_lot::Mutex;
     use pyo3::exceptions::{PyIOError, PyValueError};
     use pyo3::prelude::*;
@@ -618,7 +618,7 @@ mod python {
             }
             let data: Vec<(i64, f32)> = timestamps.into_iter().zip(values).collect();
             let inner = self.inner.clone();
-            py.allow_threads(move || {
+            py.detach(move || {
                 let guard = inner.lock();
                 let db = guard
                     .as_ref()
@@ -661,7 +661,7 @@ mod python {
         /// Query a time range, returns list of (timestamp, value) tuples
         fn scan(&self, py: Python<'_>, start: i64, end: i64) -> PyResult<Vec<(i64, f32)>> {
             let inner = self.inner.clone();
-            py.allow_threads(move || {
+            py.detach(move || {
                 let guard = inner.lock();
                 let db = guard
                     .as_ref()
@@ -692,7 +692,7 @@ mod python {
                 arr[[i, 1]] = v as f64;
             }
 
-            Ok(PyArray2::from_owned_array_bound(py, arr))
+            Ok(PyArray2::from_owned_array(py, arr))
         }
 
         /// Aggregation query
@@ -716,7 +716,7 @@ mod python {
                 }
             };
             let inner = self.inner.clone();
-            py.allow_threads(move || {
+            py.detach(move || {
                 let guard = inner.lock();
                 let db = guard
                     .as_ref()
@@ -751,7 +751,7 @@ mod python {
                 }
             };
             let inner = self.inner.clone();
-            py.allow_threads(move || {
+            py.detach(move || {
                 let guard = inner.lock();
                 let db = guard
                     .as_ref()
@@ -811,7 +811,7 @@ mod python {
     }
 
     /// Python wrapper for StorageStats
-    #[pyclass(name = "Stats")]
+    #[pyclass(name = "Stats", from_py_object)]
     #[derive(Clone)]
     pub struct PyStats {
         #[pyo3(get)]

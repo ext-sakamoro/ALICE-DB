@@ -23,6 +23,8 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 version = 2
 yanked = "deny"
 ignore = [
+    # rkyv 0.7 Rc/Arc archive validation OOB (RUSTSEC-2026-0235): archived 型に Rc/Arc 無し = 非該当
+    "RUSTSEC-2026-0235",
     # bincode 2.x unmaintained (postcard 移行コスト高)
     "RUSTSEC-2025-0141",
     # paste 1.0.15 unmaintained (pyo3-macros / bytemuck transitive)
@@ -80,6 +82,17 @@ name = "webpki"
 version = "*"
 expression = "ISC"
 license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
+
+# alice-db 自身 (target crate) が AGPL-3.0-or-later だが cargo-deny は target も
+# license check 対象にするため exception で自己許可 (canonical 罠 #7)
+[[licenses.exceptions]]
+name = "alice-db"
+allow = ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]
+
+# AGPL sibling path dep (crypto feature、CI では MIT stub / local は実 crate)
+[[licenses.exceptions]]
+name = "alice-crypto"
+allow = ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]
 
 # ---------------------------------------------------------------------------
 # Bans (banned crate / duplicate / wildcard)

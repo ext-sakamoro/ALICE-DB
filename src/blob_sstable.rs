@@ -152,7 +152,7 @@ pub fn parse_sstable_seq(name: &str) -> Option<u64> {
 }
 
 /// Generate the filename for a new append-mode `SSTable` with the given
-/// sequence number, zero-padded to [`SSTABLE_SEQ_WIDTH`] digits.
+/// sequence number, zero-padded to `SSTABLE_SEQ_WIDTH` (6) digits.
 #[must_use]
 pub fn sstable_filename_for_seq(seq: u64) -> String {
     let width = SSTABLE_SEQ_WIDTH;

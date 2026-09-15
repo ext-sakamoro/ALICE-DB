@@ -252,9 +252,9 @@ mod tests {
         let code = MortonCode::from_world(0.5, 0.5, 0.5, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let (x, y, z) = code.decode();
         // Should be approximately center (127-128)
-        assert!(x >= 126 && x <= 128);
-        assert!(y >= 126 && y <= 128);
-        assert!(z >= 126 && z <= 128);
+        assert!((126..=128).contains(&x));
+        assert!((126..=128).contains(&y));
+        assert!((126..=128).contains(&z));
     }
 
     #[test]

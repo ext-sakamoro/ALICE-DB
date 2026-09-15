@@ -1,0 +1,121 @@
+name: CI
+
+# canonical CI template: [[reference_alice_ci_canonical_template]] 手順 4.5 / 4.6
+# 2026-09-15 新設 (それまで fuzz / security-audit のみで test / clippy / doc は CI 未実行、crates.io 公開 crate):
+# - test / clippy / doc を default + full native feature set (ffi,sdf) で `-D warnings`
+# - msrv job: `rust-version = "1.87"` (alice-zip 0.3 の要求) を `cargo +1.87 check` で実 compile (罠 #27)
+# - feature-powerset: depth 2 (python = toolchain / analytics・crypto = sibling 実体、除外)
+# - sibling path dep (alice-analytics / alice-crypto) は alice-stubs composite action で stub
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+  # full native feature set (python / sibling bridge を除く、test / clippy / doc で共用)
+  NATIVE_FEATURES: "ffi,sdf"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (default)
+        run: cargo test
+      - name: Test (full native feature set)
+        run: cargo test --features "$NATIVE_FEATURES"
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (default features, all targets)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (full native feature set, all targets)
+        run: cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -D warnings
+      # pedantic は informational (13 件残、-W で表示のみ)
+      - name: Clippy pedantic (informational)
+        run: cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -W clippy::pedantic
+        env:
+          RUSTFLAGS: ""
+
+  msrv:
+    name: MSRV (rust-version = 1.87 実 compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+      # 宣言値と同じ toolchain: Cargo.toml の rust-version を bump したら同 commit で @<version> も更新
+      - uses: dtolnay/rust-toolchain@1.87
+      - uses: Swatinem/rust-cache@v2
+      - name: Check (default + full native feature set)
+        run: |
+          cargo check --lib
+          cargo check --lib --features "$NATIVE_FEATURES"
+
+  feature-powerset:
+    name: Feature powerset (cargo-hack, depth 2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: Powerset ({ffi, sdf} depth 2)
+        run: cargo hack check --lib --feature-powerset --depth 2 --exclude-features python,analytics,crypto
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+  doc:
+    name: Doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Doc (full native feature set)
+        run: cargo doc --no-deps --features "$NATIVE_FEATURES"
+        env:
+          RUSTDOCFLAGS: "-Dwarnings"
+
+  actionlint:
+    name: actionlint (workflow YAML 検証)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run actionlint
+        uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error
+          reporter: github-check

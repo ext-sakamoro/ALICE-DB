@@ -2,6 +2,16 @@
 
 All notable changes to ALICE-DB will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- `ci.yml` (それまで fuzz / security-audit のみで test / clippy / doc は CI 未実行): test (default + `ffi,sdf`) / clippy `--all-targets -D warnings` 2 variant (pedantic は informational) / `msrv` job (`cargo +1.87 check`) / `feature-powerset` (cargo-hack depth 2) / fmt / doc `-D warnings` / actionlint、`alice-stubs` action、rust-cache
+- `rust-version = "1.87"` を宣言 (alice-zip 0.3 の要求、`cargo +1.87 check` で実 compile 確認) + `rust-toolchain.toml` (1.98.1 pin)
+
+### Fixed
+- clippy `manual_range_contains` 3 件 (`sdf_bridge` test)、`incompatible_msrv` 1 件 (`segment.rs` の `File::lock_shared` は 1.89+ inherent、`fs2::FileExt::lock_shared` を trait 経由で明示)
+- rustdoc `-D warnings` 5 件 (private item link / `blob::` 経由の誤った module path 3 / doc 例の非 ASCII byte string)
+
 ## [0.2.0-beta.1] - 2026-07-08
 
 **β entry** for the `0.2.x` line. No code changes vs. `0.2.0-alpha.9`; runtime bytes are identical.

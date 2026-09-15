@@ -73,8 +73,8 @@
 //! );
 //!
 //! // Prefix scan returns matching keys in ascending byte order.
-//! db.put_blob(b"stub-01", b"…")?;
-//! db.put_blob(b"stub-99", b"…")?;
+//! db.put_blob(b"stub-01", b"...")?;
+//! db.put_blob(b"stub-99", b"...")?;
 //! let stubs = db.scan_blob_prefix(b"stub-")?;
 //! assert_eq!(stubs.len(), 3);
 //!
@@ -257,7 +257,7 @@ impl AliceDB {
     /// any process fails with a `WouldBlock`-flavoured error until the
     /// first handle is dropped.
     ///
-    /// The blob WAL uses [`blob::blob_wal::SyncPolicy::EveryWrite`] by
+    /// The blob WAL uses [`blob_wal::SyncPolicy::EveryWrite`] by
     /// default; use [`Self::open_with_blob_sync_policy`] to override.
     /// The time-series engine and blob store use independent files, so
     /// neither one disturbs the other.
@@ -310,7 +310,7 @@ impl AliceDB {
     ///
     /// The blob WAL is placed at `config.data_dir/blob.wal`, mirroring
     /// [`Self::open`]'s layout, and uses
-    /// [`blob::blob_wal::SyncPolicy::EveryWrite`]. Use
+    /// [`blob_wal::SyncPolicy::EveryWrite`]. Use
     /// [`Self::with_config_and_blob_sync_policy`] to override.
     ///
     /// # Errors
@@ -370,7 +370,7 @@ impl AliceDB {
     /// ones. Available in v0.2.0-alpha.5+.
     ///
     /// Meaningful only under
-    /// [`blob::blob_sstable::FlushMode::Append`]; under `Overwrite`
+    /// [`blob_sstable::FlushMode::Append`]; under `Overwrite`
     /// there is at most one `SSTable` file at any time and this
     /// devolves to a rewrite of `blob.sst`. Callers can use this to
     /// keep next-open latency bounded when auto-compaction is disabled.

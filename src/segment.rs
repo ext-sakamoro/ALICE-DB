@@ -992,7 +992,8 @@ impl SegmentView {
 
         // Acquire advisory shared lock to prevent concurrent truncation/deletion.
         // The lock is held as long as the File lives (stored in SegmentSource::Mmap).
-        file.lock_shared()?;
+        // trait 経由で明示 (1.89+ の inherent File::lock_shared と MSRV 1.87 の両立、clippy incompatible_msrv)
+        FileExt::lock_shared(&file)?;
 
         // Validate file size before mapping.
         //

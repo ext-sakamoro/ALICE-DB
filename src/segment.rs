@@ -1217,7 +1217,32 @@ impl SegmentView {
             0.0
         };
 
-        Some(self.evaluate_archived_model(x))
+        let value = self.evaluate_archived_model(x);
+        // Lossless mode stores per-sample residuals; the in-memory path applied
+        // them, the mmap path did not until 0.2.0-beta.2.
+        if let Some(residual) = self.archived.residual_blob.as_ref() {
+            let decompressed = decompress_residual(residual.as_slice());
+            let idx = self.archived_timestamp_to_index(timestamp);
+            let offset = idx * 4;
+            if offset + 4 <= decompressed.len() {
+                if let Ok(bytes) = <[u8; 4]>::try_from(&decompressed[offset..offset + 4]) {
+                    return Some(value + f32::from_le_bytes(bytes));
+                }
+            }
+        }
+        Some(value)
+    }
+
+    /// Sample index of `timestamp` under the segment's uniform-spacing model
+    /// (mirror of `DataSegment::timestamp_to_index` for the archived view).
+    fn archived_timestamp_to_index(&self, timestamp: i64) -> usize {
+        let range = (self.archived.end_time - self.archived.start_time) as f64;
+        let n = self.archived.metadata.point_count as usize;
+        if range <= 0.0 || n <= 1 {
+            return 0;
+        }
+        let ratio = (timestamp - self.archived.start_time) as f64 / range;
+        (ratio * (n - 1) as f64).round() as usize
     }
 
     /// Zero-copy range query (Loop Unswitched + SIMD for Polynomial)
@@ -1346,6 +1371,18 @@ impl SegmentView {
             }
         }
 
+        // Lossless residuals (see `query_point`)
+        if let Some(residual) = self.archived.residual_blob.as_ref() {
+            let decompressed = decompress_residual(residual.as_slice());
+            for (timestamp, value) in &mut results {
+                let offset = self.archived_timestamp_to_index(*timestamp) * 4;
+                if offset + 4 <= decompressed.len() {
+                    if let Ok(bytes) = <[u8; 4]>::try_from(&decompressed[offset..offset + 4]) {
+                        *value += f32::from_le_bytes(bytes);
+                    }
+                }
+            }
+        }
         results
     }
 

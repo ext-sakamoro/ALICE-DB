@@ -12,6 +12,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Fixed
 - **mmap (zero-copy) 読み出しで `RawLzma` / `PerlinNoise` model の値が全て 0.0 になっていた** — `SegmentView::evaluate_archived_model` が「full deserialization が要る、production では compute する」という comment 付きで `0.0` を返す stub のまま publish されていた 手続き model に fit しない任意データは全部 `RawLzma` fallback に入るので、`put` → `flush` → `get` / `scan` が値を返さない (in-memory `DataSegment` 経路は正しかった) alice-physics 1.2.0 の `replay` / `db_bridge` 契約 test (`scan_positions` / `query_bodies`) が検出 (2026-09-15) archived 経路で LZMA 解凍 + dtype 再解釈 / Perlin 再生成を実装、range query は 1 回 decode、`raw_lzma_values_round_trip_through_flush_and_mmap` で pin
+- **mmap 経路が lossless 残差 (`FitConfig::lossless`) を無視していた** — `SegmentView::query_point` / `query_range` (archived) が model 値だけを返し、in-memory 経路だけ残差を足していた 0.2.0-beta.2 で archived 経路も残差を適用、`raw_lzma_values_round_trip_through_flush_and_mmap` に lossless 2 次曲線 128 点の exact round-trip を追加
 - clippy pedantic 13 件を 0 化し CI を `-W pedantic -D warnings` gate に (`sdf_bridge` の `# Errors` doc 7 / `ffi` の `let...else` 5 / float 比較 1)
 - clippy `manual_range_contains` 3 件 (`sdf_bridge` test)、`incompatible_msrv` 1 件 (`segment.rs` の `File::lock_shared` は 1.89+ inherent、`fs2::FileExt::lock_shared` を trait 経由で明示)
 - rustdoc `-D warnings` 5 件 (private item link / `blob::` 経由の誤った module path 3 / doc 例の非 ASCII byte string)

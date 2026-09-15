@@ -1065,6 +1065,39 @@ mod raw_lzma_roundtrip_tests {
             let want = values[*t as usize].1;
             assert!((got - want).abs() <= 1e-6, "scan t={t}: {got} vs {want}");
         }
+        // lossless mode: a smooth series that a polynomial would otherwise
+        // approximate must come back exactly through the mmap path
+        let dir2 = tempfile::tempdir().unwrap();
+        let cfg = StorageConfig {
+            data_dir: dir2.path().join("lossless"),
+            fit_config: memtable::FitConfig {
+                lossless: true,
+                ..memtable::FitConfig::default()
+            },
+            ..StorageConfig::default()
+        };
+        let db2 = AliceDB::with_config(cfg).unwrap();
+        let smooth: Vec<(i64, f32)> = (0..128)
+            .map(|i| (i, 0.5 * (i as f32) * (i as f32) + 0.1234 * (i as f32) + 3.0))
+            .collect();
+        db2.put_batch(&smooth).unwrap();
+        db2.flush().unwrap();
+        for &(t, v) in &smooth {
+            let got = db2.get(t).unwrap().expect("stored point");
+            assert!(
+                (got - v).abs() <= v.abs() * 1e-6 + 1e-5,
+                "lossless t={t}: {got} vs {v}"
+            );
+        }
+        let scanned = db2.scan(100, 110).unwrap();
+        assert_eq!(scanned.len(), 11);
+        for (t, got) in scanned {
+            let want = smooth[t as usize].1;
+            assert!(
+                (got - want).abs() <= want.abs() * 1e-6 + 1e-5,
+                "lossless scan t={t}: {got} vs {want}"
+            );
+        }
         // single-point put after flush is also readable (own segment)
         db.put(1000, 123.5).unwrap();
         db.flush().unwrap();

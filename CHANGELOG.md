@@ -9,6 +9,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `rust-version = "1.87"` を宣言 (alice-zip 0.3 の要求、`cargo +1.87 check` で実 compile 確認) + `rust-toolchain.toml` (1.98.1 pin)
 
 ### Fixed
+- clippy pedantic 13 件を 0 化し CI を `-W pedantic -D warnings` gate に (`sdf_bridge` の `# Errors` doc 7 / `ffi` の `let...else` 5 / float 比較 1)
 - clippy `manual_range_contains` 3 件 (`sdf_bridge` test)、`incompatible_msrv` 1 件 (`segment.rs` の `File::lock_shared` は 1.89+ inherent、`fs2::FileExt::lock_shared` を trait 経由で明示)
 - rustdoc `-D warnings` 5 件 (private item link / `blob::` 経由の誤った module path 3 / doc 例の非 ASCII byte string)
 

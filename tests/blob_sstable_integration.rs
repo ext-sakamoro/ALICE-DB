@@ -18,15 +18,11 @@ use std::io::Write;
 use tempfile::TempDir;
 
 fn wal_size(dir: &TempDir) -> u64 {
-    std::fs::metadata(dir.path().join("blob.wal"))
-        .map(|m| m.len())
-        .unwrap_or(0)
+    std::fs::metadata(dir.path().join("blob.wal")).map_or(0, |m| m.len())
 }
 
 fn sst_size(dir: &TempDir) -> u64 {
-    std::fs::metadata(dir.path().join("blob.sst"))
-        .map(|m| m.len())
-        .unwrap_or(0)
+    std::fs::metadata(dir.path().join("blob.sst")).map_or(0, |m| m.len())
 }
 
 // -------------------------------------------------------------------------
@@ -165,7 +161,7 @@ fn opening_a_pre_v04_wal_only_database_upgrades_transparently() {
         db.put_blob(b"legacy-2", b"two").unwrap();
     }
     // Confirm no `SSTable` exists yet.
-    assert!(sst_size(&tmp) == 0);
+    assert_eq!(sst_size(&tmp), 0);
     assert!(wal_size(&tmp) > 0);
 
     // Reopen — `SSTable` path is created but empty; WAL replay fills the map.

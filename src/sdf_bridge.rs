@@ -111,6 +111,10 @@ pub struct SdfStorage {
 
 impl SdfStorage {
     /// Open or create SDF storage at the given directory
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying `AliceDB::open` I/O error (directory not creatable / WAL unreadable).
     pub fn open<P: AsRef<Path>>(
         path: P,
         world_min: [f32; 3],
@@ -135,6 +139,10 @@ impl SdfStorage {
     ///
     /// The value is stored using the Morton code as key in the time-series DB.
     /// Multiple values per cell are appended with incrementing sub-keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from the WAL / segment write.
     pub fn store_keyframe(
         &self,
         cell: MortonCode,
@@ -147,6 +155,10 @@ impl SdfStorage {
     }
 
     /// Store a batch of SDF coefficients for a spatial region
+    ///
+    /// # Errors
+    ///
+    /// Returns the first I/O error from the batch write (earlier entries are already persisted).
     pub fn store_keyframe_batch(
         &self,
         cells: &[(MortonCode, f32)],
@@ -164,6 +176,10 @@ impl SdfStorage {
     }
 
     /// Store a delta update for a spatial cell
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from the WAL / segment write.
     pub fn store_delta(&self, cell: MortonCode, delta_version: u32, value: f32) -> io::Result<()> {
         let key = (cell.0 as i64) << 16 | (delta_version as i64 & 0xFFFF);
         self.delta_db.put(key, value)
@@ -172,6 +188,10 @@ impl SdfStorage {
     /// Query SDF values in a spatial region defined by min/max world coordinates
     ///
     /// Returns all stored values within the Morton code range.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from the range scan.
     pub fn query_spatial_region(
         &self,
         region_min: [f32; 3],
@@ -208,6 +228,10 @@ impl SdfStorage {
     }
 
     /// Flush all data to disk
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from `fsync` / segment flush.
     pub fn flush(&self) -> io::Result<()> {
         self.keyframe_db.flush()?;
         self.delta_db.flush()?;
@@ -215,6 +239,10 @@ impl SdfStorage {
     }
 
     /// Close the storage
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from the final flush.
     pub fn close(self) -> io::Result<()> {
         self.keyframe_db.close()?;
         self.delta_db.close()?;

@@ -167,9 +167,8 @@ pub unsafe extern "C" fn alice_db_open(path: *const c_char) -> DbHandle {
     // SAFETY: `path` has been checked non-null. The `# Safety` contract
     // requires the caller to pass a valid null-terminated UTF-8 string.
     let c_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return DB_HANDLE_NULL,
+    let Ok(path_str) = c_str.to_str() else {
+        return DB_HANDLE_NULL;
     };
     match AliceDB::open(path_str) {
         Ok(db) => {
@@ -200,9 +199,8 @@ pub unsafe extern "C" fn alice_db_open_with_config(
     // SAFETY: `path` has been checked non-null. The `# Safety` contract
     // requires the caller to pass a valid null-terminated UTF-8 string.
     let c_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return DB_HANDLE_NULL,
+    let Ok(path_str) = c_str.to_str() else {
+        return DB_HANDLE_NULL;
     };
     let config = StorageConfig {
         data_dir: std::path::PathBuf::from(path_str),
@@ -236,9 +234,8 @@ pub unsafe extern "C" fn alice_db_close(handle: DbHandle) -> DbResult {
     // requires this to be a handle returned by `alice_db_open`. We reclaim
     // the `Box` to drop the `DbWrapper` after closing.
     let wrapper = unsafe { Box::from_raw(handle.cast::<DbWrapper>()) };
-    let mut guard = match wrapper.db.lock() {
-        Ok(g) => g,
-        Err(_) => return DbResult::Unknown,
+    let Ok(mut guard) = wrapper.db.lock() else {
+        return DbResult::Unknown;
     };
     if let Some(db) = guard.take() {
         match db.close() {
@@ -326,11 +323,10 @@ pub unsafe extern "C" fn alice_db_scan(
     out_values: *mut f32,
     max_count: u32,
 ) -> i32 {
-    let results = match with_db(handle, |db| {
+    let Ok(results) = with_db(handle, |db| {
         db.scan(start, end).map_err(|_| DbResult::IoError)
-    }) {
-        Ok(r) => r,
-        Err(_) => return -1,
+    }) else {
+        return -1;
     };
     if out_timestamps.is_null() || out_values.is_null() {
         return results.len() as i32;
@@ -393,12 +389,11 @@ pub unsafe extern "C" fn alice_db_downsample(
     out_values: *mut f64,
     max_count: u32,
 ) -> i32 {
-    let results = match with_db(handle, |db| {
+    let Ok(results) = with_db(handle, |db| {
         db.downsample(start, end, interval, agg_from_ffi(agg))
             .map_err(|_| DbResult::IoError)
-    }) {
-        Ok(r) => r,
-        Err(_) => return -1,
+    }) else {
+        return -1;
     };
     if out_timestamps.is_null() || out_values.is_null() {
         return results.len() as i32;
@@ -628,7 +623,7 @@ mod tests {
 
         let mut val: f64 = 0.0;
         let result =
-            unsafe { alice_db_aggregate(handle, 0, 99, AggregationType::Avg, &mut val as *mut _) };
+            unsafe { alice_db_aggregate(handle, 0, 99, AggregationType::Avg, &raw mut val) };
         assert_eq!(result, DbResult::Ok);
         // Average of 0..99 ≈ 49.5
         assert!(val > 30.0 && val < 70.0);
@@ -697,7 +692,7 @@ mod tests {
     fn test_stats_invalid_handle() {
         let stats = alice_db_stats(ptr::null_mut());
         assert_eq!(stats.total_segments, 0);
-        assert_eq!(stats.average_compression_ratio, 0.0);
+        assert!(stats.average_compression_ratio.abs() < f64::EPSILON);
     }
 
     #[test]
@@ -739,7 +734,7 @@ mod tests {
         // Aggregate
         let mut avg: f64 = 0.0;
         let agg_result =
-            unsafe { alice_db_aggregate(handle, 0, 199, AggregationType::Avg, &mut avg as *mut _) };
+            unsafe { alice_db_aggregate(handle, 0, 199, AggregationType::Avg, &raw mut avg) };
         assert_eq!(agg_result, DbResult::Ok);
 
         // Close

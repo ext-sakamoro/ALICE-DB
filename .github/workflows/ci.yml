@@ -45,15 +45,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Clippy (default features, all targets)
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Clippy (full native feature set, all targets)
-        run: cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -D warnings
-      # pedantic は informational (13 件残、-W で表示のみ)
-      - name: Clippy pedantic (informational)
-        run: cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -W clippy::pedantic
-        env:
-          RUSTFLAGS: ""
+      # pedantic は 2026-09-15 に 0 化済 → gate
+      - name: Clippy (default features, all targets, pedantic)
+        run: cargo clippy --all-targets -- -W clippy::pedantic -D warnings
+      - name: Clippy (full native feature set, all targets, pedantic)
+        run: cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -W clippy::pedantic -D warnings
 
   msrv:
     name: MSRV (rust-version = 1.87 実 compile)

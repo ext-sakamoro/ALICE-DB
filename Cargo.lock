@@ -83,11 +83,14 @@ dependencies = [
 
 [[package]]
 name = "alice-zip"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aac528ab8a089078e70bf0b818236aeedbd0b29aa17870e28f400c892b22715e"
+checksum = "63cb1d51f9aa64608aff8143ac536909a730678da5c17d2aa2353706ac477d27"
 dependencies = [
  "flate2",
+ "libm",
+ "rand",
+ "rand_chacha",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 [package]
 name = "alice-db"
 version = "0.2.0-beta.2"
-# alice-zip 0.3 (const fn Vec::len) が 1.87 を要求、CI msrv job で実 compile (canonical 罠 #27)
+# alice-zip 0.4 (const fn Vec::len) が 1.87 を要求、CI msrv job で実 compile (canonical 罠 #27)
 rust-version = "1.87"
 edition = "2021"
 license = "AGPL-3.0-or-later"
@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # ALICE-Zip core. 2026-09-13 publish 済 (v0.1.0 crates.io)、git dep → crates.io へ
 # In-tree dev では workspace-level `[patch]` で path 優先切替可
-alice_core = { package = "alice-zip", version = "0.3" }
+alice_core = { package = "alice-zip", version = "0.4" }
 
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.7", features = ["validation", "std"] }
@@ -95,4 +95,4 @@ lto = "thin"
 codegen-units = 1
 debug = false
 
-# alice-zip 0.3.0 crates.io publish 済のため patch 不要 (2026-09-13、旧 git dep から移行)
+# alice-zip は crates.io 版 (0.4.0、2026-09-15 bump) のため patch 不要 (2026-09-13 に旧 git dep から移行)

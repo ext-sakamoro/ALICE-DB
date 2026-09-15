@@ -613,16 +613,20 @@ impl DataSegment {
                 persistence,
                 lacunarity,
             } => {
-                // Generate 1D Perlin noise by taking a slice
-                generators::generate_perlin_advanced(
+                // 1D value-noise fBm (alice-zip 0.4 `generate_fbm_1d`, the law
+                // alice-zip 0.3 exposed as `generate_perlin_advanced(n, 1, ..)`;
+                // sample values are unchanged). Parameters outside the law's
+                // domain (`scale <= 0`, `octaves == 0`) can only come from a
+                // corrupt model and regenerate as zeros, like a corrupt blob.
+                generators::generate_fbm_1d(
                     n,
-                    1,
                     *seed,
                     *scale,
                     *octaves,
                     *persistence,
                     *lacunarity,
                 )
+                .unwrap_or_else(|_| vec![0.0; n])
             }
             ModelType::RawLzma {
                 compressed_data,
@@ -1752,15 +1756,15 @@ impl SegmentView {
                 octaves,
                 persistence,
                 lacunarity,
-            } => generators::generate_perlin_advanced(
+            } => generators::generate_fbm_1d(
                 n,
-                1,
                 *seed,
                 *scale,
                 *octaves,
                 *persistence,
                 *lacunarity,
-            ),
+            )
+            .unwrap_or_else(|_| vec![0.0; n]),
             _ => Vec::new(),
         }
     }

@@ -1036,3 +1036,39 @@ mod tests {
         assert!(count > 0.0);
     }
 }
+
+#[cfg(test)]
+mod raw_lzma_roundtrip_tests {
+    use super::*;
+
+    /// Arbitrary (non-procedural) values fall back to the `RawLzma` model; they
+    /// must round-trip through flush + mmap read exactly. 0.2.0-beta.1 returned
+    /// 0.0 for every such value from the zero-copy path (alice-physics
+    /// replay / `db_bridge` contract tests, 2026-09-15).
+    #[test]
+    fn raw_lzma_values_round_trip_through_flush_and_mmap() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AliceDB::open(dir.path().join("raw")).unwrap();
+        let values: Vec<(i64, f32)> = (0..64)
+            .map(|i| (i, ((i * 7919) % 101) as f32 * 0.37 - 5.0))
+            .collect();
+        db.put_batch(&values).unwrap();
+        db.flush().unwrap();
+        for &(t, v) in &values {
+            let got = db.get(t).unwrap().expect("stored point");
+            assert!((got - v).abs() <= 1e-6, "t={t}: {got} vs {v}");
+        }
+        let scanned = db.scan(10, 20).unwrap();
+        assert_eq!(scanned.len(), 11);
+        for (i, (t, got)) in scanned.iter().enumerate() {
+            assert_eq!(*t, 10 + i as i64);
+            let want = values[*t as usize].1;
+            assert!((got - want).abs() <= 1e-6, "scan t={t}: {got} vs {want}");
+        }
+        // single-point put after flush is also readable (own segment)
+        db.put(1000, 123.5).unwrap();
+        db.flush().unwrap();
+        assert!((db.get(1000).unwrap().expect("point") - 123.5).abs() <= 1e-6);
+        assert_eq!(db.scan(1000, 1000).unwrap().len(), 1);
+    }
+}

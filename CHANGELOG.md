@@ -4,11 +4,14 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0-beta.2] - 2026-09-15
+
 ### Added
 - `ci.yml` (それまで fuzz / security-audit のみで test / clippy / doc は CI 未実行): test (default + `ffi,sdf`) / clippy `--all-targets -D warnings` 2 variant (pedantic は informational) / `msrv` job (`cargo +1.87 check`) / `feature-powerset` (cargo-hack depth 2) / fmt / doc `-D warnings` / actionlint、`alice-stubs` action、rust-cache
 - `rust-version = "1.87"` を宣言 (alice-zip 0.3 の要求、`cargo +1.87 check` で実 compile 確認) + `rust-toolchain.toml` (1.98.1 pin)
 
 ### Fixed
+- **mmap (zero-copy) 読み出しで `RawLzma` / `PerlinNoise` model の値が全て 0.0 になっていた** — `SegmentView::evaluate_archived_model` が「full deserialization が要る、production では compute する」という comment 付きで `0.0` を返す stub のまま publish されていた 手続き model に fit しない任意データは全部 `RawLzma` fallback に入るので、`put` → `flush` → `get` / `scan` が値を返さない (in-memory `DataSegment` 経路は正しかった) alice-physics 1.2.0 の `replay` / `db_bridge` 契約 test (`scan_positions` / `query_bodies`) が検出 (2026-09-15) archived 経路で LZMA 解凍 + dtype 再解釈 / Perlin 再生成を実装、range query は 1 回 decode、`raw_lzma_values_round_trip_through_flush_and_mmap` で pin
 - clippy pedantic 13 件を 0 化し CI を `-W pedantic -D warnings` gate に (`sdf_bridge` の `# Errors` doc 7 / `ffi` の `let...else` 5 / float 比較 1)
 - clippy `manual_range_contains` 3 件 (`sdf_bridge` test)、`incompatible_msrv` 1 件 (`segment.rs` の `File::lock_shared` は 1.89+ inherent、`fs2::FileExt::lock_shared` を trait 経由で明示)
 - rustdoc `-D warnings` 5 件 (private item link / `blob::` 経由の誤った module path 3 / doc 例の非 ASCII byte string)

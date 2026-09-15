@@ -21,7 +21,7 @@
 //! License: MIT
 //! Author: Moroya Sakamoto
 
-use crate::model::{ArchivedModelType, DataType, ModelType};
+use crate::model::{ArchivedDataType, ArchivedModelType, DataType, ModelType};
 use alice_core::generators;
 use memmap2::Mmap;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
@@ -742,26 +742,7 @@ impl DataSegment {
         if lzma_rs::lzma_decompress(&mut Cursor::new(compressed), &mut decompressed).is_err() {
             return vec![0.0; count];
         }
-
-        match dtype {
-            DataType::Float32 => decompressed
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes(b.try_into().unwrap_or([0; 4])))
-                .collect(),
-            DataType::Float64 => decompressed
-                .chunks_exact(8)
-                .map(|b| f64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32)
-                .collect(),
-            DataType::Int32 => decompressed
-                .chunks_exact(4)
-                .map(|b| i32::from_le_bytes(b.try_into().unwrap_or([0; 4])) as f32)
-                .collect(),
-            DataType::Int64 => decompressed
-                .chunks_exact(8)
-                .map(|b| i64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32)
-                .collect(),
-            DataType::UInt8 => decompressed.iter().map(|&b| b as f32).collect(),
-        }
+        decode_raw_bytes(&decompressed, dtype)
     }
 
     /// Serialize segment to bytes
@@ -928,6 +909,29 @@ impl AsRef<[u8]> for SegmentSource {
             Self::Vec(v) => v.as_slice(),
             Self::Slice(s) => s,
         }
+    }
+}
+
+/// Reinterpret decompressed little-endian bytes as `f32` samples of `dtype`.
+fn decode_raw_bytes(decompressed: &[u8], dtype: DataType) -> Vec<f32> {
+    match dtype {
+        DataType::Float32 => decompressed
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap_or([0; 4])))
+            .collect(),
+        DataType::Float64 => decompressed
+            .chunks_exact(8)
+            .map(|b| f64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32)
+            .collect(),
+        DataType::Int32 => decompressed
+            .chunks_exact(4)
+            .map(|b| i32::from_le_bytes(b.try_into().unwrap_or([0; 4])) as f32)
+            .collect(),
+        DataType::Int64 => decompressed
+            .chunks_exact(8)
+            .map(|b| i64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32)
+            .collect(),
+        DataType::UInt8 => decompressed.iter().map(|&b| b as f32).collect(),
     }
 }
 
@@ -1579,11 +1583,26 @@ impl SegmentView {
         };
         let start_time = self.archived.start_time;
 
+        // Non-analytic models are decoded once for the whole range instead of
+        // per point (the point path decompresses on every call).
+        let samples = match &self.archived.model {
+            ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
+                Some(self.materialise_archived_samples())
+            }
+            _ => None,
+        };
+
         while t <= query_end as f64 {
             let timestamp = t as i64;
             let x = (timestamp - start_time) as f64 * inv_total_range;
 
-            let value = self.evaluate_archived_model(x);
+            let value = match &samples {
+                Some(data) => {
+                    let idx = (x * data.len().saturating_sub(1) as f64).round() as usize;
+                    data.get(idx).copied().unwrap_or(0.0)
+                }
+                None => self.evaluate_archived_model(x),
+            };
             results.push((timestamp, value));
             t += step;
         }
@@ -1647,10 +1666,65 @@ impl SegmentView {
                 sum
             }
             ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
-                // These require full deserialization, fallback to 0
-                // In production, would deserialize and compute
-                0.0
+                // Non-analytic models: materialise the sample vector and index it.
+                // (0.2.0-beta.1 returned 0.0 here — every value stored through the
+                // RawLzma fallback, i.e. any data no procedural model fits, read
+                // back as zero from the mmap path while the in-memory path was
+                // correct. Found by alice-physics' replay / db_bridge contract
+                // tests, 2026-09-15.)
+                let data = self.materialise_archived_samples();
+                let idx = (x * data.len().saturating_sub(1) as f64).round() as usize;
+                data.get(idx).copied().unwrap_or(0.0)
             }
+        }
+    }
+
+    /// Decode the sample vector of a non-analytic archived model (`RawLzma` →
+    /// LZMA decompress + dtype reinterpret, `PerlinNoise` → regenerate from the
+    /// archived parameters). `point_count` samples; a corrupt blob yields zeros.
+    fn materialise_archived_samples(&self) -> Vec<f32> {
+        let n = self.archived.metadata.point_count as usize;
+        match &self.archived.model {
+            ArchivedModelType::RawLzma {
+                compressed_data,
+                dtype,
+                ..
+            } => {
+                use std::io::Cursor;
+                let mut decompressed = Vec::new();
+                if lzma_rs::lzma_decompress(
+                    &mut Cursor::new(compressed_data.as_slice()),
+                    &mut decompressed,
+                )
+                .is_err()
+                {
+                    return vec![0.0; n];
+                }
+                let dtype: DataType = match dtype {
+                    ArchivedDataType::Float32 => DataType::Float32,
+                    ArchivedDataType::Float64 => DataType::Float64,
+                    ArchivedDataType::Int32 => DataType::Int32,
+                    ArchivedDataType::Int64 => DataType::Int64,
+                    ArchivedDataType::UInt8 => DataType::UInt8,
+                };
+                decode_raw_bytes(&decompressed, dtype)
+            }
+            ArchivedModelType::PerlinNoise {
+                seed,
+                scale,
+                octaves,
+                persistence,
+                lacunarity,
+            } => generators::generate_perlin_advanced(
+                n,
+                1,
+                *seed,
+                *scale,
+                *octaves,
+                *persistence,
+                *lacunarity,
+            ),
+            _ => Vec::new(),
         }
     }
 

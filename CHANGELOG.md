@@ -4,6 +4,9 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **FFI 14 関数の panic 隔離** (`src/ffi.rs`): `const fn` の `alice_db_version` を除く全 `extern "C"` を `ffi_guard(sentinel, || ..)` で包み、panic は host を落とさず sentinel (`DbResult::Unknown` / `PointResult { found: false }` / zero `DbStats` / null / −1 / false) + `alice_db_last_error()` (新規、`alice_db_clear_last_error` / `alice_db_free_error_string` も) で通知 `[profile.release] panic = "abort"` を撤去 (abort では `catch_unwind` が機能しない) release profile で guard test 通過
+
 ### Changed
 - `alice-zip` 0.3 → 0.4: `PerlinNoise` segment / archived model は `generate_fbm_1d(n, seed, …)` (0.3 の `generate_perlin_advanced(n, 1, …)` と同一法則、sample 値は bit 一致) で再生成 0.4 は無効 parameter (`scale <= 0` / `octaves == 0`) を `Err` で返すため、corrupt model は corrupt blob と同じく zeros を返す `fit_polynomial` / `analyze_signal` / `generate_from_coefficients` / `generate_sine_wave` / `generate_multi_sine` / zlib wrapper は同名・同 convention (0.4 で Nyquist bin の復元重みが 2 → 1、energy threshold の母数が総エネルギーに変更されたため、新規 fit の係数選択が変わり得る 既存 segment の decode は互換)
 

@@ -161,24 +161,26 @@ pub const extern "C" fn alice_db_version() -> VersionInfo {
 /// `path` must be a valid null-terminated UTF-8 string.
 #[no_mangle]
 pub unsafe extern "C" fn alice_db_open(path: *const c_char) -> DbHandle {
-    if path.is_null() {
-        return DB_HANDLE_NULL;
-    }
-    // SAFETY: `path` has been checked non-null. The `# Safety` contract
-    // requires the caller to pass a valid null-terminated UTF-8 string.
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let Ok(path_str) = c_str.to_str() else {
-        return DB_HANDLE_NULL;
-    };
-    match AliceDB::open(path_str) {
-        Ok(db) => {
-            let wrapper = Box::new(DbWrapper {
-                db: Mutex::new(Some(db)),
-            });
-            Box::into_raw(wrapper) as DbHandle
+    ffi_guard(DB_HANDLE_NULL, || {
+        if path.is_null() {
+            return DB_HANDLE_NULL;
         }
-        Err(_) => DB_HANDLE_NULL,
-    }
+        // SAFETY: `path` has been checked non-null. The `# Safety` contract
+        // requires the caller to pass a valid null-terminated UTF-8 string.
+        let c_str = unsafe { CStr::from_ptr(path) };
+        let Ok(path_str) = c_str.to_str() else {
+            return DB_HANDLE_NULL;
+        };
+        match AliceDB::open(path_str) {
+            Ok(db) => {
+                let wrapper = Box::new(DbWrapper {
+                    db: Mutex::new(Some(db)),
+                });
+                Box::into_raw(wrapper) as DbHandle
+            }
+            Err(_) => DB_HANDLE_NULL,
+        }
+    })
 }
 
 /// Open with custom configuration
@@ -193,31 +195,33 @@ pub unsafe extern "C" fn alice_db_open_with_config(
     enable_wal: bool,
     sync_writes: bool,
 ) -> DbHandle {
-    if path.is_null() {
-        return DB_HANDLE_NULL;
-    }
-    // SAFETY: `path` has been checked non-null. The `# Safety` contract
-    // requires the caller to pass a valid null-terminated UTF-8 string.
-    let c_str = unsafe { CStr::from_ptr(path) };
-    let Ok(path_str) = c_str.to_str() else {
-        return DB_HANDLE_NULL;
-    };
-    let config = StorageConfig {
-        data_dir: std::path::PathBuf::from(path_str),
-        memtable_capacity: memtable_capacity as usize,
-        enable_wal,
-        sync_writes,
-        ..Default::default()
-    };
-    match AliceDB::with_config(config) {
-        Ok(db) => {
-            let wrapper = Box::new(DbWrapper {
-                db: Mutex::new(Some(db)),
-            });
-            Box::into_raw(wrapper) as DbHandle
+    ffi_guard(DB_HANDLE_NULL, || {
+        if path.is_null() {
+            return DB_HANDLE_NULL;
         }
-        Err(_) => DB_HANDLE_NULL,
-    }
+        // SAFETY: `path` has been checked non-null. The `# Safety` contract
+        // requires the caller to pass a valid null-terminated UTF-8 string.
+        let c_str = unsafe { CStr::from_ptr(path) };
+        let Ok(path_str) = c_str.to_str() else {
+            return DB_HANDLE_NULL;
+        };
+        let config = StorageConfig {
+            data_dir: std::path::PathBuf::from(path_str),
+            memtable_capacity: memtable_capacity as usize,
+            enable_wal,
+            sync_writes,
+            ..Default::default()
+        };
+        match AliceDB::with_config(config) {
+            Ok(db) => {
+                let wrapper = Box::new(DbWrapper {
+                    db: Mutex::new(Some(db)),
+                });
+                Box::into_raw(wrapper) as DbHandle
+            }
+            Err(_) => DB_HANDLE_NULL,
+        }
+    })
 }
 
 /// Close and free a database handle
@@ -227,35 +231,39 @@ pub unsafe extern "C" fn alice_db_open_with_config(
 /// `handle` must be a valid handle returned by `alice_db_open`.
 #[no_mangle]
 pub unsafe extern "C" fn alice_db_close(handle: DbHandle) -> DbResult {
-    if handle.is_null() {
-        return DbResult::InvalidHandle;
-    }
-    // SAFETY: `handle` has been checked non-null. The `# Safety` contract
-    // requires this to be a handle returned by `alice_db_open`. We reclaim
-    // the `Box` to drop the `DbWrapper` after closing.
-    let wrapper = unsafe { Box::from_raw(handle.cast::<DbWrapper>()) };
-    let Ok(mut guard) = wrapper.db.lock() else {
-        return DbResult::Unknown;
-    };
-    if let Some(db) = guard.take() {
-        match db.close() {
-            Ok(()) => DbResult::Ok,
-            Err(_) => DbResult::IoError,
+    ffi_guard(DbResult::Unknown, || {
+        if handle.is_null() {
+            return DbResult::InvalidHandle;
         }
-    } else {
-        DbResult::Closed
-    }
+        // SAFETY: `handle` has been checked non-null. The `# Safety` contract
+        // requires this to be a handle returned by `alice_db_open`. We reclaim
+        // the `Box` to drop the `DbWrapper` after closing.
+        let wrapper = unsafe { Box::from_raw(handle.cast::<DbWrapper>()) };
+        let Ok(mut guard) = wrapper.db.lock() else {
+            return DbResult::Unknown;
+        };
+        if let Some(db) = guard.take() {
+            match db.close() {
+                Ok(()) => DbResult::Ok,
+                Err(_) => DbResult::IoError,
+            }
+        } else {
+            DbResult::Closed
+        }
+    })
 }
 
 /// Insert a single value
 #[no_mangle]
 pub extern "C" fn alice_db_put(handle: DbHandle, timestamp: i64, value: f32) -> DbResult {
-    match with_db(handle, |db| {
-        db.put(timestamp, value).map_err(|_| DbResult::IoError)
-    }) {
-        Ok(()) => DbResult::Ok,
-        Err(e) => e,
-    }
+    ffi_guard(DbResult::Unknown, || {
+        match with_db(handle, |db| {
+            db.put(timestamp, value).map_err(|_| DbResult::IoError)
+        }) {
+            Ok(()) => DbResult::Ok,
+            Err(e) => e,
+        }
+    })
 }
 
 /// Insert multiple values (batch)
@@ -270,40 +278,51 @@ pub unsafe extern "C" fn alice_db_put_batch(
     values: *const f32,
     count: u32,
 ) -> DbResult {
-    if timestamps.is_null() || values.is_null() {
-        return DbResult::NullPointer;
-    }
-    // SAFETY: `timestamps` and `values` have been checked non-null. The
-    // `# Safety` contract requires them to point to arrays of `count` elements.
-    let ts = unsafe { std::slice::from_raw_parts(timestamps, count as usize) };
-    let vs = unsafe { std::slice::from_raw_parts(values, count as usize) };
-    let data: Vec<(i64, f32)> = ts.iter().zip(vs.iter()).map(|(&t, &v)| (t, v)).collect();
-    match with_db(handle, |db| {
-        db.put_batch(&data).map_err(|_| DbResult::IoError)
-    }) {
-        Ok(()) => DbResult::Ok,
-        Err(e) => e,
-    }
+    ffi_guard(DbResult::Unknown, || {
+        if timestamps.is_null() || values.is_null() {
+            return DbResult::NullPointer;
+        }
+        // SAFETY: `timestamps` and `values` have been checked non-null. The
+        // `# Safety` contract requires them to point to arrays of `count` elements.
+        let ts = unsafe { std::slice::from_raw_parts(timestamps, count as usize) };
+        let vs = unsafe { std::slice::from_raw_parts(values, count as usize) };
+        let data: Vec<(i64, f32)> = ts.iter().zip(vs.iter()).map(|(&t, &v)| (t, v)).collect();
+        match with_db(handle, |db| {
+            db.put_batch(&data).map_err(|_| DbResult::IoError)
+        }) {
+            Ok(()) => DbResult::Ok,
+            Err(e) => e,
+        }
+    })
 }
 
 /// Query a single point
 #[no_mangle]
 pub extern "C" fn alice_db_get(handle: DbHandle, timestamp: i64) -> PointResult {
-    let not_found = PointResult {
-        timestamp,
-        value: 0.0,
-        found: false,
-    };
-    match with_db(handle, |db| {
-        db.get(timestamp).map_err(|_| DbResult::IoError)
-    }) {
-        Ok(Some(v)) => PointResult {
-            timestamp,
-            value: v,
-            found: true,
+    ffi_guard(
+        PointResult {
+            timestamp: 0,
+            value: 0.0,
+            found: false,
         },
-        _ => not_found,
-    }
+        || {
+            let not_found = PointResult {
+                timestamp,
+                value: 0.0,
+                found: false,
+            };
+            match with_db(handle, |db| {
+                db.get(timestamp).map_err(|_| DbResult::IoError)
+            }) {
+                Ok(Some(v)) => PointResult {
+                    timestamp,
+                    value: v,
+                    found: true,
+                },
+                _ => not_found,
+            }
+        },
+    )
 }
 
 /// Query a time range, writing results to caller-allocated buffers
@@ -323,25 +342,27 @@ pub unsafe extern "C" fn alice_db_scan(
     out_values: *mut f32,
     max_count: u32,
 ) -> i32 {
-    let Ok(results) = with_db(handle, |db| {
-        db.scan(start, end).map_err(|_| DbResult::IoError)
-    }) else {
-        return -1;
-    };
-    if out_timestamps.is_null() || out_values.is_null() {
-        return results.len() as i32;
-    }
-    let n = results.len().min(max_count as usize);
-    // SAFETY: We checked non-null above. The `# Safety` contract requires
-    // output buffers to have capacity for at least `max_count` elements.
-    // `n` is clamped to `max_count` so we stay within bounds.
-    let ts_out = unsafe { std::slice::from_raw_parts_mut(out_timestamps, n) };
-    let vs_out = unsafe { std::slice::from_raw_parts_mut(out_values, n) };
-    for (i, &(t, v)) in results.iter().take(n).enumerate() {
-        ts_out[i] = t;
-        vs_out[i] = v;
-    }
-    n as i32
+    ffi_guard(-1, || {
+        let Ok(results) = with_db(handle, |db| {
+            db.scan(start, end).map_err(|_| DbResult::IoError)
+        }) else {
+            return -1;
+        };
+        if out_timestamps.is_null() || out_values.is_null() {
+            return results.len() as i32;
+        }
+        let n = results.len().min(max_count as usize);
+        // SAFETY: We checked non-null above. The `# Safety` contract requires
+        // output buffers to have capacity for at least `max_count` elements.
+        // `n` is clamped to `max_count` so we stay within bounds.
+        let ts_out = unsafe { std::slice::from_raw_parts_mut(out_timestamps, n) };
+        let vs_out = unsafe { std::slice::from_raw_parts_mut(out_values, n) };
+        for (i, &(t, v)) in results.iter().take(n).enumerate() {
+            ts_out[i] = t;
+            vs_out[i] = v;
+        }
+        n as i32
+    })
 }
 
 /// Aggregation query
@@ -357,20 +378,22 @@ pub unsafe extern "C" fn alice_db_aggregate(
     agg: AggregationType,
     out_value: *mut f64,
 ) -> DbResult {
-    if out_value.is_null() {
-        return DbResult::NullPointer;
-    }
-    match with_db(handle, |db| {
-        db.aggregate(start, end, agg_from_ffi(agg))
-            .map_err(|_| DbResult::IoError)
-    }) {
-        Ok(val) => {
-            // SAFETY: `out_value` has been checked non-null above.
-            unsafe { *out_value = val };
-            DbResult::Ok
+    ffi_guard(DbResult::Unknown, || {
+        if out_value.is_null() {
+            return DbResult::NullPointer;
         }
-        Err(e) => e,
-    }
+        match with_db(handle, |db| {
+            db.aggregate(start, end, agg_from_ffi(agg))
+                .map_err(|_| DbResult::IoError)
+        }) {
+            Ok(val) => {
+                // SAFETY: `out_value` has been checked non-null above.
+                unsafe { *out_value = val };
+                DbResult::Ok
+            }
+            Err(e) => e,
+        }
+    })
 }
 
 /// Downsampling query
@@ -389,72 +412,88 @@ pub unsafe extern "C" fn alice_db_downsample(
     out_values: *mut f64,
     max_count: u32,
 ) -> i32 {
-    let Ok(results) = with_db(handle, |db| {
-        db.downsample(start, end, interval, agg_from_ffi(agg))
-            .map_err(|_| DbResult::IoError)
-    }) else {
-        return -1;
-    };
-    if out_timestamps.is_null() || out_values.is_null() {
-        return results.len() as i32;
-    }
-    let n = results.len().min(max_count as usize);
-    // SAFETY: We checked non-null above. The `# Safety` contract requires
-    // output buffers to have capacity for at least `max_count` elements.
-    let ts_out = unsafe { std::slice::from_raw_parts_mut(out_timestamps, n) };
-    let vs_out = unsafe { std::slice::from_raw_parts_mut(out_values, n) };
-    for (i, &(t, v)) in results.iter().take(n).enumerate() {
-        ts_out[i] = t;
-        vs_out[i] = v;
-    }
-    n as i32
+    ffi_guard(-1, || {
+        let Ok(results) = with_db(handle, |db| {
+            db.downsample(start, end, interval, agg_from_ffi(agg))
+                .map_err(|_| DbResult::IoError)
+        }) else {
+            return -1;
+        };
+        if out_timestamps.is_null() || out_values.is_null() {
+            return results.len() as i32;
+        }
+        let n = results.len().min(max_count as usize);
+        // SAFETY: We checked non-null above. The `# Safety` contract requires
+        // output buffers to have capacity for at least `max_count` elements.
+        let ts_out = unsafe { std::slice::from_raw_parts_mut(out_timestamps, n) };
+        let vs_out = unsafe { std::slice::from_raw_parts_mut(out_values, n) };
+        for (i, &(t, v)) in results.iter().take(n).enumerate() {
+            ts_out[i] = t;
+            vs_out[i] = v;
+        }
+        n as i32
+    })
 }
 
 /// Force flush memtable to disk
 #[no_mangle]
 pub extern "C" fn alice_db_flush(handle: DbHandle) -> DbResult {
-    match with_db(handle, |db| db.flush().map_err(|_| DbResult::IoError)) {
-        Ok(()) => DbResult::Ok,
-        Err(e) => e,
-    }
+    ffi_guard(DbResult::Unknown, || {
+        match with_db(handle, |db| db.flush().map_err(|_| DbResult::IoError)) {
+            Ok(()) => DbResult::Ok,
+            Err(e) => e,
+        }
+    })
 }
 
 /// Get database statistics
 #[no_mangle]
 pub extern "C" fn alice_db_stats(handle: DbHandle) -> DbStats {
-    let empty = DbStats {
-        total_segments: 0,
-        memtable_size: 0,
-        total_disk_size: 0,
-        average_compression_ratio: 0.0,
-    };
-    match with_db(handle, |db| {
-        let s = db.stats();
-        Ok(DbStats {
-            total_segments: s.total_segments as u64,
-            memtable_size: s.memtable_size as u64,
-            total_disk_size: s.total_disk_size,
-            average_compression_ratio: s.average_compression_ratio,
-        })
-    }) {
-        Ok(s) => s,
-        Err(_) => empty,
-    }
+    ffi_guard(
+        DbStats {
+            total_segments: 0,
+            memtable_size: 0,
+            total_disk_size: 0,
+            average_compression_ratio: 0.0,
+        },
+        || {
+            let empty = DbStats {
+                total_segments: 0,
+                memtable_size: 0,
+                total_disk_size: 0,
+                average_compression_ratio: 0.0,
+            };
+            match with_db(handle, |db| {
+                let s = db.stats();
+                Ok(DbStats {
+                    total_segments: s.total_segments as u64,
+                    memtable_size: s.memtable_size as u64,
+                    total_disk_size: s.total_disk_size,
+                    average_compression_ratio: s.average_compression_ratio,
+                })
+            }) {
+                Ok(s) => s,
+                Err(_) => empty,
+            }
+        },
+    )
 }
 
 /// Check if a handle is valid
 #[no_mangle]
 pub extern "C" fn alice_db_is_valid(handle: DbHandle) -> bool {
-    if handle.is_null() {
-        return false;
-    }
-    // SAFETY: `handle` has been checked non-null above. Callers must
-    // provide a handle previously returned by `alice_db_open`.
-    let wrapper = unsafe { &*(handle as *const DbWrapper) };
-    match wrapper.db.lock() {
-        Ok(guard) => guard.is_some(),
-        Err(_) => false,
-    }
+    ffi_guard(false, || {
+        if handle.is_null() {
+            return false;
+        }
+        // SAFETY: `handle` has been checked non-null above. Callers must
+        // provide a handle previously returned by `alice_db_open`.
+        let wrapper = unsafe { &*(handle as *const DbWrapper) };
+        match wrapper.db.lock() {
+            Ok(guard) => guard.is_some(),
+            Err(_) => false,
+        }
+    })
 }
 
 /// Free a C string returned by ALICE-DB
@@ -464,11 +503,13 @@ pub extern "C" fn alice_db_is_valid(handle: DbHandle) -> bool {
 /// `s` must be a string allocated by ALICE-DB FFI functions.
 #[no_mangle]
 pub unsafe extern "C" fn alice_db_free_string(s: *mut c_char) {
-    if !s.is_null() {
-        // SAFETY: `s` has been checked non-null. The `# Safety` contract
-        // requires it to be a string allocated by ALICE-DB FFI functions.
-        drop(unsafe { CString::from_raw(s) });
-    }
+    ffi_guard((), || {
+        if !s.is_null() {
+            // SAFETY: `s` has been checked non-null. The `# Safety` contract
+            // requires it to be a string allocated by ALICE-DB FFI functions.
+            drop(unsafe { CString::from_raw(s) });
+        }
+    });
 }
 
 #[cfg(test)]
@@ -739,5 +780,145 @@ mod tests {
 
         // Close
         assert_eq!(unsafe { alice_db_close(handle) }, DbResult::Ok);
+    }
+}
+
+// ============================================================================
+// Panic isolation (see `guard`)
+// ============================================================================
+
+/// Message of the most recent panic caught at the FFI boundary on this thread
+/// (NUL-terminated, owned by the callee — release with
+/// `alice_db_free_error_string`), or null if none.
+#[no_mangle]
+pub extern "C" fn alice_db_last_error() -> *mut std::os::raw::c_char {
+    ffi_guard(ptr::null_mut(), || match guard::take_last_error() {
+        Some(msg) => {
+            std::ffi::CString::new(msg).map_or(ptr::null_mut(), std::ffi::CString::into_raw)
+        }
+        None => ptr::null_mut(),
+    })
+}
+
+/// Clear the most recent FFI error message.
+#[no_mangle]
+pub extern "C" fn alice_db_clear_last_error() {
+    ffi_guard((), guard::clear_last_error);
+}
+
+/// Release a string returned by `alice_db_last_error`.
+///
+/// # Safety
+/// `s` must be null or a pointer returned by `alice_db_last_error` (freed once).
+#[no_mangle]
+pub unsafe extern "C" fn alice_db_free_error_string(s: *mut std::os::raw::c_char) {
+    ffi_guard((), || {
+        if !s.is_null() {
+            drop(std::ffi::CString::from_raw(s));
+        }
+    });
+}
+
+/// Panic isolation for the C ABI.
+///
+/// A panic that reaches an `extern "C"` boundary aborts the whole process
+/// (Rust 1.81+), taking the host (Unity, Unreal, a Python interpreter) down
+/// with it. Every exported function therefore runs its body through
+/// [`guard::ffi_guard`]: a panic is caught inside the function, its message is
+/// stored in a thread-local slot the host reads with `alice_db_last_error`, and
+/// the function returns the caller's sentinel (null handle, 0, -1, NaN, ()).
+/// Requires the crate to be built with `panic = "unwind"` (the default);
+/// `panic = "abort"` makes `catch_unwind` a no-op.
+pub(crate) mod guard {
+    use std::cell::RefCell;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    thread_local! {
+        static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    /// Record an error message for `alice_db_last_error`.
+    pub fn set_last_error(msg: impl Into<String>) {
+        LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(msg.into()));
+    }
+
+    /// Take the most recent error message (leaves the slot empty).
+    pub fn take_last_error() -> Option<String> {
+        LAST_ERROR.with(|slot| slot.borrow_mut().take())
+    }
+
+    /// Clear the most recent error message.
+    pub fn clear_last_error() {
+        LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    /// Run `body`, converting a panic into `default` plus a recorded message.
+    ///
+    /// The closure is treated as unwind-safe: every FFI body only touches its
+    /// arguments and heap handles owned by the caller, so no partially-updated
+    /// shared state is observable afterwards.
+    #[inline]
+    pub fn ffi_guard<T>(default: T, body: impl FnOnce() -> T) -> T {
+        match catch_unwind(AssertUnwindSafe(body)) {
+            Ok(v) => v,
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "panic with non-string payload".to_string());
+                set_last_error(format!("alice_db FFI panic: {msg}"));
+                default
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn panic_becomes_default_and_message() {
+            clear_last_error();
+            let v = ffi_guard(-1i32, || -> i32 { panic!("boom {}", 42) });
+            assert_eq!(v, -1);
+            let msg = take_last_error().expect("message recorded");
+            assert!(msg.contains("boom 42"), "{msg}");
+            assert!(take_last_error().is_none(), "take clears the slot");
+        }
+
+        #[test]
+        fn success_leaves_slot_untouched() {
+            clear_last_error();
+            assert_eq!(ffi_guard(0, || 5), 5);
+            assert!(take_last_error().is_none());
+        }
+    }
+}
+
+use guard::ffi_guard;
+
+#[cfg(test)]
+mod guard_ffi_tests {
+    use super::*;
+
+    /// panic が sentinel + `alice_db_last_error` の message に変換され、host が
+    /// 文字列を取得 / 解放できること (extern "C" 3 本の end-to-end)
+    #[test]
+    fn last_error_roundtrip_through_c_abi() {
+        alice_db_clear_last_error();
+        assert!(alice_db_last_error().is_null(), "初期状態は null");
+        let v = ffi_guard(DbResult::Unknown, || -> DbResult {
+            panic!("ffi test panic")
+        });
+        assert!(matches!(v, DbResult::Unknown));
+        let s = alice_db_last_error();
+        assert!(!s.is_null());
+        let msg = unsafe { std::ffi::CStr::from_ptr(s) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(msg.contains("ffi test panic"), "{msg}");
+        unsafe { alice_db_free_error_string(s) };
+        assert!(alice_db_last_error().is_null(), "take で slot は空になる");
     }
 }

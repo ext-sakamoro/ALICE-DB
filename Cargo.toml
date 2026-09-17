@@ -86,7 +86,8 @@ harness = false
 lto = "fat"
 codegen-units = 1
 opt-level = 3
-panic = "abort"
+# panic = "abort" は撤去 (2026-09-17): FFI の catch_unwind (src/ffi.rs guard) は
+# unwind でしか機能せず、abort だと host process ごと落ちる
 strip = true
 
 [profile.bench]

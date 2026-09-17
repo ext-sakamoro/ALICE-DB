@@ -4,6 +4,8 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0-beta.3] - 2026-09-17
+
 ### Added
 - `tests/analytic_oracle.rs` — 閉形式 / 公開 test vector との突合 oracle 10 本 (CLAUDE.md § 解析解突合テスト規律、2026-09-17): model 評価 (polynomial / linear / constant / sine / Fourier) の閉形式、`query_range` ≡ `query_point` ≡ `generate_all`、residual / RawLzma round-trip、**`lossless: true` の put → get bit 一致** (mmap / 非 mmap × polynomial / Fourier / raw)、既定 (lossy) fit の文書化閾値、aggregate 閉形式、CRC-32 check value + XXH64 test vector、Bloom filter の m / k 閉形式 + false negative 0 + FP ≤ 2p 不規則 timestamp の lossless は `#[ignore]` (下記)
 - `segment::ResidualKind` / `residual_kind` / `apply_residual` / `compress_residual_xor` — XOR residual format (magic 0x02 LZMA / 0x03 raw)

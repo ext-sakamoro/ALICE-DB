@@ -32,6 +32,145 @@ use std::path::Path;
 use std::sync::Arc;
 use wide::f64x4;
 
+/// The model laws — one function per model, shared by the in-memory point
+/// query, the in-memory range query, the archived (mmap) point query, the
+/// archived range query and `generate_all` (oracle: `tests/analytic_oracle.rs`).
+///
+/// Every law is a function of the **sample position** `i` (fractional,
+/// `0 ..= n − 1`) and the sample count `n`, matching the conventions of the
+/// fitters in `alice_core::generators`:
+/// - polynomial: `Σ cⱼ·iʲ` (`fit_polynomial` maps its unit-x fit back to
+///   integer indices)
+/// - Fourier: `dc + Σ w(k)·mag/n · cos(2πk·i/n + phase)`, `w = 1` for DC and
+///   Nyquist, `2` otherwise (`generate_from_coefficients`)
+/// - sine / multi-sine: `offset + A·sin(2πf·i/n + phase)` (`generate_sine_wave`)
+/// - linear: `start + (end − start)·i/(n − 1)`
+///
+/// History (2026-09-17): four hand-copied evaluators disagreed with these
+/// laws and with each other — the point / range paths evaluated the
+/// polynomial at `x = i/(n−1)` (coefficients are for `x = i`), used the raw
+/// DFT magnitude for Fourier (n/2 × too large: a 1000-sample sine came back
+/// with relative MSE 2.5e5) and `i/(n−1)` in the sine argument — while
+/// `generate_all` (alice-zip) was right.  Lossless mode hid all of it
+/// because the residual was computed against the same wrong value.
+mod law {
+    use std::f64::consts::PI;
+
+    /// Fractional sample position of `timestamp` in a segment of `n` samples
+    /// spanning `start..=end` (uniform spacing).
+    #[inline(always)]
+    pub(super) fn sample_pos(start: i64, end: i64, n: usize, timestamp: i64) -> f64 {
+        let range = (end - start) as f64;
+        if n <= 1 || range <= 0.0 {
+            return 0.0;
+        }
+        (timestamp - start) as f64 / range * (n - 1) as f64
+    }
+
+    #[inline(always)]
+    pub(super) fn polynomial_at(coefficients: impl DoubleEndedIterator<Item = f64>, i: f64) -> f32 {
+        let mut result = 0.0f64;
+        for c in coefficients.rev() {
+            result = result.mul_add(i, c);
+        }
+        result as f32
+    }
+
+    #[inline(always)]
+    pub(super) fn fourier_at(
+        coefficients: impl Iterator<Item = (usize, f32, f32)>,
+        dc_offset: f32,
+        n: usize,
+        i: f64,
+    ) -> f32 {
+        if n == 0 {
+            return dc_offset;
+        }
+        let inv_n = 1.0 / n as f64;
+        let mut sum = dc_offset as f64;
+        for (k, mag, phase) in coefficients {
+            if k >= n {
+                continue;
+            }
+            let weight = if k == 0 || 2 * k == n { 1.0 } else { 2.0 };
+            let angle = 2.0 * PI * k as f64 * i * inv_n + phase as f64;
+            sum += weight * mag as f64 * inv_n * angle.cos();
+        }
+        sum as f32
+    }
+
+    #[inline(always)]
+    pub(super) fn sine_at(
+        frequency: f32,
+        amplitude: f32,
+        phase: f32,
+        offset: f32,
+        n: usize,
+        i: f64,
+    ) -> f32 {
+        let inv_n = if n == 0 { 0.0 } else { 1.0 / n as f64 };
+        let angle = 2.0 * PI * frequency as f64 * i * inv_n + phase as f64;
+        (offset as f64 + amplitude as f64 * angle.sin()) as f32
+    }
+
+    #[inline(always)]
+    pub(super) fn multisine_at(
+        components: impl Iterator<Item = (f32, f32, f32)>,
+        dc_offset: f32,
+        n: usize,
+        i: f64,
+    ) -> f32 {
+        let inv_n = if n == 0 { 0.0 } else { 1.0 / n as f64 };
+        let mut sum = dc_offset as f64;
+        for (freq, amp, phase) in components {
+            let angle = 2.0 * PI * freq as f64 * i * inv_n + phase as f64;
+            sum += amp as f64 * angle.sin();
+        }
+        sum as f32
+    }
+
+    #[inline(always)]
+    pub(super) fn linear_at(start_value: f64, end_value: f64, n: usize, i: f64) -> f32 {
+        let x = if n <= 1 { 0.0 } else { i / (n - 1) as f64 };
+        (start_value + x * (end_value - start_value)) as f32
+    }
+
+    /// Materialised (non-analytic) models: nearest stored sample.
+    #[inline(always)]
+    pub(super) fn sampled_at(data: &[f32], i: f64) -> f32 {
+        let idx = i.round().max(0.0) as usize;
+        data.get(idx.min(data.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Fill `results` with `(t, eval(i))` for every uniform sample timestamp in
+    /// `query_start..=query_end` (branch on the model once, outside this loop).
+    #[inline(always)]
+    #[allow(clippy::while_float)]
+    pub(super) fn fill_range(
+        results: &mut Vec<(i64, f32)>,
+        query_start: i64,
+        query_end: i64,
+        step: f64,
+        start_time: i64,
+        n: usize,
+        eval: impl Fn(f64) -> f32,
+    ) {
+        let scale = if n <= 1 || step <= 0.0 {
+            0.0
+        } else {
+            1.0 / step
+        };
+        let mut t = query_start as f64;
+        while t <= query_end as f64 {
+            let i = (t - start_time as f64) * scale;
+            results.push((t as i64, eval(i)));
+            t += step;
+        }
+    }
+}
+
 /// Segment metadata
 #[derive(Debug, Clone, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
 #[archive(check_bytes)]
@@ -140,25 +279,20 @@ impl DataSegment {
         if !self.contains(timestamp) {
             return None;
         }
-
-        // Normalize timestamp to [0, 1] range using reciprocal multiply
-        let range = (self.end_time - self.start_time) as f64;
-        let x = if range > 0.0 {
-            let inv_range = 1.0 / range;
-            (timestamp - self.start_time) as f64 * inv_range
-        } else {
-            0.0
-        };
-
-        let value = self.evaluate_model_at_x(x);
+        let i = law::sample_pos(
+            self.start_time,
+            self.end_time,
+            self.metadata.point_count,
+            timestamp,
+        );
+        let value = self.evaluate_model_at(i);
 
         // Apply residual correction if available (decompress on-the-fly)
         if let Some(ref residual) = self.residual_blob {
+            let kind = residual_kind(residual);
             let decompressed = decompress_residual(residual);
             let idx = self.timestamp_to_index(timestamp);
-            if let Some(correction) = self.get_residual_at(&decompressed, idx) {
-                return Some(value + correction);
-            }
+            return Some(apply_residual(value, kind, &decompressed, idx));
         }
 
         Some(value)
@@ -190,25 +324,23 @@ impl DataSegment {
         } else {
             1.0
         };
-        let inv_range = if total_range > 0.0 {
-            1.0 / total_range
-        } else {
-            0.0
-        };
         let estimated_count = ((query_end - query_start) as f64 / step) as usize + 1;
 
         // Pre-allocate with exact capacity
         let mut results = Vec::with_capacity(estimated_count.min(self.metadata.point_count));
 
-        // ★ LOOP UNSWITCHING: Branch ONCE here, then run tight loop ★
+        // Branch on the model ONCE, then run one tight loop over the law
+        let n = self.metadata.point_count;
+        let start_time = self.start_time;
         match &self.model {
             ModelType::Polynomial { coefficients, .. } => {
-                self.query_loop_polynomial(
+                Self::fill_range_polynomial(
                     &mut results,
                     query_start,
                     query_end,
                     step,
-                    inv_range,
+                    start_time,
+                    n,
                     coefficients,
                 );
             }
@@ -216,325 +348,131 @@ impl DataSegment {
                 coefficients,
                 dc_offset,
                 sample_count,
-            } => {
-                self.query_loop_fourier(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    inv_range,
-                    coefficients,
-                    *dc_offset,
-                    *sample_count,
-                );
-            }
+            } => law::fill_range(
+                &mut results,
+                query_start,
+                query_end,
+                step,
+                start_time,
+                n,
+                |i| law::fourier_at(coefficients.iter().copied(), *dc_offset, *sample_count, i),
+            ),
             ModelType::SineWave {
                 frequency,
                 amplitude,
                 phase,
                 offset,
-            } => {
-                self.query_loop_sine(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    inv_range,
-                    *frequency,
-                    *amplitude,
-                    *phase,
-                    *offset,
-                );
-            }
+            } => law::fill_range(
+                &mut results,
+                query_start,
+                query_end,
+                step,
+                start_time,
+                n,
+                |i| law::sine_at(*frequency, *amplitude, *phase, *offset, n, i),
+            ),
             ModelType::MultiSine {
                 components,
                 dc_offset,
-            } => {
-                self.query_loop_multisine(
+            } => law::fill_range(
+                &mut results,
+                query_start,
+                query_end,
+                step,
+                start_time,
+                n,
+                |i| law::multisine_at(components.iter().copied(), *dc_offset, n, i),
+            ),
+            ModelType::Constant { value } => {
+                let v = *value as f32;
+                law::fill_range(
                     &mut results,
                     query_start,
                     query_end,
                     step,
-                    inv_range,
-                    components,
-                    *dc_offset,
+                    start_time,
+                    n,
+                    |_| v,
                 );
-            }
-            ModelType::Constant { value } => {
-                self.query_loop_constant(&mut results, query_start, query_end, step, *value as f32);
             }
             ModelType::Linear {
                 start_value,
                 end_value,
-            } => {
-                self.query_loop_linear(
+            } => law::fill_range(
+                &mut results,
+                query_start,
+                query_end,
+                step,
+                start_time,
+                n,
+                |i| law::linear_at(*start_value, *end_value, n, i),
+            ),
+            ModelType::PerlinNoise { .. } | ModelType::RawLzma { .. } => {
+                // Non-analytic models: materialise once, then index
+                let all = self.generate_all();
+                law::fill_range(
                     &mut results,
                     query_start,
                     query_end,
                     step,
-                    inv_range,
-                    *start_value,
-                    *end_value,
+                    start_time,
+                    n,
+                    |i| law::sampled_at(&all, i),
                 );
-            }
-            ModelType::PerlinNoise { .. } | ModelType::RawLzma { .. } => {
-                // Fallback for complex types - generate all and slice
-                self.query_loop_fallback(&mut results, query_start, query_end, step, total_range);
             }
         }
 
         // Apply residuals in separate pass (decompress once, then apply)
         if let Some(ref residual) = self.residual_blob {
+            let kind = residual_kind(residual);
             let decompressed = decompress_residual(residual);
-            self.apply_residuals(&mut results, &decompressed);
+            for (timestamp, value) in &mut results {
+                let idx = self.timestamp_to_index(*timestamp);
+                *value = apply_residual(*value, kind, &decompressed, idx);
+            }
         }
 
         results
     }
 
-    // =========================================================================
-    // Loop Unswitched Query Implementations (No branches inside loops)
-    // =========================================================================
-
-    /// Polynomial query loop with SIMD (4 points at a time)
+    /// Polynomial range loop: 4 sample positions per `f64x4` Horner step, then
+    /// a scalar tail — the same law as [`law::polynomial_at`].
     #[inline]
     #[allow(clippy::while_float)]
-    fn query_loop_polynomial(
-        &self,
+    fn fill_range_polynomial(
         results: &mut Vec<(i64, f32)>,
         query_start: i64,
         query_end: i64,
         step: f64,
-        inv_range: f64,
+        start_time: i64,
+        n: usize,
         coefficients: &[f64],
     ) {
+        let scale = if n <= 1 || step <= 0.0 {
+            0.0
+        } else {
+            1.0 / step
+        };
+        let start = start_time as f64;
         let mut t = query_start as f64;
         let step4 = step * 4.0;
-        let start_time = self.start_time as f64;
-
-        // SIMD path: process 4 points at a time
         while step.mul_add(3.0, t) <= query_end as f64 {
-            let t0 = t;
-            let t1 = t + step;
-            let t2 = step.mul_add(2.0, t);
-            let t3 = step.mul_add(3.0, t);
-
-            let x = f64x4::from([
-                (t0 - start_time) * inv_range,
-                (t1 - start_time) * inv_range,
-                (t2 - start_time) * inv_range,
-                (t3 - start_time) * inv_range,
+            let ts = [t, t + step, step.mul_add(2.0, t), step.mul_add(3.0, t)];
+            let i = f64x4::from([
+                (ts[0] - start) * scale,
+                (ts[1] - start) * scale,
+                (ts[2] - start) * scale,
+                (ts[3] - start) * scale,
             ]);
-
-            // SIMD Horner's method
-            let vals = self.horner_simd(x, coefficients);
-            let v: [f64; 4] = vals.into();
-
-            results.push((t0 as i64, v[0] as f32));
-            results.push((t1 as i64, v[1] as f32));
-            results.push((t2 as i64, v[2] as f32));
-            results.push((t3 as i64, v[3] as f32));
-
+            let v: [f64; 4] = horner_simd(i, coefficients).into();
+            for k in 0..4 {
+                results.push((ts[k] as i64, v[k] as f32));
+            }
             t += step4;
         }
-
-        // Scalar tail
-        while t <= query_end as f64 {
-            let x = (t - start_time) * inv_range;
-            let val = self.horner_scalar(x, coefficients);
-            results.push((t as i64, val as f32));
-            t += step;
-        }
-    }
-
-    /// Scalar Horner's method (for tail processing)
-    #[inline(always)]
-    #[allow(clippy::unused_self)]
-    fn horner_scalar(&self, x: f64, coefficients: &[f64]) -> f64 {
-        let mut result = 0.0f64;
-        for &c in coefficients.iter().rev() {
-            result = result.mul_add(x, c);
-        }
-        result
-    }
-
-    /// Fourier query loop
-    #[allow(clippy::too_many_arguments, clippy::while_float)]
-    #[inline]
-    fn query_loop_fourier(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        coefficients: &[(usize, f32, f32)],
-        dc_offset: f32,
-        sample_count: usize,
-    ) {
-        let mut t = query_start as f64;
-        let start_time = self.start_time as f64;
-        let n = sample_count as f64;
-        let two_pi_over_n = 2.0 * std::f64::consts::PI / n;
-
-        while t <= query_end as f64 {
-            let x = (t - start_time) * inv_range;
-            let pos = x * n;
-            let mut sum = dc_offset;
-
-            for &(freq_idx, mag, phase) in coefficients {
-                let angle = two_pi_over_n * freq_idx as f64 * pos;
-                sum += mag * (angle as f32 + phase).cos();
-            }
-
-            results.push((t as i64, sum));
-            t += step;
-        }
-    }
-
-    /// Sine wave query loop
-    #[allow(clippy::too_many_arguments, clippy::while_float)]
-    #[inline]
-    fn query_loop_sine(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        frequency: f32,
-        amplitude: f32,
-        phase: f32,
-        offset: f32,
-    ) {
-        let mut t = query_start as f64;
-        let start_time = self.start_time as f64;
-        let two_pi_freq = 2.0 * std::f32::consts::PI * frequency;
-
-        while t <= query_end as f64 {
-            let x = ((t - start_time) * inv_range) as f32;
-            let angle = two_pi_freq * x + phase;
-            let val = amplitude.mul_add(angle.sin(), offset);
-            results.push((t as i64, val));
-            t += step;
-        }
-    }
-
-    /// Multi-sine query loop
-    #[allow(clippy::too_many_arguments, clippy::while_float)]
-    #[inline]
-    fn query_loop_multisine(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        components: &[(f32, f32, f32)],
-        dc_offset: f32,
-    ) {
-        let mut t = query_start as f64;
-        let start_time = self.start_time as f64;
-
-        while t <= query_end as f64 {
-            let x = ((t - start_time) * inv_range) as f32;
-            let mut sum = dc_offset;
-
-            for &(freq, amp, phase) in components {
-                let angle = (2.0 * std::f32::consts::PI * freq).mul_add(x, phase);
-                sum += amp * angle.sin();
-            }
-
-            results.push((t as i64, sum));
-            t += step;
-        }
-    }
-
-    /// Constant query loop (trivial but kept for consistency)
-    #[inline]
-    #[allow(clippy::unused_self, clippy::while_float)]
-    fn query_loop_constant(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        value: f32,
-    ) {
-        let mut t = query_start as f64;
-        while t <= query_end as f64 {
-            results.push((t as i64, value));
-            t += step;
-        }
-    }
-
-    /// Linear query loop
-    #[allow(clippy::too_many_arguments, clippy::while_float)]
-    #[inline]
-    fn query_loop_linear(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        start_value: f64,
-        end_value: f64,
-    ) {
-        let mut t = query_start as f64;
-        let start_time = self.start_time as f64;
-        let delta = end_value - start_value;
-
-        while t <= query_end as f64 {
-            let x = (t - start_time) * inv_range;
-            let val = x.mul_add(delta, start_value);
-            results.push((t as i64, val as f32));
-            t += step;
-        }
-    }
-
-    /// Fallback query loop for complex types (Perlin, `RawLzma`)
-    #[inline]
-    #[allow(clippy::while_float)]
-    fn query_loop_fallback(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        total_range: f64,
-    ) {
-        // Generate all data once, then slice
-        let all_data = self.generate_all();
-        let mut t = query_start as f64;
-
-        // Pre-compute reciprocal to replace division in loop
-        let inv_total_range = if total_range > 0.0 {
-            1.0 / total_range
-        } else {
-            0.0
-        };
-        let start_time = self.start_time;
-
-        while t <= query_end as f64 {
-            let timestamp = t as i64;
-            let x = (timestamp - start_time) as f64 * inv_total_range;
-            let idx = (x * (all_data.len().saturating_sub(1)) as f64).round() as usize;
-            let val = all_data.get(idx).copied().unwrap_or(0.0);
-            results.push((timestamp, val));
-            t += step;
-        }
-    }
-
-    /// Apply residual corrections in a separate pass
-    #[inline]
-    fn apply_residuals(&self, results: &mut [(i64, f32)], residual: &[u8]) {
-        for (timestamp, value) in results.iter_mut() {
-            let idx = self.timestamp_to_index(*timestamp);
-            if let Some(correction) = self.get_residual_at(residual, idx) {
-                *value += correction;
-            }
-        }
+        law::fill_range(results, t as i64, query_end, step, start_time, n, |i| {
+            law::polynomial_at(coefficients.iter().copied(), i)
+        });
     }
 
     /// Query a range of values using SIMD acceleration (Phase 3)
@@ -545,18 +483,6 @@ impl DataSegment {
     pub fn query_range_simd(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
         // query_range now uses SIMD internally for polynomial
         self.query_range(start, end)
-    }
-
-    /// SIMD Horner's method: evaluate polynomial at 4 x-values simultaneously
-    #[inline(always)]
-    #[allow(clippy::unused_self)]
-    fn horner_simd(&self, x: f64x4, coefficients: &[f64]) -> f64x4 {
-        let mut result = f64x4::ZERO;
-        for &c in coefficients.iter().rev() {
-            let c_vec = f64x4::splat(c);
-            result = result * x + c_vec;
-        }
-        result
     }
 
     /// Generate all data points in this segment
@@ -632,102 +558,52 @@ impl DataSegment {
         }
     }
 
-    /// Evaluate model at normalized position x ∈ [0, 1]
+    /// Evaluate the model at (fractional) sample position `i` — see [`law`]
     #[inline(always)]
-    fn evaluate_model_at_x(&self, x: f64) -> f32 {
+    fn evaluate_model_at(&self, i: f64) -> f32 {
+        let n = self.metadata.point_count;
         match &self.model {
             ModelType::Polynomial { coefficients, .. } => {
-                // Horner's method for polynomial evaluation
-                let mut result = 0.0f64;
-                for &c in coefficients.iter().rev() {
-                    result = result.mul_add(x, c);
-                }
-                result as f32
+                law::polynomial_at(coefficients.iter().copied(), i)
             }
             ModelType::Fourier {
                 coefficients,
                 dc_offset,
                 sample_count,
-            } => {
-                // Evaluate Fourier series at position
-                // Pre-compute inv_n to replace division in the coefficient loop
-                let n = *sample_count;
-                let inv_n = 1.0 / n as f64;
-                let t = x * n as f64;
-                let two_pi = 2.0 * std::f64::consts::PI;
-                let mut sum = *dc_offset;
-                for &(freq_idx, mag, phase) in coefficients {
-                    let angle = two_pi * freq_idx as f64 * t * inv_n;
-                    sum += mag * (angle as f32 + phase).cos();
-                }
-                sum
-            }
+            } => law::fourier_at(coefficients.iter().copied(), *dc_offset, *sample_count, i),
             ModelType::SineWave {
                 frequency,
                 amplitude,
                 phase,
                 offset,
-            } => {
-                let angle = 2.0 * std::f32::consts::PI * frequency * x as f32 + phase;
-                offset + amplitude * angle.sin()
-            }
+            } => law::sine_at(*frequency, *amplitude, *phase, *offset, n, i),
             ModelType::MultiSine {
                 components,
                 dc_offset,
-            } => {
-                let mut sum = *dc_offset;
-                for &(freq, amp, phase) in components {
-                    let angle = (2.0 * std::f32::consts::PI * freq).mul_add(x as f32, phase);
-                    sum += amp * angle.sin();
-                }
-                sum
-            }
+            } => law::multisine_at(components.iter().copied(), *dc_offset, n, i),
             ModelType::Constant { value } => *value as f32,
             ModelType::Linear {
                 start_value,
                 end_value,
-            } => (start_value + x * (end_value - start_value)) as f32,
-            ModelType::PerlinNoise { .. } => {
-                // For point query, generate and return single value
-                // This is less efficient but maintains consistency
-                let data = self.generate_all();
-                let idx = (x * (data.len() - 1) as f64).round() as usize;
-                data.get(idx).copied().unwrap_or(0.0)
-            }
-            ModelType::RawLzma {
-                compressed_data,
-                dtype,
-                ..
-            } => {
-                let data = self.decompress_raw(compressed_data, *dtype, self.metadata.point_count);
-                let idx = (x * (data.len().saturating_sub(1)) as f64).round() as usize;
-                data.get(idx).copied().unwrap_or(0.0)
+            } => law::linear_at(*start_value, *end_value, n, i),
+            ModelType::PerlinNoise { .. } | ModelType::RawLzma { .. } => {
+                // Non-analytic models: materialise and index (point queries on
+                // these are O(n); range queries materialise once)
+                law::sampled_at(&self.generate_all(), i)
             }
         }
     }
 
-    /// Convert timestamp to array index
+    /// Convert timestamp to array index (nearest uniform sample)
     #[inline(always)]
     fn timestamp_to_index(&self, timestamp: i64) -> usize {
-        let range = (self.end_time - self.start_time) as f64;
-        if range <= 0.0 || self.metadata.point_count <= 1 {
-            return 0;
-        }
-        let inv_range = 1.0 / range;
-        let ratio = (timestamp - self.start_time) as f64 * inv_range;
-        (ratio * (self.metadata.point_count - 1) as f64).round() as usize
-    }
-
-    /// Get residual correction at index (from decompressed raw f32 bytes)
-    #[allow(clippy::unused_self)]
-    fn get_residual_at(&self, decompressed: &[u8], idx: usize) -> Option<f32> {
-        let offset = idx * 4;
-        if offset + 4 <= decompressed.len() {
-            let bytes: [u8; 4] = decompressed[offset..offset + 4].try_into().ok()?;
-            Some(f32::from_le_bytes(bytes))
-        } else {
-            None
-        }
+        law::sample_pos(
+            self.start_time,
+            self.end_time,
+            self.metadata.point_count,
+            timestamp,
+        )
+        .round() as usize
     }
 
     /// Decompress raw LZMA data
@@ -817,13 +693,77 @@ impl DataSegment {
 
 /// Magic byte: LZMA compressed
 const RESIDUAL_LZMA: u8 = 0;
-/// Magic byte: raw (uncompressed) f32 LE bytes
+/// Magic byte: raw (uncompressed) additive residual
 const RESIDUAL_RAW: u8 = 1;
+/// Magic byte: LZMA-compressed **XOR** residual (bit pattern `original ^ model`)
+const RESIDUAL_XOR_LZMA: u8 = 2;
+/// Magic byte: raw XOR residual
+const RESIDUAL_XOR_RAW: u8 = 3;
 
-/// Compress residual f32 bytes with LZMA.
+/// How a residual blob corrects the model output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidualKind {
+    /// `value + residual` (f32 add; 0.2.0-beta.2 and earlier — not bit exact,
+    /// `a + (b − a)` rounds unless `a` and `b` are within a factor of 2)
+    Additive,
+    /// `f32::from_bits(value.to_bits() ^ residual)` — exact for every bit
+    /// pattern (2026-09-17, oracle `tests/analytic_oracle.rs`)
+    Xor,
+}
+
+/// Residual kind encoded in a blob's magic byte (legacy blobs without a
+/// magic byte are additive).
+#[must_use]
+pub fn residual_kind(blob: &[u8]) -> ResidualKind {
+    match blob.first() {
+        Some(&RESIDUAL_XOR_LZMA | &RESIDUAL_XOR_RAW) => ResidualKind::Xor,
+        _ => ResidualKind::Additive,
+    }
+}
+
+/// Apply the `idx`-th residual word of a decompressed blob to `value`.
+#[inline]
+#[must_use]
+pub fn apply_residual(value: f32, kind: ResidualKind, decompressed: &[u8], idx: usize) -> f32 {
+    let offset = idx * 4;
+    let Some(word) = decompressed.get(offset..offset + 4) else {
+        return value;
+    };
+    let bytes: [u8; 4] = word.try_into().unwrap_or([0; 4]);
+    match kind {
+        ResidualKind::Additive => value + f32::from_le_bytes(bytes),
+        ResidualKind::Xor => f32::from_bits(value.to_bits() ^ u32::from_le_bytes(bytes)),
+    }
+}
+
+/// Compress an XOR residual (`original.to_bits() ^ model.to_bits()` per
+/// sample, LE) — the exact-reconstruction format written since 2026-09-17.
 ///
-/// Format: `[1 byte magic] [data]`
-/// Falls back to raw if LZMA expansion occurs.
+/// Format: `[1 byte magic] [data]`, raw fallback when LZMA would expand.
+#[must_use]
+pub fn compress_residual_xor(raw: &[u8]) -> Vec<u8> {
+    let mut compressed = Vec::new();
+    if lzma_rs::lzma_compress(&mut std::io::Cursor::new(raw), &mut compressed).is_ok()
+        && compressed.len() < raw.len()
+    {
+        let mut out = Vec::with_capacity(1 + compressed.len());
+        out.push(RESIDUAL_XOR_LZMA);
+        out.extend_from_slice(&compressed);
+        out
+    } else {
+        let mut out = Vec::with_capacity(1 + raw.len());
+        out.push(RESIDUAL_XOR_RAW);
+        out.extend_from_slice(raw);
+        out
+    }
+}
+
+/// Compress an **additive** residual (`original − model` per sample, f32 LE)
+/// — the 0.2.0-beta.2 format; kept so existing blobs and callers keep
+/// working, but the memtable writes [`compress_residual_xor`] since
+/// 2026-09-17 (an additive residual is not bit exact).
+///
+/// Format: `[1 byte magic] [data]`, raw fallback when LZMA would expand.
 #[must_use]
 pub fn compress_residual(raw: &[u8]) -> Vec<u8> {
     let mut compressed = Vec::new();
@@ -840,6 +780,17 @@ pub fn compress_residual(raw: &[u8]) -> Vec<u8> {
         out.extend_from_slice(raw);
         out
     }
+}
+
+/// SIMD Horner (4 sample positions at once), ascending coefficients — the
+/// vector form of [`law::polynomial_at`].
+#[inline(always)]
+fn horner_simd(x: f64x4, coefficients: &[f64]) -> f64x4 {
+    let mut result = f64x4::ZERO;
+    for &c in coefficients.iter().rev() {
+        result = result * x + f64x4::splat(c);
+    }
+    result
 }
 
 /// Decompress residual blob back to raw f32 LE bytes.
@@ -870,7 +821,17 @@ pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
                 blob.to_vec()
             }
         }
-        RESIDUAL_RAW => blob[1..].to_vec(),
+        RESIDUAL_RAW | RESIDUAL_XOR_RAW => blob[1..].to_vec(),
+        RESIDUAL_XOR_LZMA => {
+            let mut decompressed = Vec::new();
+            if lzma_rs::lzma_decompress(&mut std::io::Cursor::new(&blob[1..]), &mut decompressed)
+                .is_ok()
+            {
+                decompressed
+            } else {
+                Vec::new()
+            }
+        }
         _ => {
             // Legacy format: no magic byte, raw f32 LE bytes
             blob.to_vec()
@@ -1205,27 +1166,22 @@ impl SegmentView {
         if !self.contains(timestamp) {
             return None;
         }
+        let n = self.archived.metadata.point_count as usize;
+        let i = law::sample_pos(
+            self.archived.start_time,
+            self.archived.end_time,
+            n,
+            timestamp,
+        );
+        let value = self.evaluate_archived_model(i);
 
-        let range = (self.archived.end_time - self.archived.start_time) as f64;
-        let x = if range > 0.0 {
-            let inv_range = 1.0 / range;
-            (timestamp - self.archived.start_time) as f64 * inv_range
-        } else {
-            0.0
-        };
-
-        let value = self.evaluate_archived_model(x);
         // Lossless mode stores per-sample residuals; the in-memory path applied
         // them, the mmap path did not until 0.2.0-beta.2.
         if let Some(residual) = self.archived.residual_blob.as_ref() {
+            let kind = residual_kind(residual.as_slice());
             let decompressed = decompress_residual(residual.as_slice());
             let idx = self.archived_timestamp_to_index(timestamp);
-            let offset = idx * 4;
-            if offset + 4 <= decompressed.len() {
-                if let Ok(bytes) = <[u8; 4]>::try_from(&decompressed[offset..offset + 4]) {
-                    return Some(value + f32::from_le_bytes(bytes));
-                }
-            }
+            return Some(apply_residual(value, kind, &decompressed, idx));
         }
         Some(value)
     }
@@ -1233,13 +1189,13 @@ impl SegmentView {
     /// Sample index of `timestamp` under the segment's uniform-spacing model
     /// (mirror of `DataSegment::timestamp_to_index` for the archived view).
     fn archived_timestamp_to_index(&self, timestamp: i64) -> usize {
-        let range = (self.archived.end_time - self.archived.start_time) as f64;
-        let n = self.archived.metadata.point_count as usize;
-        if range <= 0.0 || n <= 1 {
-            return 0;
-        }
-        let ratio = (timestamp - self.archived.start_time) as f64 / range;
-        (ratio * (n - 1) as f64).round() as usize
+        law::sample_pos(
+            self.archived.start_time,
+            self.archived.end_time,
+            self.archived.metadata.point_count as usize,
+            timestamp,
+        )
+        .round() as usize
     }
 
     /// Zero-copy range query (Loop Unswitched + SIMD for Polynomial)
@@ -1264,441 +1220,156 @@ impl SegmentView {
         } else {
             1.0
         };
-        let inv_range = if total_range > 0.0 {
-            1.0 / total_range
-        } else {
-            0.0
-        };
         let estimated_count = ((query_end - query_start) as f64 / step) as usize + 1;
 
         let mut results = Vec::with_capacity(estimated_count.min(point_count as usize));
 
-        // ★ LOOP UNSWITCHING: Branch ONCE here, then run tight loop ★
+        // Branch on the model ONCE, then run one tight loop over the law
+        let n = self.archived.metadata.point_count as usize;
+        let start_time = self.archived.start_time;
         match &self.archived.model {
             ArchivedModelType::Polynomial { coefficients, .. } => {
-                self.query_loop_polynomial_archived(
+                DataSegment::fill_range_polynomial(
                     &mut results,
                     query_start,
                     query_end,
                     step,
-                    inv_range,
+                    start_time,
+                    n,
                     coefficients.as_slice(),
                 );
             }
             ArchivedModelType::Constant { value } => {
-                self.query_loop_constant_archived(
+                let v = *value as f32;
+                law::fill_range(
                     &mut results,
                     query_start,
                     query_end,
                     step,
-                    *value as f32,
+                    start_time,
+                    n,
+                    |_| v,
                 );
             }
             ArchivedModelType::Linear {
                 start_value,
                 end_value,
-            } => {
-                self.query_loop_linear_archived(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    inv_range,
-                    *start_value,
-                    *end_value,
-                );
-            }
+            } => law::fill_range(
+                &mut results,
+                query_start,
+                query_end,
+                step,
+                start_time,
+                n,
+                |i| law::linear_at(*start_value, *end_value, n, i),
+            ),
             ArchivedModelType::SineWave {
                 frequency,
                 amplitude,
                 phase,
                 offset,
-            } => {
-                self.query_loop_sine_archived(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    inv_range,
-                    *frequency,
-                    *amplitude,
-                    *phase,
-                    *offset,
-                );
-            }
+            } => law::fill_range(
+                &mut results,
+                query_start,
+                query_end,
+                step,
+                start_time,
+                n,
+                |i| law::sine_at(*frequency, *amplitude, *phase, *offset, n, i),
+            ),
             ArchivedModelType::MultiSine {
                 components,
                 dc_offset,
-            } => {
-                self.query_loop_multisine_archived(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    inv_range,
-                    components,
-                    *dc_offset,
-                );
-            }
+            } => law::fill_range(
+                &mut results,
+                query_start,
+                query_end,
+                step,
+                start_time,
+                n,
+                |i| law::multisine_at(components.iter().map(|c| (c.0, c.1, c.2)), *dc_offset, n, i),
+            ),
             ArchivedModelType::Fourier {
                 coefficients,
                 dc_offset,
                 sample_count,
-            } => {
-                self.query_loop_fourier_archived(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    inv_range,
-                    coefficients,
-                    *dc_offset,
-                    *sample_count,
-                );
-            }
+            } => law::fill_range(
+                &mut results,
+                query_start,
+                query_end,
+                step,
+                start_time,
+                n,
+                |i| {
+                    law::fourier_at(
+                        coefficients.iter().map(|c| (c.0 as usize, c.1, c.2)),
+                        *dc_offset,
+                        *sample_count as usize,
+                        i,
+                    )
+                },
+            ),
             ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
-                // Fallback for complex types
-                self.query_loop_fallback_archived(
+                let all = self.materialise_archived_samples();
+                law::fill_range(
                     &mut results,
                     query_start,
                     query_end,
                     step,
-                    total_range,
+                    start_time,
+                    n,
+                    |i| law::sampled_at(&all, i),
                 );
             }
         }
 
         // Lossless residuals (see `query_point`)
         if let Some(residual) = self.archived.residual_blob.as_ref() {
+            let kind = residual_kind(residual.as_slice());
             let decompressed = decompress_residual(residual.as_slice());
             for (timestamp, value) in &mut results {
-                let offset = self.archived_timestamp_to_index(*timestamp) * 4;
-                if offset + 4 <= decompressed.len() {
-                    if let Ok(bytes) = <[u8; 4]>::try_from(&decompressed[offset..offset + 4]) {
-                        *value += f32::from_le_bytes(bytes);
-                    }
-                }
+                let idx = self.archived_timestamp_to_index(*timestamp);
+                *value = apply_residual(*value, kind, &decompressed, idx);
             }
         }
+
         results
     }
 
-    // =========================================================================
-    // Loop Unswitched Query Implementations for Archived Types
-    // =========================================================================
-
-    /// Polynomial query loop with SIMD (4 points at a time) - Zero-Copy version
-    #[inline]
-    #[allow(clippy::while_float)]
-    fn query_loop_polynomial_archived(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        coefficients: &[f64],
-    ) {
-        let mut t = query_start as f64;
-        let step4 = step * 4.0;
-        let start_time = self.archived.start_time as f64;
-
-        // SIMD path: process 4 points at a time
-        while step.mul_add(3.0, t) <= query_end as f64 {
-            let t0 = t;
-            let t1 = t + step;
-            let t2 = step.mul_add(2.0, t);
-            let t3 = step.mul_add(3.0, t);
-
-            let x = f64x4::from([
-                (t0 - start_time) * inv_range,
-                (t1 - start_time) * inv_range,
-                (t2 - start_time) * inv_range,
-                (t3 - start_time) * inv_range,
-            ]);
-
-            // SIMD Horner's method
-            let vals = Self::horner_simd_static(x, coefficients);
-            let v: [f64; 4] = vals.into();
-
-            results.push((t0 as i64, v[0] as f32));
-            results.push((t1 as i64, v[1] as f32));
-            results.push((t2 as i64, v[2] as f32));
-            results.push((t3 as i64, v[3] as f32));
-
-            t += step4;
-        }
-
-        // Scalar tail
-        while t <= query_end as f64 {
-            let x = (t - start_time) * inv_range;
-            let val = Self::horner_scalar_static(x, coefficients);
-            results.push((t as i64, val as f32));
-            t += step;
-        }
-    }
-
-    /// SIMD Horner's method (static version for `SegmentView`)
+    /// Evaluate the archived model at (fractional) sample position `i` — the
+    /// same [`law`] functions as the in-memory path, read zero-copy.
     #[inline(always)]
-    fn horner_simd_static(x: f64x4, coefficients: &[f64]) -> f64x4 {
-        let mut result = f64x4::ZERO;
-        for &c in coefficients.iter().rev() {
-            let c_vec = f64x4::splat(c);
-            result = result * x + c_vec;
-        }
-        result
-    }
-
-    /// Scalar Horner's method (static version for `SegmentView`)
-    #[inline(always)]
-    fn horner_scalar_static(x: f64, coefficients: &[f64]) -> f64 {
-        let mut result = 0.0f64;
-        for &c in coefficients.iter().rev() {
-            result = result.mul_add(x, c);
-        }
-        result
-    }
-
-    /// Constant query loop - Zero-Copy version
-    #[inline]
-    #[allow(clippy::unused_self, clippy::while_float)]
-    fn query_loop_constant_archived(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        value: f32,
-    ) {
-        let mut t = query_start as f64;
-        while t <= query_end as f64 {
-            results.push((t as i64, value));
-            t += step;
-        }
-    }
-
-    /// Linear query loop - Zero-Copy version
-    #[allow(clippy::too_many_arguments, clippy::while_float)]
-    #[inline]
-    fn query_loop_linear_archived(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        start_value: f64,
-        end_value: f64,
-    ) {
-        let mut t = query_start as f64;
-        let start_time = self.archived.start_time as f64;
-        let delta = end_value - start_value;
-
-        while t <= query_end as f64 {
-            let x = (t - start_time) * inv_range;
-            let val = x.mul_add(delta, start_value);
-            results.push((t as i64, val as f32));
-            t += step;
-        }
-    }
-
-    /// Sine wave query loop - Zero-Copy version
-    #[allow(clippy::too_many_arguments, clippy::while_float)]
-    #[inline]
-    fn query_loop_sine_archived(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        frequency: f32,
-        amplitude: f32,
-        phase: f32,
-        offset: f32,
-    ) {
-        let mut t = query_start as f64;
-        let start_time = self.archived.start_time as f64;
-        let two_pi_freq = 2.0 * std::f32::consts::PI * frequency;
-
-        while t <= query_end as f64 {
-            let x = ((t - start_time) * inv_range) as f32;
-            let angle = two_pi_freq * x + phase;
-            let val = amplitude.mul_add(angle.sin(), offset);
-            results.push((t as i64, val));
-            t += step;
-        }
-    }
-
-    /// Multi-sine query loop - Zero-Copy version
-    #[allow(clippy::too_many_arguments, clippy::while_float)]
-    #[inline]
-    fn query_loop_multisine_archived(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        components: &rkyv::vec::ArchivedVec<(f32, f32, f32)>,
-        dc_offset: f32,
-    ) {
-        let mut t = query_start as f64;
-        let start_time = self.archived.start_time as f64;
-
-        while t <= query_end as f64 {
-            let x = ((t - start_time) * inv_range) as f32;
-            let mut sum = dc_offset;
-
-            for comp in components.iter() {
-                let (freq, amp, phase) = (comp.0, comp.1, comp.2);
-                let angle = (2.0 * std::f32::consts::PI * freq).mul_add(x, phase);
-                sum += amp * angle.sin();
-            }
-
-            results.push((t as i64, sum));
-            t += step;
-        }
-    }
-
-    /// Fourier query loop - Zero-Copy version
-    #[allow(clippy::too_many_arguments, clippy::while_float)]
-    #[inline]
-    fn query_loop_fourier_archived(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        inv_range: f64,
-        coefficients: &rkyv::vec::ArchivedVec<(u32, f32, f32)>,
-        dc_offset: f32,
-        sample_count: u32,
-    ) {
-        let mut t = query_start as f64;
-        let start_time = self.archived.start_time as f64;
-        let n = sample_count as f64;
-        let two_pi_over_n = 2.0 * std::f64::consts::PI / n;
-
-        while t <= query_end as f64 {
-            let x = (t - start_time) * inv_range;
-            let pos = x * n;
-            let mut sum = dc_offset;
-
-            for coeff in coefficients.iter() {
-                let (freq_idx, mag, phase) = (coeff.0, coeff.1, coeff.2);
-                let angle = two_pi_over_n * freq_idx as f64 * pos;
-                sum += mag * (angle as f32 + phase).cos();
-            }
-
-            results.push((t as i64, sum));
-            t += step;
-        }
-    }
-
-    /// Fallback query loop for complex types - Zero-Copy version
-    #[inline]
-    #[allow(clippy::while_float)]
-    fn query_loop_fallback_archived(
-        &self,
-        results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        total_range: f64,
-    ) {
-        let mut t = query_start as f64;
-
-        // Pre-compute reciprocal to replace division in loop
-        let inv_total_range = if total_range > 0.0 {
-            1.0 / total_range
-        } else {
-            0.0
-        };
-        let start_time = self.archived.start_time;
-
-        // Non-analytic models are decoded once for the whole range instead of
-        // per point (the point path decompresses on every call).
-        let samples = match &self.archived.model {
-            ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
-                Some(self.materialise_archived_samples())
-            }
-            _ => None,
-        };
-
-        while t <= query_end as f64 {
-            let timestamp = t as i64;
-            let x = (timestamp - start_time) as f64 * inv_total_range;
-
-            let value = match &samples {
-                Some(data) => {
-                    let idx = (x * data.len().saturating_sub(1) as f64).round() as usize;
-                    data.get(idx).copied().unwrap_or(0.0)
-                }
-                None => self.evaluate_archived_model(x),
-            };
-            results.push((timestamp, value));
-            t += step;
-        }
-    }
-
-    /// Evaluate archived model at normalized x
-    #[inline(always)]
-    fn evaluate_archived_model(&self, x: f64) -> f32 {
+    fn evaluate_archived_model(&self, i: f64) -> f32 {
+        let n = self.archived.metadata.point_count as usize;
         match &self.archived.model {
             ArchivedModelType::Polynomial { coefficients, .. } => {
-                // Zero-copy access to coefficient slice
-                let coeffs = coefficients.as_slice();
-                let mut result = 0.0f64;
-                for &c in coeffs.iter().rev() {
-                    result = result.mul_add(x, c);
-                }
-                result as f32
+                law::polynomial_at(coefficients.as_slice().iter().copied(), i)
             }
             ArchivedModelType::Constant { value } => *value as f32,
             ArchivedModelType::Linear {
                 start_value,
                 end_value,
-            } => (start_value + x * (end_value - start_value)) as f32,
+            } => law::linear_at(*start_value, *end_value, n, i),
             ArchivedModelType::SineWave {
                 frequency,
                 amplitude,
                 phase,
                 offset,
-            } => {
-                let angle = 2.0 * std::f32::consts::PI * frequency * x as f32 + phase;
-                offset + amplitude * angle.sin()
-            }
+            } => law::sine_at(*frequency, *amplitude, *phase, *offset, n, i),
             ArchivedModelType::MultiSine {
                 components,
                 dc_offset,
-            } => {
-                let mut sum = *dc_offset;
-                for comp in components.iter() {
-                    let (freq, amp, phase) = (comp.0, comp.1, comp.2);
-                    let angle = (2.0 * std::f32::consts::PI * freq).mul_add(x as f32, phase);
-                    sum += amp * angle.sin();
-                }
-                sum
-            }
+            } => law::multisine_at(components.iter().map(|c| (c.0, c.1, c.2)), *dc_offset, n, i),
             ArchivedModelType::Fourier {
                 coefficients,
                 dc_offset,
                 sample_count,
-            } => {
-                // Pre-compute inv_n to replace division in the coefficient loop
-                let n = *sample_count;
-                let inv_n = 1.0 / n as f64;
-                let t = x * n as f64;
-                let two_pi = 2.0 * std::f64::consts::PI;
-                let mut sum = *dc_offset;
-                for coeff in coefficients.iter() {
-                    let (freq_idx, mag, phase) = (coeff.0, coeff.1, coeff.2);
-                    let angle = two_pi * freq_idx as f64 * t * inv_n;
-                    sum += mag * (angle as f32 + phase).cos();
-                }
-                sum
-            }
+            } => law::fourier_at(
+                coefficients.iter().map(|c| (c.0 as usize, c.1, c.2)),
+                *dc_offset,
+                *sample_count as usize,
+                i,
+            ),
             ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
                 // Non-analytic models: materialise the sample vector and index it.
                 // (0.2.0-beta.1 returned 0.0 here — every value stored through the
@@ -1706,9 +1377,7 @@ impl SegmentView {
                 // back as zero from the mmap path while the in-memory path was
                 // correct. Found by alice-physics' replay / db_bridge contract
                 // tests, 2026-09-15.)
-                let data = self.materialise_archived_samples();
-                let idx = (x * data.len().saturating_sub(1) as f64).round() as usize;
-                data.get(idx).copied().unwrap_or(0.0)
+                law::sampled_at(&self.materialise_archived_samples(), i)
             }
         }
     }
@@ -1815,7 +1484,8 @@ mod tests {
 
     #[test]
     fn test_polynomial_segment() {
-        // y = x^2 on [0, 1] → values from 0 to 1
+        // y = i² at sample index i (the fitter convention; this test pinned
+        // x ∈ [0, 1] until 2026-09-17, which is what `generate_all` never did)
         let segment = DataSegment::new(
             1,
             0,
@@ -1830,8 +1500,9 @@ mod tests {
         );
 
         let at_half = segment.query_point(50).unwrap();
-        // x = 0.5, y = 0.25
-        assert!((at_half - 0.25).abs() < 0.01);
+        // i = 50, y = 2500
+        assert!((at_half - 2500.0).abs() < 0.01);
+        assert!((segment.generate_all()[50] - at_half).abs() < f32::EPSILON);
     }
 
     #[test]

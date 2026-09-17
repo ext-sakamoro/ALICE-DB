@@ -216,16 +216,19 @@ impl MemTable {
             original_size,
         );
 
-        // Compute residuals for lossless reconstruction (LZMA compressed)
+        // Compute residuals for lossless reconstruction (LZMA compressed).
+        // XOR of the bit patterns: `model ^ residual == original` for every
+        // f32 (an additive `original − model` rounds — 0.2.0-beta.2 read back
+        // −1.0500007 for −1.0500002, oracle 2026-09-17).
         if self.config.lossless {
             let mut residual_bytes = Vec::with_capacity(values.len() * 4);
             for (i, &original) in values.iter().enumerate() {
                 let timestamp = data[i].0;
                 let reconstructed = segment.query_point(timestamp).unwrap_or(0.0);
-                let residual = original - reconstructed;
+                let residual = original.to_bits() ^ reconstructed.to_bits();
                 residual_bytes.extend_from_slice(&residual.to_le_bytes());
             }
-            segment = segment.with_residual(crate::segment::compress_residual(&residual_bytes));
+            segment = segment.with_residual(crate::segment::compress_residual_xor(&residual_bytes));
         }
 
         segment

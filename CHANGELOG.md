@@ -4,6 +4,18 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `tests/analytic_oracle.rs` — 閉形式 / 公開 test vector との突合 oracle 10 本 (CLAUDE.md § 解析解突合テスト規律、2026-09-17): model 評価 (polynomial / linear / constant / sine / Fourier) の閉形式、`query_range` ≡ `query_point` ≡ `generate_all`、residual / RawLzma round-trip、**`lossless: true` の put → get bit 一致** (mmap / 非 mmap × polynomial / Fourier / raw)、既定 (lossy) fit の文書化閾値、aggregate 閉形式、CRC-32 check value + XXH64 test vector、Bloom filter の m / k 閉形式 + false negative 0 + FP ≤ 2p 不規則 timestamp の lossless は `#[ignore]` (下記)
+- `segment::ResidualKind` / `residual_kind` / `apply_residual` / `compress_residual_xor` — XOR residual format (magic 0x02 LZMA / 0x03 raw)
+
+### Fixed (oracle 先行 red 4 → 修正)
+- **model 評価の法則が 4 箇所で手コピーされ、fitter (alice-zip) と食い違っていた**: 点 / 範囲 / archived 点 / archived 範囲の評価器が polynomial を `x = i/(n−1)` で評価 (係数は `fit_polynomial` の `x = i` 規約)、Fourier を raw DFT magnitude のまま加算 (`w·mag/n` 抜け = **n/2 倍**、1000 sample の sine が relative MSE 2.5e5 で復元)、sine の引数が `i/(n−1)` (generator は `i/n`) — `generate_all` (alice-zip 委譲) だけが正しく、lossless mode は同じ誤値に対する residual で隠していた → `segment::law` に 1 model 1 関数 (sample index `i` 引数) を置き 5 経路全部がそれを呼ぶ、`ModelType` doc に規約明記、旧 loop 群 (約 700 行) 削除 既存 `test_polynomial_segment` は x ∈ [0,1] 規約を pin していたので法則値 (i = 50 → 2500) に更新
+- **`lossless: true` が bit 一致でなかった**: residual を `original − model` の f32 加算で持っていたため `model + residual` が丸める (−1.0500002 が −1.0500007) → residual を bit pattern XOR (`original ^ model`) に変更、既存 blob (additive、magic 0x00 / 0x01 / legacy) は読める
+
+### Known limitation (Backlog 起票、format 変更のため別 y/n)
+- `DataSegment` は timestamp を保持せず uniform spacing を仮定する: gap のある系列 (sensor drop-out) では residual index が別点に当たり lossless でも値が変わる、`scan` は存在しない timestamp を返す (`lossless_mode_is_exact_for_irregular_timestamps_too` が `#[ignore]` で記録)
+- 既定 `FitConfig` は lossy (`lossless: false`) で、sine 系列は relative MSE < 0.1 (RMS で σ の 32 %) まで受容する — 文書化閾値どおりだが DB の既定として妥当かは user 判断
+
 ### Fixed
 - **FFI 14 関数の panic 隔離** (`src/ffi.rs`): `const fn` の `alice_db_version` を除く全 `extern "C"` を `ffi_guard(sentinel, || ..)` で包み、panic は host を落とさず sentinel (`DbResult::Unknown` / `PointResult { found: false }` / zero `DbStats` / null / −1 / false) + `alice_db_last_error()` (新規、`alice_db_clear_last_error` / `alice_db_free_error_string` も) で通知 `[profile.release] panic = "abort"` を撤去 (abort では `catch_unwind` が機能しない) release profile で guard test 通過
 

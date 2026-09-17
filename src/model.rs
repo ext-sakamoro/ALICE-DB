@@ -35,8 +35,10 @@ use serde::{Deserialize, Serialize};
 pub enum ModelType {
     /// Polynomial model: `y = c[0] + c[1]*x + c[2]*x^2 + ...`
     ///
-    /// Coefficients are stored from lowest to highest degree.
-    /// Generated using Horner's method for numerical stability.
+    /// `x` is the **sample index** `0, 1, …, point_count − 1` (the convention
+    /// of `alice_core::generators::fit_polynomial`, oracle
+    /// `tests/analytic_oracle.rs`); coefficients are stored from lowest to
+    /// highest degree and evaluated with Horner's method.
     ///
     /// Typical use: Smooth trends, sensor drift, gradual changes
     /// Compression: 1000 points → ~80 bytes (degree 9)
@@ -51,7 +53,10 @@ pub enum ModelType {
 
     /// Fourier series model: sum of sinusoids
     ///
-    /// Stores dominant frequency components from FFT analysis.
+    /// Stores dominant frequency components from FFT analysis as raw DFT bin
+    /// magnitudes; the value at sample `i` is
+    /// `dc + Σ w(k)·magnitude/n · cos(2πk·i/n + phase)` with `w = 1` for the
+    /// DC / Nyquist bins and `2` otherwise (`generate_from_coefficients`).
     /// Regenerates periodic/quasi-periodic signals with high fidelity.
     ///
     /// Typical use: Periodic sensor data, vibration, seasonal patterns
@@ -65,7 +70,8 @@ pub enum ModelType {
         sample_count: usize,
     },
 
-    /// Simple sine wave: y = offset + amplitude * sin(2π * freq * t + phase)
+    /// Simple sine wave: `y = offset + amplitude * sin(2π * freq * i / n + phase)`
+    /// at sample `i` of `n` (`generate_sine_wave`)
     ///
     /// Special case of Fourier for single-frequency signals.
     /// Extremely compact representation.

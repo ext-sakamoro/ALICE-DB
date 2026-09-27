@@ -236,15 +236,18 @@ ALICE-DBは以下の最適化を実装しています：
 
 ## ライセンス
 
-ALICE-DBはオープンコアライセンスモデルを採用：
+`AGPL-3.0-or-later OR LicenseRef-Commercial` — デュアルライセンス どちらかを選べる
 
-| 製品 | ライセンス | 説明 |
-|------|------------|------|
-| **ALICE-DB Core** | MIT | 無料・オープンソース |
-| **ALICE-DB Server** | BSL 1.1 | ソース公開・DBaaS制限 |
-| **ALICE-DB Enterprise** | 商用 | 年間契約 |
+| 選択肢 | 条文 | こういう時 |
+|--------|------|-----------|
+| **AGPL-3.0-or-later** | [LICENSE-AGPL](LICENSE-AGPL) — 無償、報告義務なし | 自分の project も AGPL 互換の OSS、または社内利用のみ |
+| **商用ライセンス** | [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) — 有償、コピーレフト義務を解除 | クローズドソース製品 / 商用 SaaS / エッジ・ファームウェア配布 / plugin 再配布 / ソース開示を禁じるプラットフォーム NDA |
 
-詳細は [LICENSE](LICENSE) を参照してください。
+AGPL は強いコピーレフト: `alice-db` を link して配布 / 提供する製品・ファームウェア・
+サービスは AGPL で公開する義務がある これはオープンなエコシステムのための意図的な
+選択で、それが実行できない場合のために商用ライセンスを用意している
+
+商用ライセンスの問い合わせ: <contact@extoria.co.jp>
 
 ## 著者
 

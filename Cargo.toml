@@ -4,7 +4,7 @@ version = "0.2.0-beta.3"
 # alice-zip 0.4 (const fn Vec::len) が 1.87 を要求、CI msrv job で実 compile (canonical 罠 #27)
 rust-version = "1.87"
 edition = "2021"
-license = "AGPL-3.0-or-later"
+license = "AGPL-3.0-or-later OR LicenseRef-Commercial"
 authors = ["Moroya Sakamoto <sakamoro@alicelaw.net>"]
 description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
 repository = "https://github.com/ext-sakamoro/ALICE-DB"

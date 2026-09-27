@@ -315,15 +315,19 @@ All projects share the core philosophy: **encode the generation process, not the
 
 ## License
 
-**Open Core License**
+`AGPL-3.0-or-later OR LicenseRef-Commercial` — dual-licensed. Pick either.
 
-| Component | License | Description |
-|-----------|---------|-------------|
-| Core Library | MIT | Free and open source |
-| Server | BSL 1.1 | Free for non-DBaaS use |
-| Enterprise | Commercial | HA, clustering, support |
+| Option | Terms | Use it when |
+|--------|-------|-------------|
+| **AGPL-3.0-or-later** | [LICENSE-AGPL](LICENSE-AGPL) — free, no reporting obligation | Your project is itself AGPL-compatible open source, or you are only using it internally |
+| **Commercial License** | [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) — paid, removes the copyleft | Closed-source product, proprietary SaaS, edge / firmware distribution, plugin redistribution, or a platform NDA that forbids source disclosure |
 
-See [LICENSE](LICENSE) for full details.
+AGPL is a strong copyleft: a product, firmware image, or service that links
+`alice-db` and is distributed or served to users must be released under the AGPL
+as well. That is intentional for the open ecosystem, and the Commercial
+License exists for the cases where it is not something you are able to do.
+
+Commercial licence enquiries: <contact@extoria.co.jp>
 
 ## Author
 

@@ -165,6 +165,44 @@ jobs:
             echo "✓ No TODO/FIXME/XXX/HACK in src/"
           fi
 
+  package-integrity:
+    name: Package integrity (publish される .crate が build できるか)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+
+      # sibling path dep があるので cargo package の metadata 解決に stub が要る
+      # (stub が必要なのは package step だけ 展開後の .crate では path dep が
+      #  crates.io の version 要求に置き換わるので、隔離 build は実物を引く
+      #  = 宣言した version 要求が publish 済 version と噛み合うかまで検査される)
+      - name: Create ALICE optional bridge stubs
+        uses: ./.github/actions/alice-stubs
+
+      # publish される .crate に必要な file が全部入っているかを見る
+      #
+      # include_str! / include_bytes! が package 境界を越える、exclude を効かせ過ぎる、
+      # 必要 file が漏れる — これらは repo / workspace に file がある限り
+      # cargo build も cargo test も clippy も preflight も全部通り、
+      # crates.io から取得した利用者だけが compile 不能になる
+      # (2026-09-28 ALICE-LOL lol.gbnf、canonical template 罠 #51)
+      - name: cargo package (.crate を作る)
+        run: cargo package --no-verify --allow-dirty
+
+      - name: 展開して隔離 build
+        run: |
+          set -euo pipefail
+          crate=$(find target/package -maxdepth 1 -name '*.crate' | head -1)
+          [ -n "$crate" ] || { echo "::error::.crate が生成されていない"; exit 1; }
+          echo "packaged: $(basename "$crate") ($(du -h "$crate" | cut -f1))"
+          tmp=$(mktemp -d)
+          tar xzf "$crate" -C "$tmp"
+          cd "$tmp"/*/
+          # 親 workspace を継承すると member 扱いになり、境界を越えた file が
+          # 再び見えてしまう (検査の意味が消える) ので単独 package として build
+          printf '\n[workspace]\n' >> Cargo.toml
+          cargo check --all-features
+
   coverage:
     name: Coverage (cargo-llvm-cov、informational)
     runs-on: ubuntu-latest

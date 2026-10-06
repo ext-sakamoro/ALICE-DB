@@ -13,6 +13,7 @@
 //!
 //! Time-series API interoperability is verified in
 //! `time_series_and_blob_coexist`.
+#![cfg(feature = "fs")]
 
 use alice_db::AliceDB;
 use tempfile::TempDir;

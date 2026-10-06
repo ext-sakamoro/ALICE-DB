@@ -12,6 +12,21 @@
 //! Traditional `BTreeMap` index requires O(N) scan for overlapping segments.
 //! Interval Tree enables efficient stabbing queries and range overlap detection.
 //!
+//! # Backends
+//!
+//! The engine keeps its index and segments in one of two places:
+//!
+//! - **Directory** (`fs` feature, [`StorageEngine::new`]): files under
+//!   `StorageConfig::data_dir`, with a WAL, mmap'd segment reads and
+//!   advisory file locks.
+//! - **Memory** ([`StorageEngine::in_memory`]): a name → bytes map in
+//!   process memory. It stores exactly the bytes the directory backend
+//!   writes to `index.alice` / `seg_<id>.rkyv`, so the same write sequence
+//!   reads back bit-identically from either backend, and
+//!   [`StorageEngine::snapshot_files`] / [`StorageEngine::from_snapshot_files`]
+//!   move data between them. No WAL is kept in memory (there is no crash
+//!   to recover from); this backend is what wasm32-unknown-unknown builds use.
+//!
 //! License: MIT
 //! Author: Moroya Sakamoto
 
@@ -19,10 +34,32 @@ use crate::memtable::{FitConfig, MemTable};
 use crate::segment::{DataSegment, SegmentView};
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
+#[cfg(feature = "fs")]
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+#[cfg(feature = "fs")]
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+#[cfg(feature = "fs")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Name of the serialized segment index inside a storage location.
+const INDEX_FILE: &str = "index.alice";
+
+/// Name of the rkyv segment file for `id` inside a storage location.
+fn segment_file_name(id: u64) -> String {
+    format!("seg_{id}.rkyv")
+}
+
+/// Where the engine keeps its index and segment bytes.
+enum Store {
+    /// Files under `StorageConfig::data_dir`.
+    #[cfg(feature = "fs")]
+    Dir,
+    /// File name → stored bytes, held in process memory.
+    Memory(parking_lot::Mutex<BTreeMap<String, Vec<u8>>>),
+}
 
 // =============================================================================
 // Interval Tree Implementation (Arena Allocated - Cache Friendly)
@@ -409,6 +446,8 @@ struct SharedState {
     segment_cache: RwLock<BTreeMap<u64, Arc<SegmentView>>>,
     /// Number of in-flight background flush jobs (for synchronization)
     in_flight: std::sync::atomic::AtomicUsize,
+    /// Backend holding the index and segment bytes
+    store: Store,
 }
 
 /// Storage Engine: Core persistence layer
@@ -420,10 +459,13 @@ pub struct StorageEngine {
     /// Shared state (index, interval tree, cache)
     shared: Arc<SharedState>,
     /// Data file handle (legacy, for index persistence)
+    #[cfg(feature = "fs")]
     data_file: RwLock<Option<File>>,
     /// WAL file handle
+    #[cfg(feature = "fs")]
     wal_file: RwLock<Option<File>>,
     /// Current data file offset
+    #[cfg(feature = "fs")]
     current_offset: RwLock<u64>,
     /// Background flush channel sender
     flush_sender: Option<crossbeam_channel::Sender<FlushJob>>,
@@ -432,19 +474,64 @@ pub struct StorageEngine {
 }
 
 impl StorageEngine {
-    /// Create a new storage engine
+    /// Create a new storage engine backed by files under `config.data_dir`
     ///
     /// # Errors
     ///
-    /// Returns an error if the data directory cannot be created or files cannot be initialized.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the background flush thread cannot be spawned.
+    /// Returns an error if the data directory cannot be created, files cannot be
+    /// initialized, or the background flush thread cannot be spawned.
+    #[cfg(feature = "fs")]
     pub fn new(config: StorageConfig) -> io::Result<Self> {
         // Create data directory if it doesn't exist
         fs::create_dir_all(&config.data_dir)?;
 
+        let engine = Self::build(config, Store::Dir)?;
+        engine.init_files()?;
+        engine.load_index()?;
+        engine.replay_wal()?;
+
+        Ok(engine)
+    }
+
+    /// Create an empty storage engine that keeps everything in process memory
+    ///
+    /// `config.data_dir` is ignored and nothing touches the filesystem;
+    /// `enable_wal` / `sync_writes` / `use_mmap` have no effect. Model fitting,
+    /// segmenting and queries behave exactly as with [`Self::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the background flush thread cannot be spawned
+    /// (`enable_background_flush` on a target without threads).
+    pub fn in_memory(config: StorageConfig) -> io::Result<Self> {
+        Self::from_snapshot_files(config, BTreeMap::new())
+    }
+
+    /// Create an in-memory storage engine from the files returned by
+    /// [`Self::snapshot_files`] (from either backend)
+    ///
+    /// New segments get ids above every id already in the index, so writes
+    /// after the restore never overwrite restored segments.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidData` / `UnexpectedEof` if the index cannot be parsed
+    /// (or decrypted, with the `crypto` feature), or an error if the
+    /// background flush thread cannot be spawned.
+    pub fn from_snapshot_files(
+        config: StorageConfig,
+        files: BTreeMap<String, Vec<u8>>,
+    ) -> io::Result<Self> {
+        let engine = Self::build(config, Store::Memory(parking_lot::Mutex::new(files)))?;
+        engine.load_index()?;
+        if let Some(max_id) = engine.shared.index.read().keys().next_back() {
+            engine.memtable.reserve_segment_ids_through(*max_id);
+        }
+        Ok(engine)
+    }
+
+    /// Construct the engine around `store` without touching any stored bytes
+    fn build(config: StorageConfig, store: Store) -> io::Result<Self> {
         let memtable = MemTable::with_config(config.memtable_capacity, config.fit_config.clone());
 
         let shared = Arc::new(SharedState {
@@ -452,6 +539,7 @@ impl StorageEngine {
             interval_tree: RwLock::new(IntervalTree::new()),
             segment_cache: RwLock::new(BTreeMap::new()),
             in_flight: std::sync::atomic::AtomicUsize::new(0),
+            store,
         });
 
         // Start background flush thread if enabled
@@ -463,29 +551,105 @@ impl StorageEngine {
                 .name("alice-db-flush".into())
                 .spawn(move || {
                     Self::flush_thread_loop(&rx, &shared_clone, &cfg);
-                })
-                .expect("failed to spawn flush thread");
+                })?;
             (Some(tx), parking_lot::Mutex::new(Some(handle)))
         } else {
             (None, parking_lot::Mutex::new(None))
         };
 
-        let engine = Self {
+        Ok(Self {
             config,
             memtable,
             shared,
+            #[cfg(feature = "fs")]
             data_file: RwLock::new(None),
+            #[cfg(feature = "fs")]
             wal_file: RwLock::new(None),
+            #[cfg(feature = "fs")]
             current_offset: RwLock::new(0),
             flush_sender,
             flush_handle,
-        };
+        })
+    }
 
-        engine.init_files()?;
-        engine.load_index()?;
-        engine.replay_wal()?;
+    /// Whether this engine keeps its data in process memory
+    #[must_use]
+    pub fn is_in_memory(&self) -> bool {
+        matches!(self.shared.store, Store::Memory(_))
+    }
 
-        Ok(engine)
+    /// Read a stored file by name; `None` if it does not exist
+    #[cfg_attr(not(feature = "fs"), allow(clippy::unnecessary_wraps))] // only `Dir` can fail
+    fn read_file(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+        match &self.shared.store {
+            #[cfg(feature = "fs")]
+            Store::Dir => {
+                let path = self.config.data_dir.join(name);
+                if !path.exists() {
+                    return Ok(None);
+                }
+                fs::read(&path).map(Some)
+            }
+            Store::Memory(files) => Ok(files.lock().get(name).cloned()),
+        }
+    }
+
+    /// Replace a stored file by name
+    #[cfg_attr(not(feature = "fs"), allow(clippy::unnecessary_wraps))] // only `Dir` can fail
+    fn write_file(&self, name: &str, bytes: Vec<u8>) -> io::Result<()> {
+        match &self.shared.store {
+            #[cfg(feature = "fs")]
+            Store::Dir => fs::write(self.config.data_dir.join(name), &bytes),
+            Store::Memory(files) => {
+                files.lock().insert(name.to_string(), bytes);
+                Ok(())
+            }
+        }
+    }
+
+    /// Flush, then return the index and every indexed segment as stored
+    /// bytes (name → bytes), for either backend
+    ///
+    /// The result restores with [`Self::from_snapshot_files`]. Segments are
+    /// returned in their stored form, i.e. still sealed when an encryption
+    /// key is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush fails or an indexed segment is missing.
+    pub fn snapshot_files(&self) -> io::Result<BTreeMap<String, Vec<u8>>> {
+        self.flush()?;
+        let mut out = BTreeMap::new();
+        if let Some(index) = self.read_file(INDEX_FILE)? {
+            out.insert(INDEX_FILE.to_string(), index);
+        }
+        let entries: Vec<SegmentIndexEntry> = self.shared.index.read().values().cloned().collect();
+        for entry in entries {
+            let name = segment_file_name(entry.id);
+            let bytes = match self.read_file(&name)? {
+                Some(bytes) => bytes,
+                None => self.stored_legacy_segment(&entry, &name)?,
+            };
+            out.insert(name, bytes);
+        }
+        Ok(out)
+    }
+
+    /// Bytes of a segment that only exists in the legacy `data.alice` file
+    /// (directory backend); converts it to an rkyv file first
+    #[cfg_attr(not(feature = "fs"), allow(clippy::unused_self))] // only `Dir` has a legacy layout
+    fn stored_legacy_segment(&self, entry: &SegmentIndexEntry, name: &str) -> io::Result<Vec<u8>> {
+        #[cfg(feature = "fs")]
+        if matches!(self.shared.store, Store::Dir) {
+            self.load_segment_legacy(entry)?;
+            if let Some(bytes) = self.read_file(name)? {
+                return Ok(bytes);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("segment {} ({name}) is indexed but not stored", entry.id),
+        ))
     }
 
     /// Create with default configuration
@@ -493,6 +657,7 @@ impl StorageEngine {
     /// # Errors
     ///
     /// Returns an error if the storage engine cannot be initialized at the given path.
+    #[cfg(feature = "fs")]
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let config = StorageConfig {
             data_dir: path.as_ref().to_path_buf(),
@@ -502,6 +667,7 @@ impl StorageEngine {
     }
 
     /// Initialize data and WAL files
+    #[cfg(feature = "fs")]
     fn init_files(&self) -> io::Result<()> {
         let data_path = self.config.data_dir.join("data.alice");
         let file = OpenOptions::new()
@@ -531,13 +697,10 @@ impl StorageEngine {
     /// Load index from disk (decrypt if crypto key is configured)
     #[allow(clippy::significant_drop_tightening)]
     fn load_index(&self) -> io::Result<()> {
-        let index_path = self.config.data_dir.join("index.alice");
-        if !index_path.exists() {
-            return Ok(());
-        }
-
         // Read entire file
-        let raw = fs::read(&index_path)?;
+        let Some(raw) = self.read_file(INDEX_FILE)? else {
+            return Ok(());
+        };
         if raw.is_empty() {
             return Ok(());
         }
@@ -624,8 +787,6 @@ impl StorageEngine {
     /// Save index to disk (encrypted if crypto key is configured)
     #[allow(clippy::significant_drop_tightening)]
     fn save_index(&self) -> io::Result<()> {
-        let index_path = self.config.data_dir.join("index.alice");
-
         let index = self.shared.index.read();
 
         // Serialize index entries to bytes
@@ -656,8 +817,7 @@ impl StorageEngine {
         #[cfg(not(feature = "crypto"))]
         let output = buf;
 
-        fs::write(&index_path, &output)?;
-        Ok(())
+        self.write_file(INDEX_FILE, output)
     }
 
     /// Insert a single value
@@ -666,7 +826,8 @@ impl StorageEngine {
     ///
     /// Returns an error if the WAL write or segment persistence fails.
     pub fn put(&self, timestamp: i64, value: f32) -> io::Result<()> {
-        // Write to WAL first for durability
+        // Write to WAL first for durability (directory backend only)
+        #[cfg(feature = "fs")]
         if self.config.enable_wal {
             self.write_wal(timestamp, value)?;
         }
@@ -692,7 +853,8 @@ impl StorageEngine {
     ///
     /// Returns an error if the WAL write or segment persistence fails.
     pub fn put_batch(&self, data: &[(i64, f32)]) -> io::Result<()> {
-        // Write to WAL first
+        // Write to WAL first (directory backend only)
+        #[cfg(feature = "fs")]
         if self.config.enable_wal {
             for &(t, v) in data {
                 self.write_wal(t, v)?;
@@ -739,7 +901,8 @@ impl StorageEngine {
     /// Persist segment using shared state (callable from both main and flush thread)
     fn persist_segment_shared(
         shared: &SharedState,
-        config: &StorageConfig,
+        // Only read by the directory backend and by encryption.
+        #[cfg_attr(not(feature = "fs"), allow(unused_variables))] config: &StorageConfig,
         segment: &DataSegment,
     ) -> io::Result<()> {
         let segment_id = segment.metadata.id;
@@ -757,32 +920,43 @@ impl StorageEngine {
             .write()
             .insert(segment_id, Arc::new(view));
 
-        // Write to disk with exclusive advisory lock (encrypt if key configured)
-        let segment_path = config.data_dir.join(format!("seg_{segment_id}.rkyv"));
-        {
-            use fs2::FileExt;
+        // Encrypt if key configured
+        #[cfg(feature = "crypto")]
+        let bytes_to_write = if let Some(ref key) = config.encryption_key {
+            alice_crypto::seal(key, &rkyv_bytes)
+                .map_err(|e| io::Error::other(format!("encryption failed: {e:?}")))?
+        } else {
+            rkyv_bytes
+        };
+        #[cfg(not(feature = "crypto"))]
+        let bytes_to_write = rkyv_bytes;
 
-            #[cfg(feature = "crypto")]
-            let bytes_to_write = if let Some(ref key) = config.encryption_key {
-                alice_crypto::seal(key, &rkyv_bytes)
-                    .map_err(|e| io::Error::other(format!("encryption failed: {e:?}")))?
-            } else {
-                rkyv_bytes
-            };
-            #[cfg(not(feature = "crypto"))]
-            let bytes_to_write = &rkyv_bytes;
+        match &shared.store {
+            // Write to disk with exclusive advisory lock
+            #[cfg(feature = "fs")]
+            Store::Dir => {
+                let segment_path = config.data_dir.join(segment_file_name(segment_id));
+                {
+                    use fs2::FileExt;
 
-            let file = File::create(&segment_path)?;
-            file.lock_exclusive()?;
-            let mut writer = BufWriter::new(&file);
-            writer.write_all(bytes_to_write.as_ref())?;
-            writer.flush()?;
-            // Lock released on file drop
-        }
+                    let file = File::create(&segment_path)?;
+                    file.lock_exclusive()?;
+                    let mut writer = BufWriter::new(&file);
+                    writer.write_all(&bytes_to_write)?;
+                    writer.flush()?;
+                    // Lock released on file drop
+                }
 
-        if config.sync_writes {
-            let file = File::open(&segment_path)?;
-            file.sync_all()?;
+                if config.sync_writes {
+                    let file = File::open(&segment_path)?;
+                    file.sync_all()?;
+                }
+            }
+            Store::Memory(files) => {
+                files
+                    .lock()
+                    .insert(segment_file_name(segment_id), bytes_to_write);
+            }
         }
 
         let entry = SegmentIndexEntry {
@@ -808,6 +982,7 @@ impl StorageEngine {
     }
 
     /// Write to WAL
+    #[cfg(feature = "fs")]
     fn write_wal(&self, timestamp: i64, value: f32) -> io::Result<()> {
         if let Some(ref mut wal) = *self.wal_file.write() {
             #[cfg(feature = "crypto")]
@@ -844,6 +1019,7 @@ impl StorageEngine {
     /// inserts into `MemTable` (without re-writing to WAL), and persists any
     /// segments that are produced. Partial entries (incomplete writes) are
     /// silently ignored. The WAL file is truncated after successful replay.
+    #[cfg(feature = "fs")]
     fn replay_wal(&self) -> io::Result<usize> {
         let wal_path = self.config.data_dir.join("wal.alice");
         if !wal_path.exists() {
@@ -949,13 +1125,63 @@ impl StorageEngine {
             return Ok(Arc::clone(view));
         }
 
-        // Open segment file as SegmentView (mmap)
-        let segment_path = self.config.data_dir.join(format!("seg_{}.rkyv", entry.id));
+        let view = match &self.shared.store {
+            #[cfg(feature = "fs")]
+            Store::Dir => {
+                // Fallback to legacy format if rkyv file doesn't exist
+                if !self
+                    .config
+                    .data_dir
+                    .join(segment_file_name(entry.id))
+                    .exists()
+                {
+                    return self.load_segment_legacy(entry);
+                }
+                self.load_segment_file(entry)?
+            }
+            Store::Memory(files) => {
+                let name = segment_file_name(entry.id);
+                let stored = files.lock().get(&name).cloned().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("segment {name} is indexed but not stored in memory"),
+                    )
+                })?;
 
-        // Fallback to legacy format if rkyv file doesn't exist
-        if !segment_path.exists() {
-            return self.load_segment_legacy(entry);
-        }
+                // Decrypt if encrypted
+                #[cfg(feature = "crypto")]
+                let stored = if let Some(ref key) = self.config.encryption_key {
+                    alice_crypto::open(key, &stored).map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("decryption failed: {e:?}"),
+                        )
+                    })?
+                } else {
+                    stored
+                };
+
+                SegmentView::from_vec(stored)?
+            }
+        };
+
+        let arc_view = Arc::new(view);
+
+        // Update cache
+        self.shared
+            .segment_cache
+            .write()
+            .insert(entry.id, Arc::clone(&arc_view));
+
+        Ok(arc_view)
+    }
+
+    /// Open a segment file of the directory backend (mmap or read, decrypting
+    /// if a key is configured)
+    #[cfg(feature = "fs")]
+    fn load_segment_file(&self, entry: &SegmentIndexEntry) -> io::Result<SegmentView> {
+        // Open segment file as SegmentView (mmap)
+        let segment_path = self.config.data_dir.join(segment_file_name(entry.id));
 
         // Load segment (decrypt if encrypted)
         #[cfg(feature = "crypto")]
@@ -982,18 +1208,11 @@ impl StorageEngine {
             SegmentView::open_read(&segment_path)?
         };
 
-        let arc_view = Arc::new(view);
-
-        // Update cache
-        self.shared
-            .segment_cache
-            .write()
-            .insert(entry.id, Arc::clone(&arc_view));
-
-        Ok(arc_view)
+        Ok(view)
     }
 
     /// Legacy segment loading (for backwards compatibility with old data.alice format)
+    #[cfg(feature = "fs")]
     fn load_segment_legacy(&self, entry: &SegmentIndexEntry) -> io::Result<Arc<SegmentView>> {
         let mut data_file = self.data_file.write();
         if let Some(ref mut file) = *data_file {
@@ -1157,11 +1376,16 @@ impl StorageEngine {
         }
 
         // Close files
-        *self.data_file.write() = None;
-        *self.wal_file.write() = None;
+        #[cfg(feature = "fs")]
+        {
+            *self.data_file.write() = None;
+            *self.wal_file.write() = None;
+        }
 
-        // Clear WAL (data is persisted)
-        if self.config.enable_wal {
+        // Clear WAL (data is persisted). The in-memory backend never writes
+        // one, and must not touch `data_dir`.
+        #[cfg(feature = "fs")]
+        if self.config.enable_wal && matches!(self.shared.store, Store::Dir) {
             let wal_path = self.config.data_dir.join("wal.alice");
             if wal_path.exists() {
                 fs::remove_file(&wal_path)?;
@@ -1216,7 +1440,7 @@ pub struct StorageStats {
     pub model_distribution: std::collections::HashMap<String, usize>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "fs"))]
 mod tests {
     use super::*;
     use tempfile::tempdir;

@@ -22,7 +22,7 @@
 //! - Bloom filter: m = −n ln p / (ln 2)², k = round(m/n · ln 2), no false
 //!   negatives, measured false-positive rate ≤ 2p
 //! - aggregates: sum / mean / min / max / variance of known data
-
+#![cfg(feature = "fs")]
 // numeric oracles cast freely between the index / float domains; the crate's
 // pedantic gate is about API code, not about the reference arithmetic here
 #![allow(

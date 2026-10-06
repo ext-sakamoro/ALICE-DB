@@ -6,6 +6,7 @@
 //!
 //! Fault-tolerance tests also poke the WAL file directly to simulate
 //! crash / corruption conditions.
+#![cfg(feature = "fs")]
 
 use std::io::{Seek, SeekFrom, Write};
 

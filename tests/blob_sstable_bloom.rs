@@ -10,6 +10,7 @@
 //!   as `None` and callers know to fall back to a records probe.
 //! - `AliceDB::open` on a directory with legacy v1 `blob.sst` upgrades
 //!   silently and the first flush produces a v2 file.
+#![cfg(feature = "fs")]
 
 use alice_db::blob::BlobValue;
 use alice_db::blob_sstable::BlobSstable;

@@ -4,7 +4,18 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+Planned version: `0.3.0-beta.1` (Cargo.toml)
+
+### Added
+- `AliceDB::in_memory(StorageConfig)`: database held in process memory with the same write / read API as the file backend; one write sequence reads back bit-identically from either backend (`data_dir` is ignored, no WAL)
+- `AliceDB::to_bytes` / `AliceDB::from_bytes(StorageConfig, &[u8])`: export / restore a whole database (segments + live blobs) as one CRC-32 checked buffer, from either backend; `to_bytes` flushes first (`alice_db::snapshot` documents the layout)
+- `AliceDB::is_in_memory`, `StorageEngine::in_memory` / `from_snapshot_files` / `snapshot_files` / `is_in_memory`
+- `wasm32-unknown-unknown` support with `default-features = false` (memory backend; `getrandom` uses its `js` backend and segment timestamps come from `Date.now()` on that target only)
+
 ### Changed
+- **Breaking:** new default feature `fs` holds the file backend (`fs2`, `memmap2`): `AliceDB::open*` / `with_config*`, `compact_blob_sstable`, `compact_all_blob_sstables`, `blob_sstable_count`, `StorageEngine::new` / `open`, `SegmentView::open` / `open_read`, `SegmentSource::Mmap`, `DataSegment::write_rkyv`, `BlobStorage::open*` and the `blob_wal` / `blob_sstable` modules; default builds are unchanged, `default-features = false` users add `features = ["fs"]` to keep them
+- `ffi`, `python`, `analytics`, `crypto` and `sdf` now enable `fs`
+- `StorageEngine` with `enable_background_flush` returns the thread spawn error instead of panicking
 - **License: `AGPL-3.0-or-later` → `AGPL-3.0-or-later OR LicenseRef-Commercial` (dual-licensed、2026-09-27)** AGPL 側の条件は変更なし (既存 AGPL 利用者への影響ゼロ)、商用という選択肢が追加されただけ SPDX が AGPL 単独だと cargo-deny / FOSSA / SBOM に「商用オプションなし」と見えるため宣言を dual に 変更点: SPDX / `LICENSE` → `LICENSE-AGPL` rename / `LICENSE-COMMERCIAL.md` (商用トリガー 6 条件 = クローズド製品・商用 SaaS・エッジ・ファームウェア配布・plugin 再配布・プラットフォーム NDA・保証、社内利用は AGPL 側で無償と明記) / README の選択肢表 商用窓口は法人 `contact@extoria.co.jp`
 
 ## [0.2.0-beta.3] - 2026-09-17

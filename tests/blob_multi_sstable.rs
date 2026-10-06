@@ -15,6 +15,7 @@
 //!   `FlushMode::Append` — the legacy file is treated as seq 0 and the
 //!   next flush writes `blob-000001.sst` alongside it.
 //! - Corrupted `SSTable` in the sequence surfaces on open (fail-loud).
+#![cfg(feature = "fs")]
 
 use alice_db::blob::{BlobStorage, BlobStorageConfig};
 use alice_db::blob_sstable::{

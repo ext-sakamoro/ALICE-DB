@@ -14,6 +14,7 @@
 //!   flush → reopen. The final read must see A', not the resurrected
 //!   original.
 //! - `FlushMode::Overwrite` behaviour is unchanged (regression proof).
+#![cfg(feature = "fs")]
 
 use alice_db::blob::BlobStorageConfig;
 use alice_db::blob_sstable::FlushMode;

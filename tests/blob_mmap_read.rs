@@ -20,6 +20,7 @@
 //! - A `compact_all_blob_sstables` cycle preserves every live key.
 //! - Concurrent reads from 8 threads against a shared store see a
 //!   consistent view.
+#![cfg(feature = "fs")]
 
 use std::sync::Arc;
 

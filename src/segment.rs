@@ -23,11 +23,14 @@
 
 use crate::model::{ArchivedDataType, ArchivedModelType, DataType, ModelType};
 use alice_core::generators;
+#[cfg(feature = "fs")]
 use memmap2::Mmap;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "fs")]
 use std::fs::File;
 use std::io::{self, Read, Write};
+#[cfg(feature = "fs")]
 use std::path::Path;
 use std::sync::Arc;
 use wide::f64x4;
@@ -190,6 +193,25 @@ pub struct SegmentMetadata {
     pub compression_ratio: f64,
 }
 
+/// Current wall-clock time in Unix milliseconds, for segment metadata.
+///
+/// `SegmentMetadata::created_at` is part of the stored segment format.
+/// wasm32-unknown-unknown has no clock in `std` (`SystemTime::now` panics
+/// there), so that target reads the host clock through `Date.now()`.
+fn unix_millis_now() -> u64 {
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64)
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        // `Date.now()` is a non-negative integral millisecond count.
+        js_sys::Date::now() as u64
+    }
+}
+
 /// Data Segment: A time range stored as a mathematical model
 ///
 /// This is the fundamental storage unit of ALICE-DB.
@@ -237,9 +259,7 @@ impl DataSegment {
             residual_blob: None,
             metadata: SegmentMetadata {
                 id,
-                created_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_millis() as u64),
+                created_at: unix_millis_now(),
                 point_count,
                 original_size,
                 model_size,
@@ -681,6 +701,7 @@ impl DataSegment {
     /// # Errors
     ///
     /// Returns an error if serialization or writing to disk fails.
+    #[cfg(feature = "fs")]
     pub fn write_rkyv<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let bytes = self.to_rkyv_bytes()?;
         std::fs::write(path, bytes)
@@ -852,6 +873,7 @@ pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
 pub enum SegmentSource {
     /// Memory-mapped file (best for large segments, lazy loading).
     /// Holds `File` to keep the advisory shared lock alive until drop.
+    #[cfg(feature = "fs")]
     Mmap(Arc<Mmap>, Arc<File>),
     /// In-memory bytes (for freshly flushed `MemTable` data)
     Vec(Arc<Vec<u8>>),
@@ -863,6 +885,7 @@ impl AsRef<[u8]> for SegmentSource {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         match self {
+            #[cfg(feature = "fs")]
             Self::Mmap(m, _file) => m.as_ref(),
             Self::Vec(v) => v.as_slice(),
             Self::Slice(s) => s,
@@ -945,6 +968,7 @@ impl SegmentView {
     /// Returns `InvalidData` if the file is empty or smaller than the minimum
     /// valid rkyv archive size. An empty mmap is undefined behaviour on some
     /// platforms; we reject it here before the `unsafe` mmap call.
+    #[cfg(feature = "fs")]
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         #[allow(unused_imports)]
         use fs2::FileExt;
@@ -1014,6 +1038,7 @@ impl SegmentView {
     /// # Errors
     ///
     /// Returns an error if the file cannot be read or contains invalid rkyv data.
+    #[cfg(feature = "fs")]
     pub fn open_read<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let data = std::fs::read(path)?;
         Self::from_vec(data)
@@ -1129,6 +1154,7 @@ impl SegmentView {
     #[must_use]
     pub const fn source_type(&self) -> &'static str {
         match &self.source {
+            #[cfg(feature = "fs")]
             SegmentSource::Mmap(..) => "mmap",
             SegmentSource::Vec(_) => "vec",
             SegmentSource::Slice(_) => "slice",
@@ -1910,6 +1936,7 @@ mod tests {
         assert_eq!(decompressed, legacy);
     }
 
+    #[cfg(feature = "fs")]
     #[test]
     fn test_mmap_file_lock() {
         use fs2::FileExt;

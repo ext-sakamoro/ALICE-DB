@@ -189,7 +189,9 @@
 #[cfg(feature = "analytics")]
 pub mod analytics_bridge;
 pub mod blob;
+#[cfg(feature = "fs")]
 pub mod blob_sstable;
+#[cfg(feature = "fs")]
 pub mod blob_wal;
 pub mod bloom;
 pub mod checksum;
@@ -204,6 +206,7 @@ pub mod replication;
 pub mod sdf_bridge;
 pub mod segment;
 pub mod seqlock;
+pub mod snapshot;
 pub mod storage_engine;
 pub mod transaction;
 
@@ -232,12 +235,30 @@ pub use storage_engine::{StorageConfig, StorageEngine, StorageStats};
 pub use transaction::{LockManager, LockMode, MvccStore, TxnError, TxnId, TxnStatus};
 
 use std::io;
+#[cfg(feature = "fs")]
 use std::path::Path;
 
 /// ALICE-DB: High-level database interface
 ///
 /// This is the main entry point for using ALICE-DB.
 /// Provides a simple API for insert, query, and management operations.
+///
+/// # Storage backends
+///
+/// - **Files** (`fs` feature, on by default): [`Self::open`] /
+///   [`Self::with_config`] keep data under a directory with a WAL, mmap'd
+///   reads and advisory locks.
+/// - **Memory**: [`Self::in_memory`] keeps the same bytes in process
+///   memory and needs no filesystem, so it also builds for
+///   wasm32-unknown-unknown (`default-features = false`).
+///   [`Self::to_bytes`] / [`Self::from_bytes`] move a whole database in
+///   and out as one buffer, for callers that persist it themselves (for
+///   example in `IndexedDB`).
+///
+/// The write / read API (`put`, `put_batch`, `get`, `scan`, `query`,
+/// `aggregate`, `downsample`, `put_blob`, `get_blob`, `scan_blob_prefix`,
+/// `delete_blob`) is the same for both, and a given sequence of writes
+/// reads back bit-identically from either backend.
 pub struct AliceDB {
     engine: StorageEngine,
     /// v0.2.0-alpha.1: general blob key-value store shared alongside the
@@ -267,6 +288,7 @@ impl AliceDB {
     /// Returns an error if the storage engine cannot be opened, the
     /// blob WAL cannot be created / replayed, or the blob WAL is
     /// already locked by another writer.
+    #[cfg(feature = "fs")]
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         Self::open_with_blob_sync_policy(path, blob_wal::SyncPolicy::default())
     }
@@ -277,6 +299,7 @@ impl AliceDB {
     ///
     /// # Errors
     /// See [`Self::open`].
+    #[cfg(feature = "fs")]
     pub fn open_with_blob_sync_policy<P: AsRef<Path>>(
         path: P,
         blob_sync_policy: blob_wal::SyncPolicy,
@@ -296,6 +319,7 @@ impl AliceDB {
     ///
     /// # Errors
     /// See [`Self::open`].
+    #[cfg(feature = "fs")]
     pub fn open_with_blob_config<P: AsRef<Path>>(
         path: P,
         blob_config: blob::BlobStorageConfig,
@@ -317,6 +341,7 @@ impl AliceDB {
     ///
     /// Returns an error if the storage engine cannot be initialised with
     /// the given config, or if the blob WAL cannot be created / replayed.
+    #[cfg(feature = "fs")]
     pub fn with_config(config: StorageConfig) -> io::Result<Self> {
         Self::with_config_and_blob_sync_policy(config, blob_wal::SyncPolicy::default())
     }
@@ -326,6 +351,7 @@ impl AliceDB {
     ///
     /// # Errors
     /// See [`Self::with_config`].
+    #[cfg(feature = "fs")]
     pub fn with_config_and_blob_sync_policy(
         config: StorageConfig,
         blob_sync_policy: blob_wal::SyncPolicy,
@@ -334,6 +360,73 @@ impl AliceDB {
         let engine = StorageEngine::new(config)?;
         let blob = blob::BlobStorage::open_with_policy(blob_wal_path, blob_sync_policy)?;
         Ok(Self { engine, blob })
+    }
+
+    /// Create an empty database held entirely in process memory.
+    ///
+    /// `config.data_dir` is ignored and nothing touches the filesystem;
+    /// `enable_wal`, `sync_writes` and `use_mmap` have no effect. Model
+    /// fitting (`config.fit_config`, `memtable_capacity`) and every read
+    /// behave exactly as with [`Self::with_config`]: the same writes read
+    /// back the same bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if `enable_background_flush` is set on a
+    /// target that cannot spawn threads.
+    pub fn in_memory(config: StorageConfig) -> io::Result<Self> {
+        Ok(Self {
+            engine: StorageEngine::in_memory(config)?,
+            blob: blob::BlobStorage::new(),
+        })
+    }
+
+    /// Restore an in-memory database from a buffer produced by
+    /// [`Self::to_bytes`] (on either backend).
+    ///
+    /// `config` should carry the same `fit_config` / `memtable_capacity`
+    /// (and encryption key, with the `crypto` feature) as the database
+    /// that produced the snapshot; restored segments are read as stored,
+    /// and only writes made after the restore use `config` for fitting.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidData` / `UnexpectedEof` if the buffer is not a
+    /// complete, uncorrupted snapshot (see [`snapshot::decode`]), or if
+    /// the restored index cannot be parsed.
+    pub fn from_bytes(config: StorageConfig, bytes: &[u8]) -> io::Result<Self> {
+        let (files, blobs) = snapshot::decode(bytes)?;
+        let engine = StorageEngine::from_snapshot_files(config, files)?;
+        let blob = blob::BlobStorage::new();
+        for (key, value) in &blobs {
+            blob.put(key, value)?;
+        }
+        Ok(Self { engine, blob })
+    }
+
+    /// Serialize the whole database (time-series segments and live blobs)
+    /// into one buffer that [`Self::from_bytes`] restores.
+    ///
+    /// Flushes the time-series memtable first, exactly like [`Self::flush`],
+    /// so points still buffered are written as a segment before export.
+    /// Works for both backends, so a file-backed database can be exported
+    /// and loaded into memory elsewhere (for example a browser).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush fails, a stored segment cannot be
+    /// read, or a blob payload cannot be decompressed.
+    pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
+        let files = self.engine.snapshot_files()?;
+        let blobs = self.blob.scan_prefix(b"")?;
+        snapshot::encode(&files, &blobs)
+    }
+
+    /// Whether this database keeps its data in process memory
+    /// ([`Self::in_memory`] / [`Self::from_bytes`]).
+    #[must_use]
+    pub fn is_in_memory(&self) -> bool {
+        self.engine.is_in_memory()
     }
 
     /// Force a durable fsync of any pending blob WAL writes and, if
@@ -361,6 +454,7 @@ impl AliceDB {
     ///
     /// # Errors
     /// Propagates the underlying `SSTable` rewrite error.
+    #[cfg(feature = "fs")]
     pub fn compact_blob_sstable(&self) -> io::Result<()> {
         self.blob.flush_to_sstable()
     }
@@ -377,6 +471,7 @@ impl AliceDB {
     ///
     /// # Errors
     /// Propagates the underlying merge error.
+    #[cfg(feature = "fs")]
     pub fn compact_all_blob_sstables(&self) -> io::Result<()> {
         self.blob.compact_all_sstables()
     }
@@ -386,6 +481,7 @@ impl AliceDB {
     ///
     /// # Errors
     /// Propagates the underlying directory scan error.
+    #[cfg(feature = "fs")]
     pub fn blob_sstable_count(&self) -> io::Result<usize> {
         self.blob.sstable_count()
     }
@@ -862,7 +958,7 @@ mod python {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "fs"))]
 mod tests {
     use super::*;
     use tempfile::tempdir;
@@ -1037,7 +1133,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "fs"))]
 mod raw_lzma_roundtrip_tests {
     use super::*;
 

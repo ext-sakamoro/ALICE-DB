@@ -1,6 +1,6 @@
 [package]
 name = "alice-db"
-version = "0.2.0-beta.3"
+version = "0.3.0-beta.1"
 # alice-zip 0.4 (const fn Vec::len) が 1.87 を要求、CI msrv job で実 compile (canonical 罠 #27)
 rust-version = "1.87"
 edition = "2021"
@@ -22,7 +22,8 @@ alice_core = { package = "alice-zip", version = "0.4" }
 
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.7", features = ["validation", "std"] }
-memmap2 = "0.9"
+# File backend only (`fs` feature): zero-copy segment / blob SSTable reads
+memmap2 = { version = "0.9", optional = true }
 
 # Legacy Serialization (for compatibility)
 serde = { version = "1.0", features = ["derive"] }
@@ -52,8 +53,8 @@ alice-analytics = { path = "../ALICE-Analytics", version = "0.1", optional = tru
 # ALICE-Crypto bridge (optional)
 alice-crypto = { path = "../ALICE-Crypto", version = "0.1", optional = true, default-features = false, features = ["std"] }
 
-# Advisory file locking (cross-platform)
-fs2 = "0.4"
+# Advisory file locking (cross-platform, `fs` feature only)
+fs2 = { version = "0.4", optional = true }
 
 # v0.2.0-alpha.2: blob WAL record checksum (fast, pure-Rust CRC32C).
 crc32fast = "1.4"
@@ -61,26 +62,41 @@ crc32fast = "1.4"
 # Utilities
 log = "0.4"
 
+# alice-zip (std) pulls rand 0.8 -> getrandom 0.2, which has no entropy source on
+# wasm32-unknown-unknown unless the `js` backend is selected. ALICE-DB never asks
+# for OS randomness (Perlin generators are seeded ChaCha), so this only makes the
+# crate build for the browser target; native targets are unaffected.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+# Segment metadata records its creation time; `std` has no clock on this target
+js-sys = "0.3"
+
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3.10"
 rand = "0.8"
 
 [features]
-default = []
-ffi = []  # C/C++/C# FFI bindings
-python = ["pyo3", "numpy", "ndarray"]
-analytics = ["alice-analytics"]  # ALICE-Analytics bridge (MetricPipeline → DB persistence)
-crypto = ["dep:alice-crypto"]  # ALICE-Crypto encryption at rest
-sdf = []  # SDF spatial data storage (Morton code indexing)
+# `fs`: file-backed storage (data_dir + WAL + mmap + advisory locks). Without it
+# only the in-memory backend (`AliceDB::in_memory`) is available, which is what
+# wasm32-unknown-unknown builds use.
+default = ["fs"]
+fs = ["dep:fs2", "dep:memmap2"]
+ffi = ["fs"]  # C/C++/C# FFI bindings (path-based open)
+python = ["pyo3", "numpy", "ndarray", "fs"]
+analytics = ["alice-analytics", "fs"]  # ALICE-Analytics bridge (MetricPipeline → DB persistence)
+crypto = ["dep:alice-crypto", "fs"]  # ALICE-Crypto encryption at rest
+sdf = ["fs"]  # SDF spatial data storage (Morton code indexing, path-based open)
 
 [[bench]]
 name = "db_benchmark"
 harness = false
+required-features = ["fs"]
 
 [[bench]]
 name = "main"
 harness = false
+required-features = ["fs"]
 
 [profile.release]
 lto = "fat"

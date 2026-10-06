@@ -10,6 +10,7 @@
 //!   upgrades transparently on first flush.
 //! - Corrupted `SSTable` files surface as `io::Error` on open (fail loud,
 //!   preserve the invariants around the tracker's dogfooding contract).
+#![cfg(feature = "fs")]
 
 use alice_db::blob::BlobStorageConfig;
 use alice_db::blob_wal::SyncPolicy;

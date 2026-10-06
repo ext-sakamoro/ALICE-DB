@@ -46,14 +46,29 @@ step "ci.yml / clippy: Clippy (full native feature set, all targets, pedantic)"
 relint
 ( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -W clippy::pedantic -D warnings )
 
-step "ci.yml / msrv: Check (default + full native feature set)"
+step "ci.yml / clippy: Clippy (no default features, all targets, pedantic)"
+relint
+( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo clippy --no-default-features --all-targets -- -W clippy::pedantic -D warnings )
+
+step "ci.yml / msrv: Check (default + full native feature set + no default features)"
 (
   export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"
   cargo +1.87 check --lib
   cargo +1.87 check --lib --features "$NATIVE_FEATURES"
+  cargo +1.87 check --lib --no-default-features
 )
 
-step "ci.yml / feature-powerset: Powerset ({ffi, sdf} depth 2)"
+step "ci.yml / wasm: Build + Clippy (wasm32-unknown-unknown, no default features)"
+rustup target list --installed | grep -q '^wasm32-unknown-unknown$' \
+  || { echo "missing target wasm32-unknown-unknown (rustup target add wasm32-unknown-unknown)" >&2; exit 1; }
+(
+  export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings"
+  cargo build --lib --target wasm32-unknown-unknown --no-default-features
+  relint
+  cargo clippy --lib --target wasm32-unknown-unknown --no-default-features -- -W clippy::pedantic -D warnings
+)
+
+step "ci.yml / feature-powerset: Powerset ({fs, ffi, sdf} depth 2)"
 ( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo hack check --lib --feature-powerset --depth 2 --exclude-features python,analytics,crypto )
 
 step "ci.yml / fmt: Check formatting"
@@ -139,11 +154,14 @@ if [[ $quick -eq 1 ]]; then
   echo; echo "preflight --quick OK (test / bench suites skipped)"; exit 0
 fi
 
-step "ci.yml / test: Test (default)"
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo test )
+step "ci.yml / test: Test (default = file backend)"
+( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; scripts/run_tests.sh storage_backend_parity -- cargo test )
 
 step "ci.yml / test: Test (full native feature set)"
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo test --features "$NATIVE_FEATURES" )
+( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; scripts/run_tests.sh storage_backend_parity -- cargo test --features "$NATIVE_FEATURES" )
+
+step "ci.yml / test: Test (no default features = memory backend only)"
+( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; scripts/run_tests.sh storage_backend_parity -- cargo test --no-default-features )
 
 step "security-audit.yml / audit: Run cargo audit"
 (

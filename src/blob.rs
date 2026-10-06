@@ -28,16 +28,19 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::io;
+#[cfg(feature = "fs")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use alice_core::compression::{zlib_compress, zlib_decompress};
 use parking_lot::RwLock;
 
+#[cfg(feature = "fs")]
 use crate::blob_sstable::{
     enumerate_sstables, max_sstable_seq, sstable_filename_for_seq, BlobSstable, FlushMode,
     LoadedSstable,
 };
+#[cfg(feature = "fs")]
 use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
 
 /// Default byte threshold above which a subsequent `put` / `delete`
@@ -47,10 +50,12 @@ use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
 /// firing on typical short-burst workloads. Callers who want a
 /// different budget open the store through
 /// [`BlobStorage::open_with_config`].
+#[cfg(feature = "fs")]
 pub const DEFAULT_WAL_FLUSH_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Default upper bound on the number of `SSTable` files that may
 /// accumulate under `FlushMode::Append` before an auto-compaction runs.
+#[cfg(feature = "fs")]
 pub const DEFAULT_MAX_SSTABLES_BEFORE_COMPACTION: usize = 4;
 
 /// Persistence configuration for the blob store.
@@ -58,6 +63,7 @@ pub const DEFAULT_MAX_SSTABLES_BEFORE_COMPACTION: usize = 4;
 /// Introduced in v0.2.0-alpha.4 alongside `SSTable`-backed flushes.
 /// `flush_mode` / `max_sstables_before_compaction` arrived in
 /// v0.2.0-alpha.5 for the multi-`SSTable` path.
+#[cfg(feature = "fs")]
 #[derive(Debug, Clone, Copy)]
 pub struct BlobStorageConfig {
     /// See [`crate::blob_wal::SyncPolicy`].
@@ -78,6 +84,7 @@ pub struct BlobStorageConfig {
     pub max_sstables_before_compaction: usize,
 }
 
+#[cfg(feature = "fs")]
 impl Default for BlobStorageConfig {
     fn default() -> Self {
         Self {
@@ -181,24 +188,31 @@ pub struct BlobStorage {
     /// On-disk `SSTables` currently loaded via mmap, in **newest-first**
     /// order so `get` can iterate and return as soon as any file
     /// resolves the key.
+    #[cfg(feature = "fs")]
     sstables: Arc<RwLock<Vec<Arc<LoadedSstable>>>>,
     /// Optional durable WAL. `None` means the store is in-memory only.
+    #[cfg(feature = "fs")]
     wal: Option<Arc<BlobWal>>,
     /// Path of the canonical single-`SSTable` produced by
     /// `FlushMode::Overwrite`. Retained even under `FlushMode::Append`
     /// so backward-compat reads still work; `Append` also uses this
     /// path's parent directory to place its numbered `SSTables`.
+    #[cfg(feature = "fs")]
     sstable_path: Option<PathBuf>,
     /// Auto-flush threshold (see [`BlobStorageConfig`]). Only consulted
     /// on the durable variant.
+    #[cfg(feature = "fs")]
     wal_flush_threshold_bytes: u64,
     /// See [`FlushMode`]. Set at open time and immutable afterwards.
+    #[cfg(feature = "fs")]
     flush_mode: FlushMode,
     /// See [`BlobStorageConfig::max_sstables_before_compaction`].
+    #[cfg(feature = "fs")]
     max_sstables_before_compaction: usize,
     /// Next sequence number to hand out for an append-mode flush.
     /// Wrapped in an `Arc<Mutex>` so cloned `BlobStorage` handles agree
     /// on the counter.
+    #[cfg(feature = "fs")]
     next_sstable_seq: Arc<parking_lot::Mutex<u64>>,
 }
 
@@ -226,6 +240,7 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if either the WAL or the `SSTable` cannot be
     /// opened, locked, or parsed.
+    #[cfg(feature = "fs")]
     pub fn open(wal_path: impl AsRef<Path>) -> io::Result<Self> {
         Self::open_with_config(wal_path, BlobStorageConfig::default())
     }
@@ -235,6 +250,7 @@ impl BlobStorage {
     ///
     /// # Errors
     /// See [`Self::open_with_config`].
+    #[cfg(feature = "fs")]
     pub fn open_with_policy(
         wal_path: impl AsRef<Path>,
         sync_policy: SyncPolicy,
@@ -253,6 +269,7 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if the WAL or `SSTable` cannot be opened,
     /// locked, or parsed.
+    #[cfg(feature = "fs")]
     pub fn open_with_config(
         wal_path: impl AsRef<Path>,
         config: BlobStorageConfig,
@@ -320,21 +337,30 @@ impl BlobStorage {
     /// # Errors
     /// Propagates the underlying WAL / `SSTable` error.
     pub fn flush(&self) -> io::Result<()> {
-        let Some(wal) = &self.wal else {
+        // Without the `fs` feature the store is always the in-memory
+        // variant, which has no WAL to sync.
+        #[cfg(not(feature = "fs"))]
+        return Ok(());
+        #[cfg(feature = "fs")]
+        let Some(wal) = &self.wal
+        else {
             return Ok(());
         };
-        wal.flush()?;
+        #[cfg(feature = "fs")]
+        {
+            wal.flush()?;
 
-        // Auto-flush if the WAL has grown past the threshold. We ignore
-        // the `sstable_path == None` case defensively; a durable store
-        // always has one set by `open_with_config`.
-        if let Some(_sst_path) = &self.sstable_path {
-            let size = wal.size_on_disk()?;
-            if size >= self.wal_flush_threshold_bytes {
-                self.flush_to_sstable()?;
+            // Auto-flush if the WAL has grown past the threshold. We ignore
+            // the `sstable_path == None` case defensively; a durable store
+            // always has one set by `open_with_config`.
+            if let Some(_sst_path) = &self.sstable_path {
+                let size = wal.size_on_disk()?;
+                if size >= self.wal_flush_threshold_bytes {
+                    self.flush_to_sstable()?;
+                }
             }
+            Ok(())
         }
-        Ok(())
     }
 
     /// Rewrite the in-memory snapshot into a fresh `SSTable` and truncate
@@ -352,6 +378,7 @@ impl BlobStorage {
     /// # Errors
     /// Propagates any `SSTable` write, WAL truncate, or `SSTable` rename
     /// error.
+    #[cfg(feature = "fs")]
     pub fn flush_to_sstable(&self) -> io::Result<()> {
         let Some(sstable_path) = &self.sstable_path else {
             return Ok(());
@@ -443,6 +470,7 @@ impl BlobStorage {
     ///
     /// # Errors
     /// Propagates any `SSTable` write or delete error.
+    #[cfg(feature = "fs")]
     pub fn compact_all_sstables(&self) -> io::Result<()> {
         let Some(sstable_path) = &self.sstable_path else {
             return Ok(());
@@ -554,6 +582,7 @@ impl BlobStorage {
     ///
     /// # Errors
     /// Propagates the underlying directory scan error.
+    #[cfg(feature = "fs")]
     pub fn sstable_count(&self) -> io::Result<usize> {
         // v0.2.0-alpha.7: the authoritative count is the loaded list.
         // We keep the same signature for callers still passing through
@@ -567,6 +596,7 @@ impl BlobStorage {
     ///
     /// # Errors
     /// Propagates the underlying WAL size query.
+    #[cfg(feature = "fs")]
     pub fn wal_needs_flush(&self) -> io::Result<bool> {
         let Some(wal) = &self.wal else {
             return Ok(false);
@@ -587,6 +617,7 @@ impl BlobStorage {
             Some(bytes) => BlobValue::Compressed(bytes),
             None => BlobValue::Raw(value.to_vec()),
         };
+        #[cfg(feature = "fs")]
         if let Some(wal) = &self.wal {
             wal.append_put(key, &stored)?;
         }
@@ -594,6 +625,7 @@ impl BlobStorage {
             let mut guard = self.memtable.write();
             guard.insert(key.to_vec(), stored);
         }
+        #[cfg(feature = "fs")]
         self.maybe_auto_flush()?;
         Ok(())
     }
@@ -625,8 +657,8 @@ impl BlobStorage {
         }
         // SSTable fallback. Snapshot the list (cheap: `Vec<Arc<...>>`)
         // so we don't hold the read lock while probing each file.
-        let sstables: Vec<Arc<LoadedSstable>> = self.sstables.read().clone();
-        for sst in &sstables {
+        #[cfg(feature = "fs")]
+        for sst in &self.sstables.read().clone() {
             if let Some(v) = sst.get(key) {
                 return match v {
                     BlobValue::Tombstone => Ok(None),
@@ -671,7 +703,12 @@ impl BlobStorage {
         //
         // Wrapping key and priority in `Reverse` turns the max-heap
         // into a min-heap on `(key, priority)`.
+        #[cfg(feature = "fs")]
         let sstables: Vec<Arc<LoadedSstable>> = self.sstables.read().clone();
+        #[cfg(feature = "fs")]
+        let source_count = 1 + sstables.len();
+        #[cfg(not(feature = "fs"))]
+        let source_count = 1;
 
         // Collect each source into a sorted Vec of `(key, value)` pairs
         // upfront. Streaming from the mmap directly across the heap
@@ -679,7 +716,7 @@ impl BlobStorage {
         // merge simple. The keys are already sorted (memtable via
         // BTreeMap range, sstables via BTreeMap index) so no per-source
         // sort is needed.
-        let mut sources: Vec<SortedRun> = Vec::with_capacity(1 + sstables.len());
+        let mut sources: Vec<SortedRun> = Vec::with_capacity(source_count);
         {
             let memtable = self.memtable.read();
             let memtable_entries: Vec<(Vec<u8>, BlobValue)> = memtable
@@ -692,6 +729,7 @@ impl BlobStorage {
                 pos: 0,
             });
         }
+        #[cfg(feature = "fs")]
         for sst in &sstables {
             let sst_entries: Vec<(Vec<u8>, BlobValue)> = sst
                 .iter_prefix(prefix)
@@ -764,6 +802,7 @@ impl BlobStorage {
     /// `Result` in alpha-2 to surface WAL failures instead of dropping
     /// them silently.
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
+        #[cfg(feature = "fs")]
         if let Some(wal) = &self.wal {
             wal.append_delete(key)?;
         }
@@ -771,6 +810,7 @@ impl BlobStorage {
             let mut guard = self.memtable.write();
             guard.insert(key.to_vec(), BlobValue::Tombstone);
         }
+        #[cfg(feature = "fs")]
         self.maybe_auto_flush()?;
         Ok(())
     }
@@ -783,6 +823,7 @@ impl BlobStorage {
     /// pathological workload that hovers just under the threshold
     /// pays for that syscall on every write; α-3.3 introduces a
     /// cheaper heuristic (per-record counter) alongside compaction.
+    #[cfg(feature = "fs")]
     fn maybe_auto_flush(&self) -> io::Result<()> {
         if self.wal_needs_flush()? {
             self.flush_to_sstable()?;
@@ -810,8 +851,8 @@ impl BlobStorage {
         // materialising values is what makes scan_prefix expensive, so
         // do the merge without decompressing.
         let mut seen: BTreeMap<Vec<u8>, bool> = BTreeMap::new(); // key → is_live
-        let sstables: Vec<Arc<LoadedSstable>> = self.sstables.read().clone();
-        for sst in sstables.iter().rev() {
+        #[cfg(feature = "fs")]
+        for sst in self.sstables.read().clone().iter().rev() {
             for (key, value) in sst.iter() {
                 seen.insert(key.to_vec(), !matches!(value, BlobValue::Tombstone));
             }
@@ -836,6 +877,7 @@ impl BlobStorage {
 ///
 /// The convention is `blob.wal` -> `blob.sst`. Any other stem is
 /// preserved verbatim so a caller passing `foo.wal` sees `foo.sst`.
+#[cfg(feature = "fs")]
 fn sibling_sstable_path(wal_path: &Path) -> PathBuf {
     let mut sst = wal_path.to_path_buf();
     let file_stem = sst

@@ -7,6 +7,7 @@
 //! Cross-process behaviour is verified with an in-process second open
 //! (fs2 advisory locks are per-file-handle, so this exercises the same
 //! code path a second process would take).
+#![cfg(feature = "fs")]
 
 use alice_db::blob_wal::SyncPolicy;
 use alice_db::AliceDB;

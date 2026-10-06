@@ -110,6 +110,34 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
+### In memory / WebAssembly
+
+`AliceDB::in_memory` keeps the same bytes the file backend would write, but in
+process memory, so it needs no filesystem and builds for
+`wasm32-unknown-unknown`. The write / read API is the same, and one sequence of
+writes reads back bit-identically from either backend. `to_bytes` /
+`from_bytes` move a whole database in and out as one checksummed buffer (store
+it wherever you like, for example IndexedDB in a browser).
+
+```toml
+# browser / no filesystem
+alice-db = { version = "0.3.0-beta.1", default-features = false }
+```
+
+```rust
+use alice_db::{AliceDB, StorageConfig};
+
+fn main() -> std::io::Result<()> {
+    let db = AliceDB::in_memory(StorageConfig::default())?;
+    db.put_batch(&[(0, 1.0), (1, 2.0), (2, 3.0)])?;
+
+    let bytes = db.to_bytes()?; // flushes, then serializes segments + blobs
+    let restored = AliceDB::from_bytes(StorageConfig::default(), &bytes)?;
+    assert_eq!(restored.get(1)?, db.get(1)?);
+    Ok(())
+}
+```
+
 ## Architecture
 
 ```
@@ -299,8 +327,12 @@ Each metric slot produces up to 6 entries per flush, using a packed key:
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `python` | No | Python bindings (PyO3 + NumPy) |
-| `analytics` | No | ALICE-Analytics bridge (MetricPipeline → DB) |
+| `fs` | Yes | File storage (`open` / `with_config`: WAL, mmap, advisory locks). Without it only the in-memory backend is available |
+| `ffi` | No | C / C++ / C# FFI (implies `fs`) |
+| `python` | No | Python bindings (PyO3 + NumPy, implies `fs`) |
+| `analytics` | No | ALICE-Analytics bridge (MetricPipeline → DB, implies `fs`) |
+| `crypto` | No | ALICE-Crypto encryption at rest (implies `fs`) |
+| `sdf` | No | SDF spatial data storage (implies `fs`) |
 
 ## Related Projects
 

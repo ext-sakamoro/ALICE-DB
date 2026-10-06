@@ -456,7 +456,7 @@ impl QueryInterface for StorageEngine {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "fs"))]
 mod tests {
     use super::*;
     use crate::storage_engine::StorageConfig;

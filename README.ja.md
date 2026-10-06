@@ -110,6 +110,43 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
+### メモリ上 / WebAssembly
+
+`AliceDB::in_memory` はファイル保存と同じバイト列をプロセスのメモリ上に持つ
+ファイルシステムを使わないので `wasm32-unknown-unknown` 向けにも build できる
+書き込み・読み出しの API は同じで、同じ書き込み列はどちらの保存先からも bit 一致で読み出せる
+`to_bytes` / `from_bytes` で DB 全体をチェックサム付きの 1 つのバッファとして出し入れできる (ブラウザなら IndexedDB などに置く)
+
+```toml
+# ブラウザ / ファイルシステムなし
+alice-db = { version = "0.3.0-beta.1", default-features = false }
+```
+
+```rust
+use alice_db::{AliceDB, StorageConfig};
+
+fn main() -> std::io::Result<()> {
+    let db = AliceDB::in_memory(StorageConfig::default())?;
+    db.put_batch(&[(0, 1.0), (1, 2.0), (2, 3.0)])?;
+
+    let bytes = db.to_bytes()?; // flush してから segment と blob を直列化
+    let restored = AliceDB::from_bytes(StorageConfig::default(), &bytes)?;
+    assert_eq!(restored.get(1)?, db.get(1)?);
+    Ok(())
+}
+```
+
+### Cargo Features
+
+| Feature | 既定 | 内容 |
+|---------|------|------|
+| `fs` | Yes | ファイル保存 (`open` / `with_config`、WAL・mmap・advisory lock) 外すとメモリ上の保存先のみ |
+| `ffi` | No | C / C++ / C# FFI (`fs` を含む) |
+| `python` | No | Python bindings (PyO3 + NumPy、`fs` を含む) |
+| `analytics` | No | ALICE-Analytics bridge (`fs` を含む) |
+| `crypto` | No | ALICE-Crypto による保存時暗号化 (`fs` を含む) |
+| `sdf` | No | SDF 空間データ保存 (`fs` を含む) |
+
 ## アーキテクチャ
 
 ```

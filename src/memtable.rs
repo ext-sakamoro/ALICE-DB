@@ -235,6 +235,12 @@ impl MemTable {
     }
 
     /// Generate next segment ID (atomic, lock-free)
+    /// Make every segment id handed out from now on greater than `id`
+    pub(crate) fn reserve_segment_ids_through(&self, id: u64) {
+        self.next_segment_id
+            .fetch_max(id.saturating_add(1), Ordering::Relaxed);
+    }
+
     fn next_id(&self) -> u64 {
         self.next_segment_id.fetch_add(1, Ordering::Relaxed)
     }

@@ -12,6 +12,7 @@
 //! - Empty prefix returns nothing when no key matches.
 //! - Empty memtable with populated `SSTables` still produces correct
 //!   output (regression proof for a common code path).
+#![cfg(feature = "fs")]
 
 use std::collections::BTreeMap;
 

@@ -34,7 +34,9 @@ while IFS= read -r line; do
       fi
       ;;
   esac
-done < <(tr -d '\r' < "$log")
+# strip CR (Windows) and ANSI colour codes (CARGO_TERM_COLOR=always puts one
+# right after "Running", which would hide the binary name from the match above)
+done < <(tr -d '\r' < "$log" | sed "s/$(printf '\033')\[[0-9;]*m//g")
 
 echo "run_tests: ${total} tests passed in total, ${required_passed} in ${required}"
 if [[ "$total" -eq 0 ]]; then

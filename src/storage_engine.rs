@@ -488,6 +488,9 @@ impl StorageEngine {
         let engine = Self::build(config, Store::Dir)?;
         engine.init_files()?;
         engine.load_index()?;
+        // segments written after reopening must not reuse the ids of the ones
+        // already on disk (`seg_<id>.rkyv` would be overwritten)
+        engine.reserve_loaded_segment_ids();
         engine.replay_wal()?;
 
         Ok(engine)
@@ -524,10 +527,15 @@ impl StorageEngine {
     ) -> io::Result<Self> {
         let engine = Self::build(config, Store::Memory(parking_lot::Mutex::new(files)))?;
         engine.load_index()?;
-        if let Some(max_id) = engine.shared.index.read().keys().next_back() {
-            engine.memtable.reserve_segment_ids_through(*max_id);
-        }
+        engine.reserve_loaded_segment_ids();
         Ok(engine)
+    }
+
+    /// Make new segment ids greater than every id in the loaded index
+    fn reserve_loaded_segment_ids(&self) {
+        if let Some(max_id) = self.shared.index.read().keys().next_back() {
+            self.memtable.reserve_segment_ids_through(*max_id);
+        }
     }
 
     /// Construct the engine around `store` without touching any stored bytes

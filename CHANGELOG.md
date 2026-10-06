@@ -4,7 +4,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
-Planned version: `0.3.0-beta.1` (Cargo.toml)
+## [0.3.0-beta.1] - 2026-10-06
 
 ### Added
 - `AliceDB::in_memory(StorageConfig)`: database held in process memory with the same write / read API as the file backend; one write sequence reads back bit-identically from either backend (`data_dir` is ignored, no WAL)

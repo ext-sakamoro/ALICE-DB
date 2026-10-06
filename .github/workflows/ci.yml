@@ -62,6 +62,10 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: clippy
+      # rust-toolchain.toml pins the toolchain cargo runs with; the action above
+      # adds the target to `stable`, so add it to the pinned one as well
+      - name: Ensure wasm32-unknown-unknown rust-std is installed
+        run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       # Memory backend only: no fs2 / memmap2; getrandom uses its `js` backend
       - name: Build (no default features)

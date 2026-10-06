@@ -189,8 +189,17 @@ impl BlobWal {
         // error so the caller can surface it as "database already open"
         // rather than a mysterious later corruption.
         FileExt::try_lock_exclusive(&file).map_err(|e| {
+            // the OS reports contention differently (EWOULDBLOCK on Unix,
+            // ERROR_LOCK_VIOLATION on Windows); callers match on WouldBlock
+            let kind = if e.raw_os_error().is_some()
+                && e.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+            {
+                io::ErrorKind::WouldBlock
+            } else {
+                e.kind()
+            };
             io::Error::new(
-                e.kind(),
+                kind,
                 format!(
                     "blob WAL at `{}` is already locked by another writer: {e}",
                     path.display()

@@ -19,6 +19,7 @@ Planned version: `0.3.0-beta.1` (Cargo.toml)
 - **License: `AGPL-3.0-or-later` → `AGPL-3.0-or-later OR LicenseRef-Commercial` (dual-licensed、2026-09-27)** AGPL 側の条件は変更なし (既存 AGPL 利用者への影響ゼロ)、商用という選択肢が追加されただけ SPDX が AGPL 単独だと cargo-deny / FOSSA / SBOM に「商用オプションなし」と見えるため宣言を dual に 変更点: SPDX / `LICENSE` → `LICENSE-AGPL` rename / `LICENSE-COMMERCIAL.md` (商用トリガー 6 条件 = クローズド製品・商用 SaaS・エッジ・ファームウェア配布・plugin 再配布・プラットフォーム NDA・保証、社内利用は AGPL 側で無償と明記) / README の選択肢表 商用窓口は法人 `contact@extoria.co.jp`
 
 ### Fixed
+- Windows: opening a database whose blob WAL another handle holds returned the raw `os error 33` kind instead of `WouldBlock` (contention is now matched against `fs2::lock_contended_error()` on every platform; other I/O errors keep their kind)
 - File backend: writing after reopening a database overwrote segments already on disk, because segment ids started again from 1 on every open (`seg_1.rkyv` was rewritten and its points lost). New ids now continue after the largest id in the loaded index (`tests/file_reopen_keeps_segments.rs`)
 - `scripts/run_tests.sh` counted no test of the required binary when cargo output is coloured (`CARGO_TERM_COLOR=always`), since a colour code follows `Running`; colour codes are now stripped before matching
 

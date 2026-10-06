@@ -49,9 +49,19 @@
 //! # Atomic replacement
 //!
 //! `write_from_iter` writes to a sibling `.tmp` path and then renames.
-//! On the platforms we support (Linux, macOS) `rename(2)` is atomic
-//! across the same filesystem, so a reader never observes a partially
-//! written `SSTable`.
+//! The rename replaces the destination atomically on the same
+//! filesystem (`rename(2)` on Linux and macOS, `MoveFileExW` with
+//! `MOVEFILE_REPLACE_EXISTING` on Windows), so a reader never observes
+//! a partially written `SSTable`.
+//!
+//! Windows additionally refuses to rename over, or delete, a file that
+//! is still open or memory-mapped. The store therefore never replaces
+//! or deletes an `SSTable` it still maps: compaction releases every
+//! mapping under the exclusive lock on the `SSTable` list before it
+//! renames the merged file into place and removes the old ones (see
+//! [`crate::blob::BlobStorage::compact_all_sstables`]). In test builds
+//! the open-file audit (`src/fs_audit.rs`) panics on any violation, so
+//! the rule is checked on every platform.
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -191,6 +201,51 @@ pub fn enumerate_sstables(dir: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
     Ok(hits.into_iter().map(|(_, p)| p).collect())
 }
 
+/// Delete every leftover `.tmp` sibling of a blob `SSTable` in `dir`
+/// (`blob.sst.tmp`, `blob-000007.sst.tmp`, ...) and return how many
+/// were removed.
+///
+/// A `.tmp` file only exists between the start of an `SSTable` write
+/// and the rename that publishes it, so any such file found while the
+/// store is being opened belongs to a write that crashed before it
+/// committed. Its contents are never referenced: the data it would
+/// have held is still in the WAL and in the `SSTables` it would have
+/// replaced. The caller must hold the WAL lock, which guarantees that
+/// no other writer is mid-write in this directory.
+///
+/// # Errors
+/// Propagates directory scan errors and delete errors other than
+/// `NotFound`.
+pub(crate) fn remove_stale_tmp_files(dir: &Path) -> io::Result<usize> {
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut removed = 0;
+    for entry in read {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".tmp") else {
+            continue;
+        };
+        if parse_sstable_seq(stem).is_none() {
+            continue;
+        }
+        let path = entry.path();
+        crate::fs_audit::check_remove(&path);
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(removed)
+}
+
 /// Highest sequence number in use for `SSTables` under `dir`, if any.
 ///
 /// Callers that need the next sequence number for an append-mode flush
@@ -302,6 +357,21 @@ impl BlobSstable {
         I: IntoIterator<Item = (&'a [u8], &'a BlobValue)>,
     {
         let path = path.as_ref();
+        let tmp_path = Self::write_tmp_from_iter(path, iter)?;
+        Self::commit_tmp(&tmp_path, path)
+    }
+
+    /// First half of [`Self::write_from_iter`]: write and fsync the
+    /// complete `SSTable` at the sibling `.tmp` path of `path` and
+    /// return that path. `path` itself is not touched.
+    ///
+    /// Split out so that a caller which still has `path` mapped can
+    /// release the mapping between the write and [`Self::commit_tmp`]:
+    /// Windows refuses to rename over a file that is open or mapped.
+    pub(crate) fn write_tmp_from_iter<'a, I>(path: &Path, iter: I) -> io::Result<PathBuf>
+    where
+        I: IntoIterator<Item = (&'a [u8], &'a BlobValue)>,
+    {
         let tmp_path = tmp_sibling(path);
 
         // Buffer the records so we can compute `num_records` for the
@@ -369,8 +439,18 @@ impl BlobSstable {
         file.sync_all()?;
         drop(file);
 
-        std::fs::rename(&tmp_path, path)?;
-        Ok(())
+        Ok(tmp_path)
+    }
+
+    /// Second half of [`Self::write_from_iter`]: atomically move the
+    /// finished `.tmp` file into place at `path`.
+    ///
+    /// The caller must not hold `path` open or mapped (Windows refuses
+    /// to rename over such a file; the open-file audit enforces this in
+    /// test builds).
+    pub(crate) fn commit_tmp(tmp_path: &Path, path: &Path) -> io::Result<()> {
+        crate::fs_audit::check_replace_target(path);
+        std::fs::rename(tmp_path, path)
     }
 
     /// Load an `SSTable` from disk. Returns `Ok(None)` if `path` does not
@@ -580,6 +660,12 @@ impl std::fmt::Debug for LoadedSstable {
     }
 }
 
+impl Drop for LoadedSstable {
+    fn drop(&mut self) {
+        crate::fs_audit::note_close(&self.path);
+    }
+}
+
 impl LoadedSstable {
     /// Open the `SSTable` at `path` via mmap. Returns `Ok(None)` if the
     /// file does not exist (mirrors [`BlobSstable::open`] semantics).
@@ -598,8 +684,8 @@ impl LoadedSstable {
     /// underlying file *not* being modified while mapped. Our writer
     /// path uses `.tmp` + `rename`, so the file we mmap is never
     /// mutated in place. Concurrent readers within the same process
-    /// observe consistent bytes; the file may safely be unlinked while
-    /// still mapped on Unix.
+    /// observe consistent bytes. The store drops every mapping before
+    /// it renames over or deletes the file, which Windows requires.
     pub fn open_mmap(path: impl AsRef<Path>) -> io::Result<Option<Self>> {
         let path = path.as_ref().to_path_buf();
         let file = match File::open(&path) {
@@ -731,6 +817,7 @@ impl LoadedSstable {
 
         let index = build_offset_index(&mmap[HEADER_LEN..records_end], num_records, HEADER_LEN)?;
 
+        crate::fs_audit::note_open(&path);
         Ok(Some(Self {
             path,
             _file: file,

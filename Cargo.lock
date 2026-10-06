@@ -60,6 +60,7 @@ version = "0.3.0-beta.1"
 dependencies = [
  "alice-analytics",
  "alice-crypto",
+ "alice-db",
  "alice-zip",
  "bincode",
  "crc32fast",

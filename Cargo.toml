@@ -75,6 +75,8 @@ js-sys = "0.3"
 criterion = "0.5"
 tempfile = "3.10"
 rand = "0.8"
+# Enables the open-file audit for every test build of this crate (src/fs_audit.rs)
+alice-db = { path = ".", default-features = false, features = ["open-file-audit"] }
 
 [features]
 # `fs`: file-backed storage (data_dir + WAL + mmap + advisory locks). Without it
@@ -87,6 +89,10 @@ python = ["pyo3", "numpy", "ndarray", "fs"]
 analytics = ["alice-analytics", "fs"]  # ALICE-Analytics bridge (MetricPipeline → DB persistence)
 crypto = ["dep:alice-crypto", "fs"]  # ALICE-Crypto encryption at rest
 sdf = ["fs"]  # SDF spatial data storage (Morton code indexing, path-based open)
+# Test-only: panic when the file backend renames over, deletes, or truncates a
+# file in a way Windows refuses (see src/fs_audit.rs). Enabled for this crate's
+# own tests by the self dev-dependency below; not for dependants
+open-file-audit = []
 
 [[bench]]
 name = "db_benchmark"

@@ -37,8 +37,8 @@ use parking_lot::RwLock;
 
 #[cfg(feature = "fs")]
 use crate::blob_sstable::{
-    enumerate_sstables, max_sstable_seq, sstable_filename_for_seq, BlobSstable, FlushMode,
-    LoadedSstable,
+    enumerate_sstables, max_sstable_seq, remove_stale_tmp_files, sstable_filename_for_seq,
+    BlobSstable, FlushMode, LoadedSstable,
 };
 #[cfg(feature = "fs")]
 use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
@@ -188,8 +188,19 @@ pub struct BlobStorage {
     /// On-disk `SSTables` currently loaded via mmap, in **newest-first**
     /// order so `get` can iterate and return as soon as any file
     /// resolves the key.
+    ///
+    /// The mappings are owned by this list and are only ever read while
+    /// holding its read lock (no `Arc` clones escape it). Holding the
+    /// write lock therefore means no thread in this process has any of
+    /// these files mapped once the list is emptied, which is what lets
+    /// compaction rename over and delete them on Windows.
     #[cfg(feature = "fs")]
-    sstables: Arc<RwLock<Vec<Arc<LoadedSstable>>>>,
+    sstables: Arc<RwLock<Vec<LoadedSstable>>>,
+    /// Serialises `SSTable` publication (append flushes and
+    /// compactions) so that two of them never interleave their
+    /// rename / delete / WAL-truncate steps.
+    #[cfg(feature = "fs")]
+    publish_lock: Arc<parking_lot::Mutex<()>>,
     /// Optional durable WAL. `None` means the store is in-memory only.
     #[cfg(feature = "fs")]
     wal: Option<Arc<BlobWal>>,
@@ -281,17 +292,12 @@ impl BlobStorage {
             .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
         let wal = BlobWal::open_with_policy(&wal_path, config.sync_policy)?;
 
-        // Load every SSTable currently on disk via mmap. `enumerate_sstables`
-        // returns them oldest → newest by sequence; we reverse so the
-        // list is newest-first (matching read-path priority).
-        let mut sstables_oldest_first: Vec<Arc<LoadedSstable>> = Vec::new();
-        for sst_path in enumerate_sstables(&dir)? {
-            if let Some(sst) = LoadedSstable::open_mmap(&sst_path)? {
-                sstables_oldest_first.push(Arc::new(sst));
-            }
-        }
-        sstables_oldest_first.reverse();
-        let sstables_newest_first = sstables_oldest_first;
+        // The WAL lock is held from here on, so no other writer can be
+        // mid-write in this directory: any `.tmp` left behind belongs to
+        // a write that crashed before it was published.
+        remove_stale_tmp_files(&dir)?;
+
+        let sstables_newest_first = load_sstables_newest_first(&dir)?;
 
         // Replay the WAL into the memtable. Reads see WAL state on top of
         // the mmap'd SSTables.
@@ -314,6 +320,7 @@ impl BlobStorage {
         Ok(Self {
             memtable: Arc::new(RwLock::new(memtable)),
             sstables: Arc::new(RwLock::new(sstables_newest_first)),
+            publish_lock: Arc::new(parking_lot::Mutex::new(())),
             wal: Some(Arc::new(wal)),
             sstable_path: Some(sstable_path),
             wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
@@ -367,11 +374,14 @@ impl BlobStorage {
     /// the WAL. Callers can invoke this at will (e.g. at shutdown, or
     /// after a large bulk load) to keep reopen latency low.
     ///
-    /// The write is atomic against readers via a rename dance: the new
-    /// `SSTable` is first materialised in a sibling `.tmp` path and then
-    /// renamed over the destination. A crash between rename and
-    /// truncate is safe: the WAL replay on next open produces the same
-    /// state (`SSTable` + full WAL), the auto-flush simply re-runs.
+    /// The write is atomic against readers: the new `SSTable` is first
+    /// materialised in a sibling `.tmp` path and then renamed into
+    /// place. Append mode always writes a fresh `blob-{seq:06}.sst`;
+    /// Overwrite mode goes through [`Self::compact_all_sstables`],
+    /// which unmaps the old file before replacing it. A crash between
+    /// rename and truncate is safe: the WAL replay on next open
+    /// produces the same state (`SSTable` + full WAL), the auto-flush
+    /// simply re-runs.
     ///
     /// Returns `Ok(())` for in-memory stores created via [`Self::new`].
     ///
@@ -403,6 +413,7 @@ impl BlobStorage {
                 // v0.2.0-alpha.8 (`FORMAT_VERSION_V3`), tombstones are
                 // a first-class record kind and no longer need to live
                 // only in the WAL / memtable.
+                let _publish = self.publish_lock.lock();
                 let memtable = self.memtable.read();
                 let entries: Vec<(Vec<u8>, BlobValue)> = memtable
                     .iter()
@@ -428,13 +439,14 @@ impl BlobStorage {
                 )?;
 
                 // Load the new SSTable and prepend it to the list
-                // (newest-first order).
+                // (newest-first order). The new file has a fresh name, so
+                // the rename above never targets a file we have open.
                 let new_sst = LoadedSstable::open_mmap(&target_path)?.ok_or_else(|| {
                     io::Error::other("newly-written sstable disappeared before it could be loaded")
                 })?;
                 {
                     let mut sstables = self.sstables.write();
-                    sstables.insert(0, Arc::new(new_sst));
+                    sstables.insert(0, new_sst);
                 }
 
                 // Truncate the WAL and clear the memtable — every
@@ -460,16 +472,46 @@ impl BlobStorage {
     /// can also invoke it manually — e.g. at shutdown — to keep next
     /// reopen fast.
     ///
-    /// Crash safety: the new `SSTable` is written to a sibling `.tmp`
-    /// path and atomically renamed into `blob-{next_seq:06}.sst`
-    /// (Append mode) or `blob.sst` (Overwrite mode). Only after the
-    /// rename succeeds do we delete the older `SSTables`. A crash
-    /// between the rename and any of the deletes leaves an idempotent
-    /// state: the next open sees the new `SSTable` plus one or more
-    /// redundant older ones, and the next compaction absorbs them.
+    /// # Steps
+    ///
+    /// 1. Write the merged `SSTable` to the `.tmp` sibling of its
+    ///    target (`blob.sst` in Overwrite mode, a fresh
+    ///    `blob-{seq:06}.sst` in Append mode) and fsync it.
+    /// 2. Take the write lock on the `SSTable` list and drop every
+    ///    mapping. Readers only touch mappings under the read lock, so
+    ///    from here on no thread in this process has any `SSTable`
+    ///    open — which Windows requires before a file may be renamed
+    ///    over or deleted.
+    /// 3. Rename the `.tmp` file onto the target and map it as the only
+    ///    entry of the list.
+    /// 4. Delete the old files, oldest first, stopping at the first
+    ///    failure.
+    /// 5. Truncate the WAL and clear the memtable.
+    ///
+    /// # Crash safety
+    ///
+    /// Every on-disk state between these steps reopens to the same
+    /// contents. Before step 3 the old `SSTables` and the WAL are
+    /// untouched and the `.tmp` file is discarded on the next open.
+    /// After step 3 the merged file holds the newest record of every
+    /// key that any old file held, and the WAL still holds every
+    /// memtable record. An old file that has not been deleted yet only
+    /// ever holds records that are either superseded by a newer file
+    /// that is also still present, or equal to what the merged file
+    /// holds: deleting oldest first keeps every remaining old file
+    /// newer than every deleted one. The WAL is truncated only after
+    /// the last delete succeeded, so tombstones that the merged file
+    /// dropped are still replayed while any older value survives on
+    /// disk.
     ///
     /// # Errors
-    /// Propagates any `SSTable` write or delete error.
+    /// Propagates any `SSTable` write, rename, delete, or WAL error. A
+    /// failed delete leaves the WAL untouched; the next compaction
+    /// retries it.
+    ///
+    /// # Panics
+    /// With the test-only `open-file-audit` feature, panics if a step
+    /// would rename over or delete a file that is still mapped.
     #[cfg(feature = "fs")]
     pub fn compact_all_sstables(&self) -> io::Result<()> {
         let Some(sstable_path) = &self.sstable_path else {
@@ -481,6 +523,7 @@ impl BlobStorage {
         let dir = sstable_path
             .parent()
             .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let _publish = self.publish_lock.lock();
 
         // Fold everything — old SSTables (oldest → newest) and the
         // memtable — into a single sorted view. Later inserts overwrite
@@ -504,19 +547,18 @@ impl BlobStorage {
             }
         }
 
-        // Filter tombstones for the merged on-disk file. Because we
-        // rewrite every SSTable in this operation, any tombstoned key
-        // is truly gone: no older file carries a stale value.
+        // Filter tombstones for the merged on-disk file. Every old file
+        // is deleted before the WAL (which still carries the memtable's
+        // deletes) is truncated, so no older value can outlive the
+        // tombstone that masked it.
         let entries: Vec<(Vec<u8>, BlobValue)> = merged
             .into_iter()
             .filter(|(_, v)| !matches!(v, BlobValue::Tombstone))
             .collect();
 
-        // Enumerate what is currently on disk so we know which files to
-        // delete after the merged SSTable is safely in place.
+        // Files on disk now, oldest first. These are what step 4 deletes.
         let existing = enumerate_sstables(&dir)?;
 
-        // Pick the target path for the merged SSTable.
         let target_path = match self.flush_mode {
             FlushMode::Overwrite => sstable_path.clone(),
             FlushMode::Append => {
@@ -528,49 +570,64 @@ impl BlobStorage {
             }
         };
 
-        BlobSstable::write_from_iter(&target_path, entries.iter().map(|(k, v)| (k.as_slice(), v)))?;
+        // Step 1.
+        let tmp_path = BlobSstable::write_tmp_from_iter(
+            &target_path,
+            entries.iter().map(|(k, v)| (k.as_slice(), v)),
+        )?;
+        crate::fs_audit::crash_point("compact:after_write")?;
 
-        // Load the newly-written SSTable via mmap. This becomes the only
-        // entry in the sstable list after the swap below.
-        let new_sst = LoadedSstable::open_mmap(&target_path)?.ok_or_else(|| {
-            io::Error::other("compacted sstable disappeared before it could be loaded")
-        })?;
-
-        // Swap the sstable list first — this drops our references to the
-        // old `LoadedSstable`s and, once no reader still holds a clone,
-        // releases their mmaps.
-        {
-            let mut sstables = self.sstables.write();
-            *sstables = vec![Arc::new(new_sst)];
+        let mut sstables = self.sstables.write();
+        // Step 2. Dropping the list unmaps and closes every old file.
+        sstables.clear();
+        // Step 3.
+        let published = BlobSstable::commit_tmp(&tmp_path, &target_path)
+            .and_then(|()| crate::fs_audit::crash_point("compact:after_swap"))
+            .and_then(|()| {
+                LoadedSstable::open_mmap(&target_path)?.ok_or_else(|| {
+                    io::Error::other("compacted sstable disappeared before it could be loaded")
+                })
+            });
+        match published {
+            Ok(new_sst) => sstables.push(new_sst),
+            Err(e) => {
+                // Whatever is on disk is a consistent state (see the
+                // crash-safety notes); serve it rather than an empty list.
+                *sstables = load_sstables_newest_first(&dir)?;
+                return Err(e);
+            }
         }
 
-        // Now delete the old files. On Unix `unlink` while a mmap is
-        // still held elsewhere is safe (the inode outlives the
-        // directory entry). On Windows a still-mapped file cannot be
-        // deleted — in that case we swallow the error rather than
-        // leaving the caller with a half-compacted store; the next
-        // compaction absorbs the stragglers.
+        // Step 4. Oldest first, and stop at the first failure: every
+        // remaining old file must stay newer than every deleted one.
+        crate::fs_audit::crash_point("compact:before_remove")?;
         for old_path in existing {
             if old_path == target_path {
                 continue;
             }
-            if let Err(e) = std::fs::remove_file(&old_path) {
-                if e.kind() != io::ErrorKind::NotFound {
-                    log::warn!(
-                        "compact_all_sstables: could not remove stale sstable {}: {e}",
-                        old_path.display()
-                    );
+            crate::fs_audit::check_remove(&old_path);
+            match std::fs::remove_file(&old_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!(
+                            "compact_all_sstables: could not remove superseded sstable {}: {e}",
+                            old_path.display()
+                        ),
+                    ));
                 }
             }
+            crate::fs_audit::crash_point("compact:after_first_remove")?;
         }
 
-        // Reset the WAL: the merged SSTable now owns every live value.
+        // Step 5. The merged SSTable now owns every live value.
+        crate::fs_audit::crash_point("compact:before_wal_truncate")?;
         wal.flush()?;
         wal.truncate()?;
-
-        // Clear the memtable — everything landed in the merged SSTable
-        // (or was tombstoned away).
         self.memtable.write().clear();
+        drop(sstables);
         Ok(())
     }
 
@@ -658,7 +715,7 @@ impl BlobStorage {
         // SSTable fallback. Snapshot the list (cheap: `Vec<Arc<...>>`)
         // so we don't hold the read lock while probing each file.
         #[cfg(feature = "fs")]
-        for sst in &self.sstables.read().clone() {
+        for sst in self.sstables.read().iter() {
             if let Some(v) = sst.get(key) {
                 return match v {
                     BlobValue::Tombstone => Ok(None),
@@ -703,8 +760,14 @@ impl BlobStorage {
         //
         // Wrapping key and priority in `Reverse` turns the max-heap
         // into a min-heap on `(key, priority)`.
+        //
+        // The `SSTable` list's read lock is held for the whole scan:
+        // mappings must not be used outside it (see the `sstables`
+        // field), and holding it across the memtable read below keeps
+        // the two views from a single moment (compaction swaps the list
+        // and clears the memtable under the list's write lock).
         #[cfg(feature = "fs")]
-        let sstables: Vec<Arc<LoadedSstable>> = self.sstables.read().clone();
+        let sstables = self.sstables.read();
         #[cfg(feature = "fs")]
         let source_count = 1 + sstables.len();
         #[cfg(not(feature = "fs"))]
@@ -730,7 +793,7 @@ impl BlobStorage {
             });
         }
         #[cfg(feature = "fs")]
-        for sst in &sstables {
+        for sst in sstables.iter() {
             let sst_entries: Vec<(Vec<u8>, BlobValue)> = sst
                 .iter_prefix(prefix)
                 .map(|(k, v)| (k.to_vec(), v))
@@ -852,7 +915,9 @@ impl BlobStorage {
         // do the merge without decompressing.
         let mut seen: BTreeMap<Vec<u8>, bool> = BTreeMap::new(); // key → is_live
         #[cfg(feature = "fs")]
-        for sst in self.sstables.read().clone().iter().rev() {
+        let sstables = self.sstables.read();
+        #[cfg(feature = "fs")]
+        for sst in sstables.iter().rev() {
             for (key, value) in sst.iter() {
                 seen.insert(key.to_vec(), !matches!(value, BlobValue::Tombstone));
             }
@@ -871,6 +936,20 @@ impl BlobStorage {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Map every `SSTable` in `dir`, newest first (read-path priority).
+#[cfg(feature = "fs")]
+fn load_sstables_newest_first(dir: &Path) -> io::Result<Vec<LoadedSstable>> {
+    // `enumerate_sstables` returns oldest → newest by sequence.
+    let mut out = Vec::new();
+    for sst_path in enumerate_sstables(dir)? {
+        if let Some(sst) = LoadedSstable::open_mmap(&sst_path)? {
+            out.push(sst);
+        }
+    }
+    out.reverse();
+    Ok(out)
 }
 
 /// Derive the `SSTable` path from the WAL path.

@@ -198,6 +198,9 @@ pub mod checksum;
 pub mod compaction;
 #[cfg(feature = "crypto")]
 pub mod crypto_bridge;
+#[cfg(feature = "fs")]
+#[doc(hidden)]
+pub mod fs_audit;
 pub mod memtable;
 pub mod model;
 pub mod query_engine;

@@ -141,6 +141,13 @@ pub struct BlobWal {
     sync_policy: SyncPolicy,
 }
 
+/// Whether the WAL handle is opened with the append flag. It is not:
+/// Windows maps an append handle to `FILE_APPEND_DATA` without
+/// `FILE_WRITE_DATA`, which makes [`BlobWal::truncate`] fail with
+/// `ERROR_ACCESS_DENIED`. Kept as a named constant so the open-file
+/// audit checks the same value the open call uses.
+const OPEN_WITH_APPEND: bool = false;
+
 /// Interior state guarded by the outer `Mutex`. Kept separate so a
 /// single `lock()` yields access to both the file handle and the
 /// batched-write counter.
@@ -158,9 +165,10 @@ impl BlobWal {
     /// [`SyncPolicy::EveryWrite`].
     ///
     /// Missing parent directories are created. The file is opened in
-    /// read+append mode so replay reads and mutation writes share
-    /// a single handle; every append seeks to end implicitly via the
-    /// `append` flag. An exclusive `fs2` advisory lock is taken so a
+    /// read + write mode so replay reads, appends, and truncation share
+    /// a single handle; every append seeks to the end explicitly (the
+    /// handle deliberately lacks the `append` flag so that truncation
+    /// also works on Windows). An exclusive `fs2` advisory lock is taken so a
     /// concurrent open sees a `WouldBlock` error.
     ///
     /// # Errors
@@ -179,10 +187,16 @@ impl BlobWal {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Opened read + write, *not* append: on Windows an append handle
+        // carries FILE_APPEND_DATA without FILE_WRITE_DATA, and
+        // `truncate` (`set_len`) then fails with ERROR_ACCESS_DENIED.
+        // Every write seeks to the end first instead (see `write_frame`).
         let file = OpenOptions::new()
             .read(true)
+            .write(true)
+            .append(OPEN_WITH_APPEND)
             .create(true)
-            .append(true)
+            .truncate(false)
             .open(&path)?;
         // Exclusive advisory lock. If another process (or the same
         // process) already holds the lock we bail with a descriptive
@@ -206,6 +220,7 @@ impl BlobWal {
                 ),
             )
         })?;
+        crate::fs_audit::note_open(&path);
         Ok(Self {
             path,
             state: Mutex::new(WalState {
@@ -268,6 +283,7 @@ impl BlobWal {
     /// Propagates any `seek` / `set_len` / `sync_all` error.
     pub fn truncate(&self) -> io::Result<()> {
         let mut state = self.state.lock();
+        crate::fs_audit::check_set_len(&self.path, OPEN_WITH_APPEND);
         state.file.seek(SeekFrom::Start(0))?;
         state.file.set_len(0)?;
         // sync_all here so the truncation reaches disk before we
@@ -315,6 +331,12 @@ impl BlobWal {
 
     fn write_frame(&self, frame: &[u8]) -> io::Result<()> {
         let mut state = self.state.lock();
+        // The handle is not opened in append mode (see `open_with_policy`),
+        // and `replay` leaves the cursor wherever it stopped reading, so
+        // position at the end explicitly. The mutex makes seek + write
+        // one step with respect to other writers in this process, and
+        // the exclusive file lock rules out writers in other processes.
+        state.file.seek(SeekFrom::End(0))?;
         state.file.write_all(frame)?;
         state.pending_ops += 1;
         match self.sync_policy {
@@ -346,8 +368,8 @@ impl BlobWal {
     /// propagates.
     pub fn replay(&self) -> io::Result<Vec<WalRecord>> {
         let mut state = self.state.lock();
-        // Seek to start; the append handle keeps subsequent writes going
-        // to the end regardless of where we leave the read cursor.
+        // Seek to start; `write_frame` seeks back to the end before each
+        // write, so wherever we leave the read cursor does not matter.
         state.file.seek(SeekFrom::Start(0))?;
         let mut reader = BufReader::new(&state.file);
 
@@ -371,6 +393,7 @@ impl Drop for BlobWal {
             let _ = state.file.sync_data();
         }
         let _ = FileExt::unlock(&state.file);
+        crate::fs_audit::note_close(&self.path);
     }
 }
 

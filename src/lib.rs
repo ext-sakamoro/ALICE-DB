@@ -28,25 +28,30 @@
 //!
 //! # Quick Start (Rust)
 //!
-//! ```rust,ignore
-//! use alice_db::AliceDB;
+//! ```rust
+//! use alice_db::{Aggregation, AliceDB, StorageConfig};
 //!
-//! let db = AliceDB::open("./my_data")?;
+//! // `AliceDB::open("./my_data")` keeps the same data in files (`fs` feature)
+//! let db = AliceDB::in_memory(StorageConfig::default())?;
 //!
-//! // Insert time-series data
-//! for i in 0..1000 {
-//!     db.put(i, (i as f32).sin())?;
+//! // y = 0.5 t + 10 at t = 0..1000
+//! for t in 0..1000_i64 {
+//!     db.put(t, 0.5 * t as f32 + 10.0)?;
 //! }
+//! db.flush()?; // fit a model to the buffered points and store it as a segment
 //!
-//! // Query (computes sin(500) from model, no disk read!)
-//! let value = db.get(500)?;
+//! // point query, computed from the stored model
+//! let v = db.get(500)?.expect("t = 500 was stored");
+//! assert!((v - 260.0).abs() < 1e-2);
 //!
-//! // Range query with aggregation
-//! let avg = db.query()
-//!     .range(0, 999)
-//!     .aggregate(Aggregation::Avg)
-//!     .execute()?;
+//! // range aggregation
+//! let avg = db.aggregate(0, 999, Aggregation::Avg)?;
+//! assert!((avg - 259.75).abs() < 1e-2);
+//! # Ok::<(), std::io::Error>(())
 //! ```
+//!
+//! Fitted laws with their evidence, valid range and verdict history are kept
+//! with [`law_store`] (`put_law` / `evaluate_law` / `ingest_evidence`).
 //!
 //! # Quick Start — Blob key-value store (v0.2.0-alpha.3)
 //!
@@ -167,7 +172,7 @@
 //!
 //! # License
 //!
-//! MIT License
+//! AGPL-3.0-or-later OR LicenseRef-Commercial
 //!
 //! # Author
 //!
@@ -201,6 +206,7 @@ pub mod crypto_bridge;
 #[cfg(feature = "fs")]
 #[doc(hidden)]
 pub mod fs_audit;
+pub mod law_store;
 pub mod memtable;
 pub mod model;
 pub mod query_engine;
@@ -268,6 +274,8 @@ pub struct AliceDB {
     /// time-series engine. Backed by [`blob::BlobStorage`] (`Arc`-shared
     /// internally so clones are cheap and safe to hand across threads).
     blob: blob::BlobStorage,
+    /// Serialises law store writes (version / verdict numbering, `law_store`)
+    law_lock: parking_lot::Mutex<()>,
 }
 
 impl AliceDB {
@@ -330,7 +338,11 @@ impl AliceDB {
         let blob_wal_path = path.as_ref().join("blob.wal");
         let engine = StorageEngine::open(path)?;
         let blob = blob::BlobStorage::open_with_config(blob_wal_path, blob_config)?;
-        Ok(Self { engine, blob })
+        Ok(Self {
+            engine,
+            blob,
+            law_lock: parking_lot::Mutex::new(()),
+        })
     }
 
     /// Open with custom configuration.
@@ -362,7 +374,11 @@ impl AliceDB {
         let blob_wal_path = config.data_dir.join("blob.wal");
         let engine = StorageEngine::new(config)?;
         let blob = blob::BlobStorage::open_with_policy(blob_wal_path, blob_sync_policy)?;
-        Ok(Self { engine, blob })
+        Ok(Self {
+            engine,
+            blob,
+            law_lock: parking_lot::Mutex::new(()),
+        })
     }
 
     /// Create an empty database held entirely in process memory.
@@ -381,6 +397,7 @@ impl AliceDB {
         Ok(Self {
             engine: StorageEngine::in_memory(config)?,
             blob: blob::BlobStorage::new(),
+            law_lock: parking_lot::Mutex::new(()),
         })
     }
 
@@ -404,7 +421,11 @@ impl AliceDB {
         for (key, value) in &blobs {
             blob.put(key, value)?;
         }
-        Ok(Self { engine, blob })
+        Ok(Self {
+            engine,
+            blob,
+            law_lock: parking_lot::Mutex::new(()),
+        })
     }
 
     /// Serialize the whole database (time-series segments and live blobs)

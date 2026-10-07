@@ -14,11 +14,9 @@ arbitrary = { version = "1", features = ["derive"] }
 [dependencies.alice-db]
 path = ".."
 
-# cargo-machete false-positive 予防 (canonical [[reference_alice_ci_canonical_template]] 罠 #3)
-# libfuzzer-sys は fuzz_target! macro 内でのみ参照されるため machete が誤検知
-# alice-db は現状 public API 未 export だが、fuzz scaffold として path dep を保持
+# cargo-machete: libfuzzer-sys is referenced only inside the fuzz_target! macro
 [package.metadata.cargo-machete]
-ignored = ["libfuzzer-sys", "alice-db"]
+ignored = ["libfuzzer-sys"]
 
 # 攻撃者制御 byte 列を query 文字列として parse する経路 (public API 復活後に本体呼び出しへ差替え)
 [[bin]]
@@ -36,6 +34,12 @@ doc = false
 [[bin]]
 name = "fuzz_index_lookup"
 path = "fuzz_targets/fuzz_index_lookup.rs"
+doc = false
+
+# arbitrary bytes as a stored law record (law_store::decode_law_record)
+[[bin]]
+name = "fuzz_law_record"
+path = "fuzz_targets/fuzz_law_record.rs"
 doc = false
 
 [workspace]

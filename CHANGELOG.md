@@ -4,6 +4,18 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `law_store` module: stores `SignalLaw` (ALICE-Zip `law`, re-exported) under a name in either backend. `AliceDB::put_law` (next version), `get_law` / `get_law_version` (restored through `SignalLaw::from_parts`, which measures the residual again), `evaluate_law` (an `x` outside the valid range is refused, no extrapolation), `ingest_evidence` (judges new points, records the verdict with evidence count and RMS, and stores a parameter update as a new version while the judged version stays readable), `law_history`, `law_versions`, `law_names`. Records are checksummed blobs under the reserved key prefix `"\0alice-law\0"`; the layout is documented in the module, and damaged records, records copied under another key and records `from_parts` refuses are returned as errors (`LawStoreError`)
+- `tests/law_store.rs`: 28 oracles with closed-form expectations (round trip in memory, through `to_bytes`, across close / reopen and blob compaction on the file backend, bit-identical parts; out-of-range refusal; each of the six verdicts recorded in order; versions kept after a parameter update; forged and damaged records; invalid names and policies; concurrent ingests)
+- `examples/law_store.rs`, fuzz target `fuzz_law_record` (decoding arbitrary bytes as a law record)
+- `README_JP.md` (renamed from `README.ja.md`), `scripts/docs_lint.py` + `scripts/test_docs_lint.py` (public-document vocabulary, CHANGELOG structure, README example = crate doctest), `scripts/stub_guard.sh`
+
+### Changed
+- alice-zip 0.4 → 0.5.1 (no source change was needed; test results unchanged)
+- The crate-level Quick Start is a compiled doctest on the memory backend (it was `ignore`d), and the crate doc states the dual license
+- CI: test matrix adds `ubuntu-24.04-arm`; the law store oracles run on the memory backend alone; the example runs and benches compile on every OS; rustdoc also checks default features; docs lint on Linux / macOS / Windows. `scripts/preflight.sh` runs the same commands (`--quick` includes `cargo test --lib`; `cargo audit` keeps its database under the build directory)
+- README rewritten from the source: what it is not for, installation with `cargo add`, the law store, storage backends; performance and compression figures without measurement conditions were removed
+
 ## [0.3.0-beta.1] - 2026-10-06
 
 ### Added
@@ -29,16 +41,16 @@ All notable changes to ALICE-DB will be documented in this file.
 ## [0.2.0-beta.3] - 2026-09-17
 
 ### Added
-- `tests/analytic_oracle.rs` — 閉形式 / 公開 test vector との突合 oracle 10 本 (CLAUDE.md § 解析解突合テスト規律、2026-09-17): model 評価 (polynomial / linear / constant / sine / Fourier) の閉形式、`query_range` ≡ `query_point` ≡ `generate_all`、residual / RawLzma round-trip、**`lossless: true` の put → get bit 一致** (mmap / 非 mmap × polynomial / Fourier / raw)、既定 (lossy) fit の文書化閾値、aggregate 閉形式、CRC-32 check value + XXH64 test vector、Bloom filter の m / k 閉形式 + false negative 0 + FP ≤ 2p 不規則 timestamp の lossless は `#[ignore]` (下記)
+- `tests/analytic_oracle.rs` — 閉形式 / 公開 test vector との突合 oracle 10 本: model 評価 (polynomial / linear / constant / sine / Fourier) の閉形式、`query_range` ≡ `query_point` ≡ `generate_all`、residual / RawLzma round-trip、**`lossless: true` の put → get bit 一致** (mmap / 非 mmap × polynomial / Fourier / raw)、既定 (lossy) fit の文書化閾値、aggregate 閉形式、CRC-32 check value + XXH64 test vector、Bloom filter の m / k 閉形式 + false negative 0 + FP ≤ 2p 不規則 timestamp の lossless は `#[ignore]` (下記)
 - `segment::ResidualKind` / `residual_kind` / `apply_residual` / `compress_residual_xor` — XOR residual format (magic 0x02 LZMA / 0x03 raw)
 
 ### Fixed (oracle 先行 red 4 → 修正)
 - **model 評価の法則が 4 箇所で手コピーされ、fitter (alice-zip) と食い違っていた**: 点 / 範囲 / archived 点 / archived 範囲の評価器が polynomial を `x = i/(n−1)` で評価 (係数は `fit_polynomial` の `x = i` 規約)、Fourier を raw DFT magnitude のまま加算 (`w·mag/n` 抜け = **n/2 倍**、1000 sample の sine が relative MSE 2.5e5 で復元)、sine の引数が `i/(n−1)` (generator は `i/n`) — `generate_all` (alice-zip 委譲) だけが正しく、lossless mode は同じ誤値に対する residual で隠していた → `segment::law` に 1 model 1 関数 (sample index `i` 引数) を置き 5 経路全部がそれを呼ぶ、`ModelType` doc に規約明記、旧 loop 群 (約 700 行) 削除 既存 `test_polynomial_segment` は x ∈ [0,1] 規約を pin していたので法則値 (i = 50 → 2500) に更新
 - **`lossless: true` が bit 一致でなかった**: residual を `original − model` の f32 加算で持っていたため `model + residual` が丸める (−1.0500002 が −1.0500007) → residual を bit pattern XOR (`original ^ model`) に変更、既存 blob (additive、magic 0x00 / 0x01 / legacy) は読める
 
-### Known limitation (Backlog 起票、format 変更のため別 y/n)
+### Known limitation (format 変更が要るため未対応)
 - `DataSegment` は timestamp を保持せず uniform spacing を仮定する: gap のある系列 (sensor drop-out) では residual index が別点に当たり lossless でも値が変わる、`scan` は存在しない timestamp を返す (`lossless_mode_is_exact_for_irregular_timestamps_too` が `#[ignore]` で記録)
-- 既定 `FitConfig` は lossy (`lossless: false`) で、sine 系列は relative MSE < 0.1 (RMS で σ の 32 %) まで受容する — 文書化閾値どおりだが DB の既定として妥当かは user 判断
+- 既定 `FitConfig` は lossy (`lossless: false`) で、sine 系列は relative MSE < 0.1 (RMS で σ の 32 %) まで受容する — 文書化閾値どおりだが DB の既定として妥当かは未決定
 
 ### Fixed
 - **FFI 14 関数の panic 隔離** (`src/ffi.rs`): `const fn` の `alice_db_version` を除く全 `extern "C"` を `ffi_guard(sentinel, || ..)` で包み、panic は host を落とさず sentinel (`DbResult::Unknown` / `PointResult { found: false }` / zero `DbStats` / null / −1 / false) + `alice_db_last_error()` (新規、`alice_db_clear_last_error` / `alice_db_free_error_string` も) で通知 `[profile.release] panic = "abort"` を撤去 (abort では `catch_unwind` が機能しない) release profile で guard test 通過

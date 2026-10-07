@@ -1,370 +1,217 @@
 # ALICE-DB
 
-**Model-Based LSM-Tree Database** powered by [ALICE-Zip](https://github.com/ext-sakamoro/ALICE-Zip) procedural generation.
+[日本語](README_JP.md)
 
-<p align="center">
-  <img src="assets/concept.png" alt="ALICE-DB Concept" width="600">
-</p>
+A model-based LSM-tree database for numeric time series. When the memtable is
+flushed, ALICE-DB fits candidate models (polynomial, Fourier, sine, Perlin
+noise, constant, linear, with an LZMA fallback) to the buffered points through
+[ALICE-Zip](https://github.com/ext-sakamoro/ALICE-Zip) and stores the model that
+describes them instead of the samples; a point or range query evaluates the
+model. Alongside the time series it has a byte-keyed blob store, and a law store
+that keeps fitted laws together with their evidence, valid range and the
+verdicts of later evidence.
 
-## The Revolution: "Query the Function"
+Storage is either a directory (WAL, mmap'd segments, advisory locks; `fs`
+feature, on by default) or process memory (`AliceDB::in_memory`, which also
+builds for `wasm32-unknown-unknown`). The API is the same for both.
 
-**Traditional databases store raw data:**
+License: AGPL-3.0-or-later OR LicenseRef-Commercial
+
+## What it is not for
+
+- **Exact storage by default.** The default `FitConfig` is lossy: a model is
+  accepted when its error is under the documented threshold of its kind (for
+  example relative MSE < 0.1 for a single sine). Set `lossless: true` in
+  `FitConfig` to store an XOR residual and read back the exact bits.
+- **Irregular timestamps.** A segment assumes uniform spacing between its first
+  and last timestamp; series with gaps are not reproduced point for point.
+- **General SQL or document workloads.** Values are `f32` per `i64`
+  timestamp, plus opaque blobs and laws.
+
+## Contents
+
+- [Installation](#installation)
+- [Example](#example)
+- [Laws: evidence, valid range and verdicts](#laws-evidence-valid-range-and-verdicts)
+- [Storage backends](#storage-backends)
+- [Features](#features)
+- [Model types](#model-types)
+- [Python](#python)
+- [Minimum supported Rust version](#minimum-supported-rust-version)
+- [Building and testing](#building-and-testing)
+- [Related crates](#related-crates)
+- [License](#license)
+
+## Installation
+
+```sh
+cargo add alice-db
+# browser / no filesystem: memory backend only
+cargo add alice-db --no-default-features
 ```
-1000 sensor readings → 4KB on disk
-Query: Read 4KB from disk → Decompress → Return
+
+## Example
+
+```rust
+use alice_db::{Aggregation, AliceDB, StorageConfig};
+
+// `AliceDB::open("./my_data")` keeps the same data in files (`fs` feature)
+let db = AliceDB::in_memory(StorageConfig::default())?;
+
+// y = 0.5 t + 10 at t = 0..1000
+for t in 0..1000_i64 {
+    db.put(t, 0.5 * t as f32 + 10.0)?;
+}
+db.flush()?; // fit a model to the buffered points and store it as a segment
+
+// point query, computed from the stored model
+let v = db.get(500)?.expect("t = 500 was stored");
+assert!((v - 260.0).abs() < 1e-2);
+
+// range aggregation
+let avg = db.aggregate(0, 999, Aggregation::Avg)?;
+assert!((avg - 259.75).abs() < 1e-2);
+# Ok::<(), std::io::Error>(())
 ```
 
-**ALICE-DB stores the mathematical model that generates the data:**
+## Laws: evidence, valid range and verdicts
+
+`alice_db::law_store` stores `SignalLaw` values from ALICE-Zip (re-exported in
+the module): `y = f(x)` as a polynomial, together with the points it was fitted
+to, the residual measured over them, the `x` range they cover, provenance and
+reference values.
+
+| Method | Effect |
+|--------|--------|
+| `put_law(name, &law)` | stores the law as the next version of `name` |
+| `get_law(name)` / `get_law_version(name, v)` | restores a version; the residual is measured again from the stored evidence |
+| `evaluate_law(name, x)` | `f(x)` of the latest version; an `x` outside the valid range is refused (`LawError::OutOfRange`), never extrapolated |
+| `ingest_evidence(name, points, &policy)` | judges new points (no evidence / out of range / supports / parameter update / residual grew / breaks), records the verdict, and stores a parameter update as a new version while older versions stay readable |
+| `law_history(name)` / `law_versions(name)` / `law_names()` | recorded verdicts in order (with evidence count and RMS), stored versions, stored names |
+
+```rust
+use alice_db::law_store::{IngestPolicy, Provenance, SignalLaw, Verdict};
+use alice_db::{AliceDB, StorageConfig};
+
+let db = AliceDB::in_memory(StorageConfig::default())?;
+// y = 1 + 2x measured at x = 0..=4
+let pts: Vec<(f64, f64)> = (0..5).map(|i| (f64::from(i), 1.0 + 2.0 * f64::from(i))).collect();
+let law = SignalLaw::fit_polynomial(&pts, 1, Provenance::new("run 1", "least squares"))?;
+db.put_law("line", &law)?;
+
+assert!((db.evaluate_law("line", 2.5)? - 6.0).abs() < 1e-12);
+assert!(db.evaluate_law("line", 9.0).is_err()); // outside [0, 4]
+
+let policy = IngestPolicy { abs_tolerance: 0.01, break_factor: 4.0 };
+let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy)?;
+assert!(matches!(v, Verdict::Supports { .. }));
+assert_eq!(db.law_history("line")?.len(), 1);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
-1000 sensor readings (linear trend) → "y = 0.5x + 10" → 16 bytes on disk
-Query: Compute f(500) = 0.5 * 500 + 10 = 260.0 → Return
-```
 
-This is based on Kolmogorov complexity: *the shortest program that produces the output is the optimal representation.*
+Laws are records in the blob store under the reserved key prefix
+`"\0alice-law\0"`, so the file backend writes them to the blob WAL / `SSTable`s
+and `to_bytes` carries them. Each record is checksummed and names its own key; a
+damaged record, one copied under another key, or one that `SignalLaw::from_parts`
+refuses (for example evidence outside the stored range) is returned as an error.
+The byte layout is documented in the `law_store` module.
+`cargo run --example law_store` runs the whole cycle on both backends.
 
-## Key Features
+## Storage backends
 
-| Feature | Description |
-|---------|-------------|
-| **Extreme Compression** | 50-1000x for structured time-series data |
-| **O(1) Point Queries** | Compute f(x) instead of disk read |
-| **Automatic Model Selection** | Polynomial, Fourier, Perlin, LZMA fallback |
-| **LSM-Tree Architecture** | Write-optimized with model-based SSTables |
-| **Python + Rust** | High-level Python API, bare-metal Rust core |
+| Backend | Constructor | Notes |
+|---------|-------------|-------|
+| Files (`fs`) | `AliceDB::open(path)`, `AliceDB::with_config(config)` | segment files + index, time-series WAL, blob WAL and `SSTable`s, mmap'd reads, exclusive advisory lock on the blob WAL |
+| Memory | `AliceDB::in_memory(config)`, `AliceDB::from_bytes(config, &bytes)` | no filesystem; `to_bytes` exports a whole database (either backend) as one checksummed buffer |
 
-## Quick Start
+A given sequence of writes reads back bit-identically from either backend
+(`tests/storage_backend_parity.rs`).
 
-### Python
+## Features
 
-```bash
-pip install alice-db
-# or build from source:
-cd ALICE-DB && pip install maturin && maturin develop --release
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `fs` | yes | File storage (`open` / `with_config`: WAL, mmap, advisory locks). Without it only the memory backend is available |
+| `ffi` | no | C / C++ / C# FFI (implies `fs`), headers in `bindings/` |
+| `python` | no | Python bindings (PyO3 + NumPy, implies `fs`) |
+| `analytics` | no | ALICE-Analytics bridge: aggregated metrics to time series (implies `fs`) |
+| `crypto` | no | ALICE-Crypto encryption at rest (`crypto_bridge::EncryptedDB`, implies `fs`) |
+| `sdf` | no | SDF spatial data storage with Morton-code indexing (implies `fs`) |
+
+`analytics` and `crypto` depend on the sibling repositories `../ALICE-Analytics`
+and `../ALICE-Crypto`.
+
+## Model types
+
+| Model | Fits |
+|-------|------|
+| `Constant` | flat segments |
+| `Linear` | ramps |
+| `Polynomial` | curves, drift |
+| `Fourier` | periodic signals |
+| `SineWave` / `MultiSine` | oscillations |
+| `PerlinNoise` | noise-like texture |
+| `RawLzma` | fallback when no model is accepted |
+
+The model is chosen per segment by fit quality and size. Compression and query
+speed depend on the data; `cargo bench` measures them on your hardware.
+
+## Python
+
+```sh
+pip install maturin
+maturin develop --release --features python
 ```
 
 ```python
 import alice_db
-import numpy as np
 
-# Open database
 db = alice_db.open("./my_timeseries")
-
-# Insert time-series data
-for i in range(10000):
-    db.put(timestamp=i, value=np.sin(i * 0.01) * 100)
-
-# Or batch insert with numpy (zero-copy)
-timestamps = np.arange(10000, dtype=np.int64)
-values = np.sin(timestamps * 0.01).astype(np.float32) * 100
-db.put_numpy(timestamps, values)
-
-# Query - this computes sin(5000 * 0.01) from the model, no disk read!
-value = db.get(5000)
-
-# Range query
-points = db.scan(0, 9999)
-
-# Aggregation
-avg = db.aggregate(0, 9999, "avg")
-total = db.aggregate(0, 9999, "sum")
-
-# Downsampling (GROUP BY time interval)
-hourly = db.downsample(0, 9999, interval=3600, agg="avg")
-
-# Check compression stats
-stats = db.stats()
-print(f"Compression: {stats.average_compression_ratio:.1f}x")
-print(f"Models used: {stats.model_distribution}")
-
+db.put_batch([(i, i * 0.5) for i in range(1000)])
+print(db.get(100), db.aggregate(0, 999, "avg"))
 db.close()
 ```
 
-### Rust
+## Minimum supported Rust version
 
-```rust
-use alice_db::{AliceDB, Aggregation};
+Rust 1.87 (`rust-version` in `Cargo.toml`), checked in CI for the library with
+default features, the native feature set and no default features. 1.86 is
+refused by dependencies that declare 1.87. Development and CI use the toolchain
+pinned in `rust-toolchain.toml`.
 
-fn main() -> std::io::Result<()> {
-    let db = AliceDB::open("./my_timeseries")?;
+## Building and testing
 
-    // Insert
-    for i in 0..10000 {
-        let value = (i as f32 * 0.01).sin() * 100.0;
-        db.put(i, value)?;
-    }
-
-    // Query (computes from model!)
-    if let Some(value) = db.get(5000)? {
-        println!("Value at 5000: {}", value);
-    }
-
-    // Aggregation
-    let avg = db.aggregate(0, 9999, Aggregation::Avg)?;
-    println!("Average: {}", avg);
-
-    // Stats
-    let stats = db.stats();
-    println!("Compression: {:.1}x", stats.average_compression_ratio);
-
-    db.close()
-}
-```
-
-### In memory / WebAssembly
-
-`AliceDB::in_memory` keeps the same bytes the file backend would write, but in
-process memory, so it needs no filesystem and builds for
-`wasm32-unknown-unknown`. The write / read API is the same, and one sequence of
-writes reads back bit-identically from either backend. `to_bytes` /
-`from_bytes` move a whole database in and out as one checksummed buffer (store
-it wherever you like, for example IndexedDB in a browser).
-
-```toml
-# browser / no filesystem
-alice-db = { version = "0.3.0-beta.1", default-features = false }
-```
-
-```rust
-use alice_db::{AliceDB, StorageConfig};
-
-fn main() -> std::io::Result<()> {
-    let db = AliceDB::in_memory(StorageConfig::default())?;
-    db.put_batch(&[(0, 1.0), (1, 2.0), (2, 3.0)])?;
-
-    let bytes = db.to_bytes()?; // flushes, then serializes segments + blobs
-    let restored = AliceDB::from_bytes(StorageConfig::default(), &bytes)?;
-    assert_eq!(restored.get(1)?, db.get(1)?);
-    Ok(())
-}
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                       ALICE-DB                          │
-├─────────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌─────────────┐    ┌────────────┐  │
-│  │  MemTable   │───▶│   Fitter    │───▶│  Segment   │  │
-│  │ (BTreeMap)  │    │ Competition │    │  (Model)   │  │
-│  └─────────────┘    └─────────────┘    └────────────┘  │
-│         │                  │                  │        │
-│         │         Polynomial, Fourier,        │        │
-│         │         Sine, Perlin, LZMA          │        │
-│         ▼                  ▼                  ▼        │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │                 Storage Engine                   │   │
-│  │  • Segment Index (time → model)                 │   │
-│  │  • WAL (durability)                             │   │
-│  │  • Compaction                                   │   │
-│  └─────────────────────────────────────────────────┘   │
-│                          │                             │
-│                          ▼                             │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │                   libalice                       │   │
-│  │  • Polynomial fitting (Horner's method)         │   │
-│  │  • Fourier analysis (FFT)                       │   │
-│  │  • Perlin noise generation                      │   │
-│  │  • LZMA compression (fallback)                  │   │
-│  └─────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-```
-
-## Model Types
-
-ALICE-DB automatically selects the best model for your data:
-
-| Model | Use Case | Compression |
-|-------|----------|-------------|
-| **Constant** | Flat lines | ∞ (8 bytes total) |
-| **Linear** | Trends, ramps | ~250x |
-| **Polynomial** | Curves, drift | ~50-200x |
-| **Fourier** | Periodic signals | ~20-100x |
-| **SineWave** | Simple oscillations | ~250x |
-| **Perlin** | Noise patterns | ~40x |
-| **RawLZMA** | Random data (fallback) | ~2-5x |
-
-## Performance
-
-### Write Performance
-
-| Operation | Throughput |
-|-----------|------------|
-| Single insert | ~500K ops/sec |
-| Batch insert | ~2M points/sec |
-| Flush (model fitting) | ~1ms per 1000 points |
-
-### Query Performance
-
-| Operation | Latency |
-|-----------|---------|
-| Point query | **~120ns** (compute f(x)) |
-| Range query (1000 points) | ~5µs |
-| Aggregation (10K points) | ~50µs |
-
-### Compression Ratios
-
-| Data Type | Compression |
-|-----------|-------------|
-| Linear sensor data | **100-500x** |
-| Sine wave (temperature) | **50-200x** |
-| Polynomial trend | **50-150x** |
-| Random noise | 2-5x (LZMA fallback) |
-
-## Cross-Crate Bridges
-
-### Crypto Bridge (feature: `crypto`)
-
-Encryption at rest for ALICE-DB via [ALICE-Crypto](../ALICE-Crypto). Wraps the `AliceDB` engine with XChaCha20-Poly1305 authenticated encryption, keeping timestamps in cleartext for indexing while encrypting stored values.
-
-```toml
-[dependencies]
-alice-db = { path = "../ALICE-DB", features = ["crypto"] }
-```
-
-```rust
-use alice_db::crypto_bridge::{EncryptedDB, derive_db_key, seal_blob, open_blob};
-
-// Derive key from passphrase
-let key = derive_db_key(b"my-passphrase");
-
-// Open encrypted database
-let db = EncryptedDB::open("./encrypted_data", key)?;
-db.put(1000, 42.0)?;
-db.flush()?;
-
-// Encrypt/decrypt arbitrary blobs
-let sealed = seal_blob(&key, b"sensitive record")?;
-let plain = open_blob(&key, &sealed)?;
-```
-
-## Building from Source
-
-### Requirements
-
-- Rust 1.75+
-- Python 3.9+ (for Python bindings)
-- maturin (for Python package)
-
-### Build
-
-```bash
-# Clone
-git clone https://github.com/ext-sakamoro/ALICE-DB.git
-cd ALICE-DB
-
-# Build Rust library
-cargo build --release
-
-# Build Python package
-pip install maturin
-maturin develop --release
-
-# Run tests
-cargo test
-pytest tests/
-
-# Run benchmarks
+```sh
+cargo test                                   # file backend (default)
+cargo test --no-default-features             # memory backend only
+cargo test --features ffi,sdf                # native feature set
+cargo run --example law_store
+cargo clippy --all-targets -- -W clippy::pedantic -D warnings
 cargo bench
+scripts/preflight.sh            # every CI step with the same arguments
+scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `cargo test --lib`
 ```
 
-## ALICE-Analytics Integration (Data Pipeline)
+## Related crates
 
-Enable with `--features analytics` to bridge ALICE-Analytics streaming aggregation with ALICE-DB persistent storage.
-
-```toml
-[dependencies]
-alice-db = { path = "../ALICE-DB", features = ["analytics"] }
-```
-
-### Architecture
-
-```
-Sensor/Event ──► ALICE-Queue (SPSC + WAL)
-                       ↓
-                 ALICE-Analytics (HLL++, DDSketch streaming)
-                       ↓  flush_metrics_to_db
-                 ALICE-DB (Model-Based LSM-Tree)
-                       ↓
-                 Long-term trend storage + O(1) queries
-```
-
-### Usage
-
-```rust
-use alice_db::AnalyticsSink;
-use alice_analytics::{MetricEvent, FnvHasher};
-
-// Create combined analytics + DB sink
-let mut sink = AnalyticsSink::<128, 512>::open("./metrics", 0.05)?;
-
-// Submit streaming metrics
-let hash = FnvHasher::hash_bytes(b"cpu.usage");
-sink.pipeline.submit(MetricEvent::gauge(hash, 72.5));
-sink.pipeline.submit(MetricEvent::gauge(hash, 75.0));
-
-// Persist aggregated metrics to DB (per-window flush)
-let written = sink.persist(timestamp)?;
-
-// Or persist and reset for next aggregation window
-let written = sink.persist_and_reset(next_timestamp)?;
-```
-
-### Storage Schema
-
-Each metric slot produces up to 6 entries per flush, using a packed key:
-
-| Variant | Value | Description |
-|---------|-------|-------------|
-| 0 | counter | Aggregated counter |
-| 1 | gauge | Last gauge value |
-| 2 | cardinality | HLL++ unique count |
-| 3 | p50 | DDSketch median |
-| 4 | p90 | DDSketch 90th percentile |
-| 5 | p99 | DDSketch 99th percentile |
-
-### Cargo Features
-
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `fs` | Yes | File storage (`open` / `with_config`: WAL, mmap, advisory locks). Without it only the in-memory backend is available |
-| `ffi` | No | C / C++ / C# FFI (implies `fs`) |
-| `python` | No | Python bindings (PyO3 + NumPy, implies `fs`) |
-| `analytics` | No | ALICE-Analytics bridge (MetricPipeline → DB, implies `fs`) |
-| `crypto` | No | ALICE-Crypto encryption at rest (implies `fs`) |
-| `sdf` | No | SDF spatial data storage (implies `fs`) |
-
-## Related Projects
-
-| Project | Description |
-|---------|-------------|
-| [ALICE-Zip](https://github.com/ext-sakamoro/ALICE-Zip) | Core procedural generation engine |
-| [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | Embedded/IoT model generator (no_std) |
-| [ALICE-Streaming-Protocol](https://github.com/ext-sakamoro/ALICE-Streaming-Protocol) | Ultra-low bandwidth video streaming |
-| [ALICE-Eco-System](https://github.com/ext-sakamoro/ALICE-Eco-System) | Complete Edge-to-Cloud pipeline demo |
-
-All projects share the core philosophy: **encode the generation process, not the data itself**.
+| Crate | Relation |
+|-------|----------|
+| [ALICE-Zip](https://github.com/ext-sakamoro/ALICE-Zip) | model fitting and generators; `law::SignalLaw` |
+| [ALICE-Analytics](https://github.com/ext-sakamoro/ALICE-Analytics) | streaming aggregation (`analytics` feature) |
+| [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | encryption at rest (`crypto` feature) |
+| [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | model fitting on embedded devices |
 
 ## License
 
-`AGPL-3.0-or-later OR LicenseRef-Commercial` — dual-licensed. Pick either.
+`AGPL-3.0-or-later OR LicenseRef-Commercial`: dual-licensed, pick either.
 
 | Option | Terms | Use it when |
 |--------|-------|-------------|
-| **AGPL-3.0-or-later** | [LICENSE-AGPL](LICENSE-AGPL) — free, no reporting obligation | Your project is itself AGPL-compatible open source, or you are only using it internally |
-| **Commercial License** | [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) — paid, removes the copyleft | Closed-source product, proprietary SaaS, edge / firmware distribution, plugin redistribution, or a platform NDA that forbids source disclosure |
+| **AGPL-3.0-or-later** | [LICENSE-AGPL](LICENSE-AGPL), free | your project is itself AGPL-compatible open source, or you use it only internally |
+| **Commercial License** | [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md), paid, removes the copyleft | closed-source products, proprietary SaaS, firmware or plugin distribution |
 
-AGPL is a strong copyleft: a product, firmware image, or service that links
-`alice-db` and is distributed or served to users must be released under the AGPL
-as well. That is intentional for the open ecosystem, and the Commercial
-License exists for the cases where it is not something you are able to do.
+AGPL is a strong copyleft: a product, firmware image or service that links
+`alice-db` and is distributed or served to users must be released under the
+AGPL as well.
 
 Commercial licence enquiries: <contact@extoria.co.jp>
-
-## Author
-
-Moroya Sakamoto
-
----
-
-*"The best compression is to store the recipe, not the meal."*

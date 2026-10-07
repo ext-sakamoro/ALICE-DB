@@ -1,11 +1,9 @@
 //! Fuzz target: 攻撃者制御 byte 列で row serialize / deserialize round-trip が panic せず終端することを検証
 //!
 //! ALICE-DB v0.1.0 では public row codec が未 export のため、本 target は
-//! canonical scaffold として arbitrary 由来の入力を受けて何もせず終端する。
+//! scaffold として arbitrary 由来の入力を受けて何もせず終端する。
 //! row codec 復活後は `alice_db::model::Row::decode(&bytes)` → `encode()` の
 //! round-trip 検査へ差し替える。
-//!
-//! canonical CI template [[reference_alice_ci_canonical_template]] 準拠
 
 #![no_main]
 

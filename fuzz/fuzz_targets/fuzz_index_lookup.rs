@@ -1,10 +1,8 @@
 //! Fuzz target: 攻撃者制御 index key で任意 key lookup が panic せず終端することを検証
 //!
 //! ALICE-DB v0.1.0 では public index API が未 export のため、本 target は
-//! canonical scaffold として byte slice 走査のみを行う。
+//! scaffold として byte slice 走査のみを行う。
 //! index API 復活後は `alice_db::index::lookup(&idx, &key)` 等の呼び出しへ差し替える。
-//!
-//! canonical CI template [[reference_alice_ci_canonical_template]] 準拠
 
 #![no_main]
 

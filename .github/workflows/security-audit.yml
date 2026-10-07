@@ -1,13 +1,12 @@
 name: Security & Hygiene
 
-# canonical CI template: [[reference_alice_ci_canonical_template]]
-# ALICE-SDF v1.7.7 (commit 52d26f9) を base に ALICE-DB 用に調整
+# - RustSec advisories (weekly and on dependency changes)
+# - dependency licenses / sources (cargo-deny)
+# - unused dependencies (cargo-machete)
+# - stubs left in production code (todo! / unimplemented! / panic!(STUB) / dbg!)
+# - the packaged .crate builds on its own (package-integrity)
 #
-# 目的:
-# - RustSec advisory (CVE) の週次検知
-# - dep license 逸脱 (GPL 侵入等) の block
-# - 未使用依存の炙り出し
-# - 仮実装 (todo! / unimplemented! / panic!(STUB) / dbg!) の CI gate
+# scripts/preflight.sh runs the same commands with the same arguments.
 
 on:
   push:
@@ -19,6 +18,7 @@ on:
       - 'deny.toml'
       - '.github/workflows/security-audit.yml'
       - '.github/actions/**'
+      - 'scripts/stub_guard.sh'
   pull_request:
     branches: [main]
     paths:
@@ -28,8 +28,9 @@ on:
       - 'deny.toml'
       - '.github/workflows/security-audit.yml'
       - '.github/actions/**'
+      - 'scripts/stub_guard.sh'
   schedule:
-    # 毎週月曜 09:00 UTC = 18:00 JST
+    # every Monday 09:00 UTC
     - cron: '0 9 * * 1'
   workflow_dispatch:
 
@@ -44,26 +45,26 @@ env:
 
 jobs:
   audit:
-    name: cargo audit (RustSec CVE scan)
+    name: cargo audit (RustSec advisories)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Create ALICE optional bridge stubs
         uses: ./.github/actions/alice-stubs
-
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      # advisory-db は audit 実行時に自動取得
-      # yanked crate は deny、unmaintained warning は個別 ignore で管理
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # The database is kept under target/ so it never collides with the
+      # cargo-deny database in ~/.cargo/advisory-db.
+      # RUSTSEC-2026-0235 (rkyv 0.7 Rc/Arc archive validation): the archived
+      # types of alice-db (SegmentMetadata / DataSegment / ModelType) hold no
+      # Rc / Arc, so the advisory does not apply
       - name: Run cargo audit
         run: |
-          # RUSTSEC-2026-0235 (rkyv 0.7 Rc/Arc archive validation): alice-db の archived 型
-          # (SegmentMetadata / DataSegment / ModelType) に Rc/Arc は無く非該当、0.8 移行は不要
-          cargo audit --deny yanked \
+          cargo audit --db target/advisory-db --deny yanked \
             --ignore RUSTSEC-2026-0235 \
             --ignore RUSTSEC-2025-0141 \
             --ignore RUSTSEC-2024-0436 \
@@ -74,22 +75,19 @@ jobs:
             --ignore RUSTSEC-2024-0320
 
   deny:
-    name: cargo-deny (license + advisories + bans + sources)
+    name: cargo-deny (licenses + advisories + bans + sources)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
       - name: Create ALICE optional bridge stubs
         uses: ./.github/actions/alice-stubs
-
-      # EmbarkStudios/cargo-deny-action@v2 は Docker container 内で稼働し、
-      # /github/workspace のみ mount するため sibling path dep が見えず fail する
-      # 直接 install で回避 (canonical [[reference_alice_ci_canonical_template]] 罠 #1)
+      # cargo-deny-action runs in a container that mounts only the workspace,
+      # so the sibling path dependencies are invisible there; install instead
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny
-
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
       - name: Run cargo deny check all
         run: cargo deny --all-features check all
 
@@ -98,72 +96,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
-
-      # false-positive は Cargo.toml の [package.metadata.cargo-machete] ignored で除外
-      - uses: bnjbvr/cargo-machete@main
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+      - name: Run cargo machete
+        run: cargo machete
 
   stub-guard:
-    name: Stub / mock / dbg guard (grep)
+    name: Stub / dbg guard (grep)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      # CLAUDE.md「仮実装完了偽装の禁止ルール」準拠
-      # canonical 罠 catalog #9-b/#9-c 準拠 (comment 行は除外)
-      - name: Detect panic!(STUB) / dbg!() in src/** (block)
-        run: |
-          set -eo pipefail
-          # Block: panic!(STUB...) (explicit STUB marker) + dbg!() (debug residual)
-          # comment 行 (// or /*) は除外
-          hits=$(grep -rnE 'panic!\([^)]*STUB|dbg!\(' \
-            src/ --include="*.rs" \
-            --exclude-dir=bin \
-            | grep -v ':[[:space:]]*//' \
-            | grep -vE ':[[:space:]]*/\*' \
-            || true)
-          if [ -n "$hits" ]; then
-            echo "❌ panic!(STUB) / dbg!() detected in src/ (production path):"
-            echo "$hits"
-            echo ""
-            echo "Fix: use ? operator, Result<T, E>, or remove the marker."
-            echo "  See CLAUDE.md § 仮実装完了偽装の禁止ルール"
-            exit 1
-          fi
-          echo "✓ No panic!(STUB) / dbg!() in src/ (excluding src/bin/)"
-
-      - name: Detect todo!() / unimplemented!() in src/** (informational)
-        run: |
-          set -eo pipefail
-          # Informational: todo!() / unimplemented!() は legitimate な fail-fast idiom
-          # (CLAUDE.md「仮実装完了偽装の禁止ルール」§「未実装は必ず fail fast」)
-          hits=$(grep -rnE 'todo!\(|unimplemented!\(' \
-            src/ --include="*.rs" \
-            --exclude-dir=bin \
-            | grep -v ':[[:space:]]*//' \
-            | grep -vE ':[[:space:]]*/\*' \
-            || true)
-          if [ -n "$hits" ]; then
-            count=$(echo "$hits" | wc -l | tr -d ' ')
-            echo "::warning::todo!() / unimplemented!() found in src/ ($count markers, informational):"
-            echo "$hits" | head -50
-          else
-            echo "✓ No todo!() / unimplemented!() in src/"
-          fi
-
-      - name: Detect TODO / FIXME / XXX / HACK (informational)
-        run: |
-          set -eo pipefail
-          hits=$(grep -rnE 'TODO|FIXME|XXX|HACK' src/ --include="*.rs" || true)
-          if [ -n "$hits" ]; then
-            echo "::warning::TODO/FIXME/XXX/HACK found in src/ (informational, not blocking):"
-            echo "$hits" | head -50
-          else
-            echo "✓ No TODO/FIXME/XXX/HACK in src/"
-          fi
+      - name: Detect todo! / unimplemented! / panic!(STUB) / dbg! in src/**
+        run: scripts/stub_guard.sh
 
   package-integrity:
     name: Package integrity (publish される .crate が build できるか)
@@ -185,7 +131,6 @@ jobs:
       # 必要 file が漏れる — これらは repo / workspace に file がある限り
       # cargo build も cargo test も clippy も preflight も全部通り、
       # crates.io から取得した利用者だけが compile 不能になる
-      # (2026-09-28 ALICE-LOL lol.gbnf、canonical template 罠 #51)
       - name: cargo package (.crate を作る)
         run: cargo package --no-verify --allow-dirty
 

@@ -3,9 +3,7 @@ description: |
   Create empty stub crates for ALICE-DB sibling path deps
   (alice-analytics / alice-crypto / alice-zip)
 
-  Canonical CI template: [[reference_alice_ci_canonical_template]]
-  license = "MIT OR Apache-2.0" 必須 (canonical 罠 #2)
-  alice-zip は nested path (../ALICE-Zip/libalice) 注意
+  Each stub declares a license so cargo-deny can evaluate it
 
 runs:
   using: composite

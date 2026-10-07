@@ -1,180 +1,130 @@
 #!/usr/bin/env bash
-# scripts/preflight.sh — local reproduction of the CI gates before `git push`.
-# Every command is the one CI runs. A step this file does not cover is a step
-# that can only fail remotely — when a workflow step is added, add it here in
-# the same commit. Run `--quick` before every push.
+# Local reproduction of the CI gates before `git push`: every command below is
+# the one .github/workflows/ci.yml, security-audit.yml or fuzz.yml runs, with the
+# same arguments. A step this script does not cover is a step that can only fail
+# remotely, so a step added to a workflow is added here in the same commit.
 #
-# usage: scripts/preflight.sh [--quick]   (--quick skips the test / bench suites)
+# usage: scripts/preflight.sh [--quick]
+#   (none)   every gate: static checks, clippy, wasm build, docs, MSRV, feature
+#            powerset, fuzz build, the full test suites (every feature set),
+#            the law_store example, benches compile, and the security jobs
+#            (cargo audit / deny / machete)
+#   --quick  static checks, clippy, wasm build, docs and `cargo test --lib`;
+#            skips the full suites, example, benches, MSRV, powerset, fuzz
+#            build and the security jobs
+#
+# Not reproduced here (runner only): the time-boxed fuzz runs, the coverage and
+# semver-checks jobs (informational in CI) and package-integrity.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 quick=0
-[[ "${1:-}" == "--quick" ]] && quick=1
+case "${1:-}" in
+  --quick) quick=1 ;;
+  "") ;;
+  *) echo "usage: scripts/preflight.sh [--quick]" >&2; exit 2 ;;
+esac
+MSRV=1.87
+
+export CARGO_TERM_COLOR=always RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"
 
 step() { printf '\n\033[1;34m== %s\033[0m\n' "$*"; }
-# `cargo clippy` reuses fresh `cargo check` artifacts and then lints nothing;
-# touching the crate roots invalidates only this repo's fingerprints.
-relint() { git ls-files | grep -E '(^|/)src/(lib|main)\.rs$' | xargs -r touch; }
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing tool: $1 ($2)" >&2; exit 1; }; }
+# `cargo clippy` reuses fresh `cargo check` artifacts and then lints nothing;
+# touching the crate root invalidates only this crate's fingerprints.
+relint() { touch src/lib.rs; }
+add_target() { rustup target list --installed | grep -qx "$1" || rustup target add "$1"; }
 has_toolchain() { rustup toolchain list | grep -q "^$1"; }
 
-# Steps CI runs that this file cannot reproduce locally (they can only fail remotely):
-#   - security-audit.yml:audit:Install cargo-audit (needs network / runner-only)
-#   - security-audit.yml:deny:Install cargo-deny (needs network / runner-only)
-#   - security-audit.yml:coverage (job is continue-on-error: informational in CI)
-#   - security-audit.yml:semver-checks (job is continue-on-error: informational in CI)
-#   - fuzz.yml:fuzz:Install cargo-fuzz (needs network / runner-only)
-#   - fuzz.yml:fuzz:Build fuzz target (needs network / runner-only)
-#   - fuzz.yml:fuzz:Set fuzz duration (no cargo / grep)
-#   - fuzz.yml:fuzz:Run fuzz target (time-boxed) (continue-on-error)
-#   - fuzz.yml:fuzz:Report crash (informational) (no cargo / grep)
-
 need actionlint "brew install actionlint"
-need cargo-audit "cargo install cargo-audit --locked"
-need cargo-deny "cargo install cargo-deny --locked"
-need cargo-hack "cargo install cargo-hack --locked"
-need cargo-machete "cargo install cargo-machete --locked"
-has_toolchain 1.87 || { echo "missing toolchain 1.87 (rustup toolchain install 1.87)" >&2; exit 1; }
+need python3 "python 3.9+"
 
-step "ci.yml / clippy: Clippy (default features, all targets, pedantic)"
-relint
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo clippy --all-targets -- -W clippy::pedantic -D warnings )
-
-step "ci.yml / clippy: Clippy (full native feature set, all targets, pedantic)"
-relint
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -W clippy::pedantic -D warnings )
-
-step "ci.yml / clippy: Clippy (no default features, all targets, pedantic)"
-relint
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo clippy --no-default-features --all-targets -- -W clippy::pedantic -D warnings )
-
-step "ci.yml / msrv: Check (default + full native feature set + no default features)"
-(
-  export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"
-  cargo +1.87 check --lib
-  cargo +1.87 check --lib --features "$NATIVE_FEATURES"
-  cargo +1.87 check --lib --no-default-features
-)
-
-step "ci.yml / wasm: Build + Clippy (wasm32-unknown-unknown, no default features)"
-rustup target list --installed | grep -q '^wasm32-unknown-unknown$' \
-  || { echo "missing target wasm32-unknown-unknown (rustup target add wasm32-unknown-unknown)" >&2; exit 1; }
-(
-  export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings"
-  cargo build --lib --target wasm32-unknown-unknown --no-default-features
-  relint
-  cargo clippy --lib --target wasm32-unknown-unknown --no-default-features -- -W clippy::pedantic -D warnings
-)
-
-step "ci.yml / feature-powerset: Powerset ({fs, ffi, sdf} depth 2)"
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo hack check --lib --feature-powerset --depth 2 --exclude-features python,analytics,crypto )
-
-step "ci.yml / fmt: Check formatting"
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; cargo fmt -- --check )
-
-step "ci.yml / doc: Doc (full native feature set)"
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf" RUSTDOCFLAGS="-Dwarnings"; cargo doc --no-deps --features "$NATIVE_FEATURES" )
-
-step "ci.yml / actionlint: actionlint"
+step "ci.yml / actionlint: workflow YAML"
 actionlint .github/workflows/*.yml
 
-step "security-audit.yml / deny: Run cargo deny check all"
-( export CARGO_TERM_COLOR="always" CARGO_NET_RETRY="5" CARGO_HTTP_MULTIPLEXING="false"; cargo deny --all-features check all )
+step "ci.yml / fmt: cargo fmt --check"
+cargo fmt -- --check
 
-step "security-audit.yml / unused-deps: cargo machete"
-cargo machete
+step "ci.yml / docs-lint: tests + public documents / CHANGELOG structure"
+python3 scripts/test_docs_lint.py
+python3 scripts/docs_lint.py --check
 
-step "security-audit.yml / stub-guard: Detect panic!(STUB) / dbg!() in src/** (block)"
-(
-  export CARGO_TERM_COLOR="always" CARGO_NET_RETRY="5" CARGO_HTTP_MULTIPLEXING="false"
-  set -eo pipefail
-  # Block: panic!(STUB...) (explicit STUB marker) + dbg!() (debug residual)
-  # comment 行 (// or /*) は除外
-  hits=$(grep -rnE 'panic!\([^)]*STUB|dbg!\(' \
-    src/ --include="*.rs" \
-    --exclude-dir=bin \
-    | grep -v ':[[:space:]]*//' \
-    | grep -vE ':[[:space:]]*/\*' \
-    || true)
-  if [ -n "$hits" ]; then
-    echo "❌ panic!(STUB) / dbg!() detected in src/ (production path):"
-    echo "$hits"
-    echo ""
-    echo "Fix: use ? operator, Result<T, E>, or remove the marker."
-    echo "  See CLAUDE.md § 仮実装完了偽装の禁止ルール"
-    exit 1
-  fi
-  echo "✓ No panic!(STUB) / dbg!() in src/ (excluding src/bin/)"
-)
+step "security-audit.yml / stub-guard"
+scripts/stub_guard.sh
 
-step "security-audit.yml / stub-guard: Detect todo!() / unimplemented!() in src/** (informational)"
-(
-  export CARGO_TERM_COLOR="always" CARGO_NET_RETRY="5" CARGO_HTTP_MULTIPLEXING="false"
-  set -eo pipefail
-  # Informational: todo!() / unimplemented!() は legitimate な fail-fast idiom
-  # (CLAUDE.md「仮実装完了偽装の禁止ルール」§「未実装は必ず fail fast」)
-  hits=$(grep -rnE 'todo!\(|unimplemented!\(' \
-    src/ --include="*.rs" \
-    --exclude-dir=bin \
-    | grep -v ':[[:space:]]*//' \
-    | grep -vE ':[[:space:]]*/\*' \
-    || true)
-  if [ -n "$hits" ]; then
-    count=$(echo "$hits" | wc -l | tr -d ' ')
-    echo "::warning::todo!() / unimplemented!() found in src/ ($count markers, informational):"
-    echo "$hits" | head -50
-  else
-    echo "✓ No todo!() / unimplemented!() in src/"
-  fi
-)
+step "ci.yml / clippy: default, full native feature set, no default features (pedantic)"
+relint
+cargo clippy --all-targets -- -W clippy::pedantic -D warnings
+relint
+cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -W clippy::pedantic -D warnings
+relint
+cargo clippy --no-default-features --all-targets -- -W clippy::pedantic -D warnings
 
-step "security-audit.yml / stub-guard: Detect TODO / FIXME / XXX / HACK (informational)"
-(
-  export CARGO_TERM_COLOR="always" CARGO_NET_RETRY="5" CARGO_HTTP_MULTIPLEXING="false"
-  set -eo pipefail
-  hits=$(grep -rnE 'TODO|FIXME|XXX|HACK' src/ --include="*.rs" || true)
-  if [ -n "$hits" ]; then
-    echo "::warning::TODO/FIXME/XXX/HACK found in src/ (informational, not blocking):"
-    echo "$hits" | head -50
-  else
-    echo "✓ No TODO/FIXME/XXX/HACK in src/"
-  fi
-)
+step "ci.yml / wasm: wasm32-unknown-unknown build + clippy (no default features)"
+add_target wasm32-unknown-unknown
+cargo build --lib --target wasm32-unknown-unknown --no-default-features
+relint
+cargo clippy --lib --target wasm32-unknown-unknown --no-default-features -- -W clippy::pedantic -D warnings
 
-step "fuzz.yml / build every fuzz target (nightly; the replay needs the runner)"
-if has_toolchain nightly && cargo +nightly fuzz --version >/dev/null 2>&1; then
-  (cd fuzz && cargo +nightly fuzz build)
-else
-  echo "skip: nightly / cargo-fuzz not installed" >&2
-fi
+step "ci.yml / doc: rustdoc -D warnings (default + full native feature set)"
+RUSTDOCFLAGS="-Dwarnings" cargo doc --lib --no-deps
+RUSTDOCFLAGS="-Dwarnings" cargo doc --lib --no-deps --features "$NATIVE_FEATURES"
 
 if [[ $quick -eq 1 ]]; then
-  echo; echo "preflight --quick OK (test / bench suites skipped)"; exit 0
+  step "cargo test --lib (quick)"
+  cargo test --lib
+  echo; echo "preflight --quick OK (full test suites, example, benches, MSRV, powerset, fuzz build and security jobs skipped)"; exit 0
 fi
 
-step "ci.yml / test: Test (default = file backend)"
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; scripts/run_tests.sh storage_backend_parity -- cargo test )
+step "ci.yml / test: default, full native feature set, no default features, law_store (memory)"
+scripts/run_tests.sh storage_backend_parity -- cargo test
+scripts/run_tests.sh storage_backend_parity -- cargo test --features "$NATIVE_FEATURES"
+scripts/run_tests.sh storage_backend_parity -- cargo test --no-default-features
+scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
 
-step "ci.yml / test: Test (full native feature set)"
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; scripts/run_tests.sh storage_backend_parity -- cargo test --features "$NATIVE_FEATURES" )
+step "ci.yml / test: law_store example"
+cargo run --example law_store
 
-step "ci.yml / test: Test (no default features = memory backend only)"
-( export CARGO_TERM_COLOR="always" RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"; scripts/run_tests.sh storage_backend_parity -- cargo test --no-default-features )
+step "ci.yml / test: benches compile"
+cargo bench --no-run
 
-step "security-audit.yml / audit: Run cargo audit"
-(
-  export CARGO_TERM_COLOR="always" CARGO_NET_RETRY="5" CARGO_HTTP_MULTIPLEXING="false"
-  # RUSTSEC-2026-0235 (rkyv 0.7 Rc/Arc archive validation): alice-db の archived 型
-  # (SegmentMetadata / DataSegment / ModelType) に Rc/Arc は無く非該当、0.8 移行は不要
-  cargo audit --deny yanked \
-    --ignore RUSTSEC-2026-0235 \
-    --ignore RUSTSEC-2025-0141 \
-    --ignore RUSTSEC-2024-0436 \
-    --ignore RUSTSEC-2026-0192 \
-    --ignore RUSTSEC-2024-0384 \
-    --ignore RUSTSEC-2024-0388 \
-    --ignore RUSTSEC-2024-0370 \
-    --ignore RUSTSEC-2024-0320
-)
+step "ci.yml / msrv: rust-version = $MSRV"
+if has_toolchain "$MSRV"; then
+  cargo +"$MSRV" check --lib
+  cargo +"$MSRV" check --lib --features "$NATIVE_FEATURES"
+  cargo +"$MSRV" check --lib --no-default-features
+else
+  echo "toolchain $MSRV not installed (rustup toolchain install $MSRV --profile minimal)" >&2
+  exit 1
+fi
+
+step "ci.yml / feature-powerset: {fs, ffi, sdf} depth 2"
+need cargo-hack "cargo install cargo-hack --locked"
+cargo hack check --lib --feature-powerset --depth 2 --exclude-features python,analytics,crypto
+
+step "fuzz.yml: build every fuzz target (nightly)"
+if has_toolchain nightly && cargo +nightly fuzz --version >/dev/null 2>&1; then
+  (cd fuzz && RUSTFLAGS= cargo +nightly fuzz build)
+else
+  echo "missing nightly toolchain or cargo-fuzz (cargo install cargo-fuzz --locked)" >&2
+  exit 1
+fi
+
+step "security-audit.yml: cargo audit / cargo deny / cargo machete"
+need cargo-audit "cargo install cargo-audit --locked"
+need cargo-deny "cargo install cargo-deny --locked"
+need cargo-machete "cargo install cargo-machete --locked"
+# RUSTSEC-2026-0235: see security-audit.yml
+cargo audit --db "${CARGO_TARGET_DIR:-target}/advisory-db" --deny yanked \
+  --ignore RUSTSEC-2026-0235 \
+  --ignore RUSTSEC-2025-0141 \
+  --ignore RUSTSEC-2024-0436 \
+  --ignore RUSTSEC-2026-0192 \
+  --ignore RUSTSEC-2024-0384 \
+  --ignore RUSTSEC-2024-0388 \
+  --ignore RUSTSEC-2024-0370 \
+  --ignore RUSTSEC-2024-0320
+cargo deny --all-features check all
+cargo machete
 
 echo; echo "preflight OK"

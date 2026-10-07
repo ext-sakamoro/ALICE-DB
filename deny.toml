@@ -1,11 +1,8 @@
 # cargo-deny 設定 (v0.14+ schema)
 # https://embarkstudios.github.io/cargo-deny/
 #
-# canonical CI template: [[reference_alice_ci_canonical_template]]
-# ALICE-SDF v1.7.7 (commit 52d26f9) の deny.toml を base に ALICE-DB 用に調整
-#
-# ALICE-DB 自体は MIT OR Apache-2.0 (permissive) のため自己 exception 不要
-# sibling path dep は 0 (alice-stubs は no-op)
+# ALICE-DB 自体は AGPL-3.0-or-later OR LicenseRef-Commercial (下の exception で自己許可)
+# sibling path dep は alice-analytics / alice-crypto の 2 つ (CI では alice-stubs の空 crate)
 
 [graph]
 all-features = false
@@ -84,7 +81,7 @@ expression = "ISC"
 license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 
 # alice-db 自身 (target crate) が AGPL-3.0-or-later だが cargo-deny は target も
-# license check 対象にするため exception で自己許可 (canonical 罠 #7)
+# license check 対象にするため exception で自己許可
 [[licenses.exceptions]]
 name = "alice-db"
 allow = ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]

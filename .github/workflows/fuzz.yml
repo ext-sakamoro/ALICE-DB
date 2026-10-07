@@ -1,19 +1,15 @@
 name: Fuzz
 
-# canonical CI template: [[reference_alice_ci_canonical_template]]
-# ALICE-SDF v1.7.7 (commit 52d26f9) を base に ALICE-DB 用に調整
+# Time-boxed libFuzzer runs (cargo-fuzz, nightly): attacker-controlled bytes
+# must not panic or exhaust memory.
 #
-# 目的:
-# - 3 fuzz target (fuzz_query_parse / fuzz_serialize_roundtrip / fuzz_index_lookup)
-#   を time-boxed 実行
-# - 攻撃者制御 byte 列で panic ゼロ + OOM 予防を検証
+# - fuzz_law_record: stored law records (law_store::decode_law_record)
+# - fuzz_query_parse / fuzz_serialize_roundtrip / fuzz_index_lookup: scaffolds
+#   that do not call alice-db yet (no public parser / row codec / index API to
+#   drive)
 #
-# NOTE: ALICE-DB v0.1.0 の src/lib.rs は現在最小 (public API 未 export)。
-# fuzz target 群は canonical structure を先に据えたうえで、public API が
-# 復活したら本体呼び出しへ差し替える scaffold として運用する。
-#
-# 罠:
-# - cargo-fuzz は nightly toolchain 必須 (rust-toolchain 不使用時も明示指定)
+# cargo-fuzz is installed with `cargo install`: the prebuilt binaries target
+# musl, which the sanitizer build refuses.
 
 on:
   push:
@@ -59,6 +55,7 @@ jobs:
           - fuzz_query_parse
           - fuzz_serialize_roundtrip
           - fuzz_index_lookup
+          - fuzz_law_record
     steps:
       - uses: actions/checkout@v5
 
@@ -76,9 +73,7 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
-      # build は blocking: compile error を continue-on-error で隠さない
-      # (canonical 罠 #22: job-level continue-on-error だと fuzz target の
-      #  compile error が green 表示で silent になる)
+      # the build blocks: a compile error must not hide behind continue-on-error
       - name: Build fuzz target
         run: |
           cd fuzz

@@ -1,5 +1,5 @@
 //! Analytic oracles — closed-form / independent-reference checks for the
-//! numeric laws in ALICE-DB (CLAUDE.md § 解析解突合テスト規律, 2026-09-17).
+//! numeric laws in ALICE-DB (2026-09-17).
 //!
 //! Expected values come from closed forms, published test vectors or f64
 //! references written in this file — never from the crate function under
@@ -312,7 +312,7 @@ fn lossless_mode_returns_every_put_value_bit_exactly_through_both_read_paths() {
 }
 
 #[test]
-#[ignore = "DataSegment は timestamp を保持せず uniform spacing を仮定する (residual は (t−t₀)/range·(n−1) の丸めで index 化、gap のある系列では別点の residual が当たる、scan は存在しない timestamp を返す) — Backlog ALICE-DB 起票 2026-09-17、segment に timestamp (delta) を持たせる format 変更後に ignore を外す"]
+#[ignore = "DataSegment は timestamp を保持せず uniform spacing を仮定する (residual は (t−t₀)/range·(n−1) の丸めで index 化、gap のある系列では別点の residual が当たる、scan は存在しない timestamp を返す) — 2026-09-17 記録、segment に timestamp (delta) を持たせる format 変更後に ignore を外す"]
 fn lossless_mode_is_exact_for_irregular_timestamps_too() {
     // timestamps with gaps (sensor drop-outs): the residual must be attached
     // to the point that was stored, not to a uniform re-sampling of the range
@@ -352,7 +352,7 @@ fn default_lossy_fit_stays_within_its_documented_thresholds() {
     }
     // sine-like: the weakest accepted candidate is the single sine at relative
     // MSE < 0.1 ⇒ RMS error over the segment ≤ √0.1 · σ (the documented law,
-    // ~32 % of σ — see Backlog for whether that default is wanted)
+    // ~32 % of σ — whether that default is wanted is still open)
     let data: Vec<(i64, f32)> = (0..1000)
         .map(|i| {
             (

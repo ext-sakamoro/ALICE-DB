@@ -83,27 +83,37 @@ reference values.
 
 | Method | Effect |
 |--------|--------|
-| `put_law(name, &law)` | stores the law as the next version of `name` |
+| `put_law(name, &law, &semantics_id)` | stores the law as the next version of `name`, and indexes it under its content identifier |
 | `get_law(name)` / `get_law_version(name, v)` | restores a version; the residual is measured again from the stored evidence |
 | `evaluate_law(name, x)` | `f(x)` of the latest version; an `x` outside the valid range is refused (`LawError::OutOfRange`), never extrapolated |
-| `ingest_evidence(name, points, &policy)` | judges new points (no evidence / out of range / supports / parameter update / residual grew / breaks), records the verdict, and stores a parameter update as a new version while older versions stay readable |
+| `ingest_evidence(name, points, &policy, &semantics_id)` | judges new points (no evidence / out of range / supports / parameter update / residual grew / breaks), records the verdict, and stores a parameter update as a new version while older versions stay readable |
+| `law_pointers_by_id(&id)` / `evaluate_by_id(&id, x)` | every `(name, version)` stored under one content identifier, and `f(x)` through it |
 | `law_history(name)` / `law_versions(name)` / `law_names()` | recorded verdicts in order (with evidence count and RMS), stored versions, stored names |
 
 ```rust
 use alice_db::law_store::{IngestPolicy, Provenance, SignalLaw, Verdict};
 use alice_db::{AliceDB, StorageConfig};
 
+// Identifies the arithmetic the law is evaluated with. It goes into the
+// law's content identifier, so a stored result names both the law and the
+// numeric semantics it was computed under.
+const SEMANTICS: [u8; 32] = [0x11; 32];
+
 let db = AliceDB::in_memory(StorageConfig::default())?;
 // y = 1 + 2x measured at x = 0..=4
 let pts: Vec<(f64, f64)> = (0..5).map(|i| (f64::from(i), 1.0 + 2.0 * f64::from(i))).collect();
 let law = SignalLaw::fit_polynomial(&pts, 1, Provenance::new("run 1", "least squares"))?;
-db.put_law("line", &law)?;
+db.put_law("line", &law, &SEMANTICS)?;
 
 assert!((db.evaluate_law("line", 2.5)? - 6.0).abs() < 1e-12);
 assert!(db.evaluate_law("line", 9.0).is_err()); // outside [0, 4]
 
+// The stored law is reachable by its content identifier as well as by name.
+let id = law.law_id(&SEMANTICS);
+assert_eq!(db.law_pointers_by_id(&id)?, vec![("line".to_string(), 1_u64)]);
+
 let policy = IngestPolicy { abs_tolerance: 0.01, break_factor: 4.0 };
-let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy)?;
+let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy, &SEMANTICS)?;
 assert!(matches!(v, Verdict::Supports { .. }));
 assert_eq!(db.law_history("line")?.len(), 1);
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -116,6 +126,23 @@ damaged record, one copied under another key, or one that `SignalLaw::from_parts
 refuses (for example evidence outside the stored range) is returned as an error.
 The byte layout is documented in the `law_store` module.
 `cargo run --example law_store` runs the whole cycle on both backends.
+
+
+### Addressing a law by its content
+
+A name is something a person assigns and can change. `SignalLaw::law_id`
+(ALICE-Zip) is a 32-byte identifier computed from the law itself — the valid
+range and the coefficients — together with an identifier for the numeric
+semantics it is evaluated under, so a stored result can name the law it came
+from without relying on a name staying put.
+
+`put_law` and `ingest_evidence` take that semantics identifier and index every
+version they write under it. `law_pointers_by_id` returns every
+`(name, version)` for one identifier, and `evaluate_by_id` evaluates it: that
+is well defined even for several pointers, because equal identifier implies the
+evaluation returns the same bits for every `x`. The converse does not hold — two
+laws that evaluate identically can still differ in identifier — so an identifier
+is not a deduplication key.
 
 ## Storage backends
 

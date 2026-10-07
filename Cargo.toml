@@ -17,8 +17,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # ALICE-Zip core (crates.io): procedural generators, zlib, and `law::SignalLaw`
-# (stored by `law_store`, 0.5.1+)
-alice_core = { package = "alice-zip", version = "0.5.1" }
+# (stored by `law_store`, 0.5.2+ for `law::SignalLaw::law_id`)
+alice_core = { package = "alice-zip", version = "0.5.2" }
 
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.7", features = ["validation", "std"] }
@@ -48,7 +48,7 @@ rayon = "1.10"
 parking_lot = "0.12"
 
 # ALICE-Analytics bridge (optional)
-alice-analytics = { path = "../ALICE-Analytics", version = "0.1", optional = true }
+alice-analytics = { path = "../ALICE-Analytics", version = "0.2", optional = true }
 
 # ALICE-Crypto bridge (optional)
 alice-crypto = { path = "../ALICE-Crypto", version = "0.1", optional = true, default-features = false, features = ["std"] }

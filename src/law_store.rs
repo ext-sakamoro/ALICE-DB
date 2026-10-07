@@ -27,7 +27,26 @@
 //! ```text
 //! version  "\0alice-law\0" name "\0v" version (u64 big-endian)  → law record
 //! verdict  "\0alice-law\0" name "\0h" seq     (u64 big-endian)  → verdict record
+//! law id   "\0alice-law\0" "\0i" law_id (32 bytes)
+//!                           name length (u32 big-endian) name
+//!                           version (u64 big-endian)     → empty
 //! ```
+//!
+//! The third family addresses a law by its content instead of by the name a
+//! person gave it: `law_id` is [`SignalLaw::law_id`], a hash over exactly the
+//! inputs the evaluation reads plus an identifier for the numeric semantics it
+//! is evaluated under. [`AliceDB::law_pointers_by_id`] returns every
+//! `(name, version)` under one identifier and [`AliceDB::evaluate_by_id`]
+//! evaluates it — well defined even for several pointers, because equal
+//! identifier implies the evaluation returns the same bits. The converse does
+//! not hold, so an identifier is not a deduplication key.
+//!
+//! The pointer lives in the key, not the value, so one identifier can address
+//! several laws without the record format holding a list, and storing the same
+//! law twice is idempotent. A name is non-empty and holds no NUL byte, so the
+//! byte after the shared prefix is never NUL for the first two families and
+//! always NUL for this one: the families cannot be a prefix of one another. The
+//! name carries its length so `("ab", v)` and `("a", …)` cannot collide.
 //!
 //! Big-endian numbers make the byte order of the keys the numeric order, so a
 //! prefix scan returns versions and verdicts in order; since a name holds no
@@ -83,17 +102,26 @@
 //! use alice_db::law_store::{IngestPolicy, Provenance, SignalLaw, Verdict};
 //! use alice_db::{AliceDB, StorageConfig};
 //!
+//! // Identifies the arithmetic the law is evaluated with. It goes into the
+//! // law's content identifier, so a stored result names both the law and the
+//! // numeric semantics it was computed under.
+//! const SEMANTICS: [u8; 32] = [0x11; 32];
+//!
 //! let db = AliceDB::in_memory(StorageConfig::default())?;
 //! // y = 1 + 2x measured at x = 0..=4
 //! let pts: Vec<(f64, f64)> = (0..5).map(|i| (f64::from(i), 1.0 + 2.0 * f64::from(i))).collect();
 //! let law = SignalLaw::fit_polynomial(&pts, 1, Provenance::new("run 1", "least squares"))?;
-//! db.put_law("line", &law)?;
+//! db.put_law("line", &law, &SEMANTICS)?;
 //!
 //! assert!((db.evaluate_law("line", 2.5)? - 6.0).abs() < 1e-12);
 //! assert!(db.evaluate_law("line", 9.0).is_err()); // outside [0, 4]
 //!
+//! // The stored law is reachable by its content identifier as well as by name.
+//! let id = law.law_id(&SEMANTICS);
+//! assert_eq!(db.law_pointers_by_id(&id)?, vec![("line".to_string(), 1_u64)]);
+//!
 //! let policy = IngestPolicy { abs_tolerance: 0.01, break_factor: 4.0 };
-//! let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy)?;
+//! let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy, &SEMANTICS)?;
 //! assert!(matches!(v, Verdict::Supports { .. }));
 //! assert_eq!(db.law_history("line")?.len(), 1);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -123,6 +151,7 @@ pub const LAW_RECORD_FORMAT: u32 = 1;
 
 const VERSION_TAG: &[u8] = b"\0v";
 const HISTORY_TAG: &[u8] = b"\0h";
+const ID_TAG: &[u8] = b"\0i";
 
 /// Why a law store operation failed
 #[derive(Debug)]
@@ -283,6 +312,68 @@ pub fn law_version_key(name: &str, version: u64) -> Result<Vec<u8>, LawStoreErro
 pub fn law_history_key(name: &str, seq: u64) -> Result<Vec<u8>, LawStoreError> {
     check_name(name)?;
     Ok(numbered_key(name, HISTORY_TAG, seq))
+}
+
+/// Blob key that addresses the law `name` version `version` by the content
+/// identifier `law_id` (see the module docs)
+///
+/// The pointer lives in the key, not the value: one identifier can legitimately
+/// address several `(name, version)` pairs, and a prefix scan then returns all
+/// of them without the record format having to hold a list.
+///
+/// A name is non-empty and holds no NUL byte, so the byte after
+/// [`LAW_KEY_PREFIX`] is never NUL for a name key and always NUL here: the two
+/// key families can never be a prefix of one another. The name carries its
+/// length so that `("ab", v)` and `("a", …)` cannot encode to the same bytes.
+///
+/// # Errors
+/// [`LawStoreError::InvalidName`] for an empty name or one with a NUL byte.
+pub fn law_id_key(law_id: &[u8; 32], name: &str, version: u64) -> Result<Vec<u8>, LawStoreError> {
+    check_name(name)?;
+    let name_len = u32::try_from(name.len()).map_err(|_| LawStoreError::InvalidName)?;
+    let mut k = Vec::with_capacity(LAW_KEY_PREFIX.len() + ID_TAG.len() + 32 + 4 + name.len() + 8);
+    k.extend_from_slice(LAW_KEY_PREFIX);
+    k.extend_from_slice(ID_TAG);
+    k.extend_from_slice(law_id);
+    k.extend_from_slice(&name_len.to_be_bytes());
+    k.extend_from_slice(name.as_bytes());
+    k.extend_from_slice(&version.to_be_bytes());
+    Ok(k)
+}
+
+/// Leading bytes shared by every key of one content identifier
+fn law_id_prefix(law_id: &[u8; 32]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(LAW_KEY_PREFIX.len() + ID_TAG.len() + 32);
+    k.extend_from_slice(LAW_KEY_PREFIX);
+    k.extend_from_slice(ID_TAG);
+    k.extend_from_slice(law_id);
+    k
+}
+
+/// The `(name, version)` a key from [`law_id_key`] points at
+fn law_id_pointer(key: &[u8], prefix: &[u8]) -> Result<(String, u64), LawStoreError> {
+    let rest = key
+        .strip_prefix(prefix)
+        .ok_or(LawStoreError::Corrupt("identifier key outside its prefix"))?;
+    let (len_bytes, rest) = rest
+        .split_at_checked(4)
+        .ok_or(LawStoreError::Corrupt("identifier key has no name length"))?;
+    let name_len = u32::from_be_bytes(
+        len_bytes
+            .try_into()
+            .map_err(|_| LawStoreError::Corrupt("identifier key name length"))?,
+    ) as usize;
+    let (name_bytes, version_bytes) = rest
+        .split_at_checked(name_len)
+        .ok_or(LawStoreError::Corrupt("identifier key name is truncated"))?;
+    let name = core::str::from_utf8(name_bytes)
+        .map_err(|_| LawStoreError::Corrupt("identifier key name is not UTF-8"))?;
+    let version = u64::from_be_bytes(
+        version_bytes
+            .try_into()
+            .map_err(|_| LawStoreError::Corrupt("identifier key does not end in a u64"))?,
+    );
+    Ok((String::from(name), version))
 }
 
 /// The number at the end of a key from [`numbered_key`] with this prefix
@@ -630,15 +721,23 @@ impl AliceDB {
         Ok(Some(SignalLaw::from_parts(parts)?))
     }
 
+    /// Writes a version and the key that addresses it by content
+    ///
+    /// Every path that stores a version goes through here, so the identifier
+    /// index cannot be complete for one entry point and missing for another.
     fn store_version(
         &self,
         name: &str,
         version: u64,
         law: &SignalLaw,
+        semantics_id: &[u8; 32],
     ) -> Result<(), LawStoreError> {
         let rec = encode_law_record(name, version, &law.to_parts())?;
         self.blob
             .put(&numbered_key(name, VERSION_TAG, version), &rec)?;
+        // The pointer is entirely in the key, so the value carries nothing.
+        self.blob
+            .put(&law_id_key(&law.law_id(semantics_id), name, version)?, &[])?;
         Ok(())
     }
 
@@ -648,11 +747,16 @@ impl AliceDB {
     /// # Errors
     /// [`LawStoreError::InvalidName`], [`LawStoreError::Io`], or
     /// [`LawStoreError::Corrupt`] if the existing keys of `name` are damaged.
-    pub fn put_law(&self, name: &str, law: &SignalLaw) -> Result<u64, LawStoreError> {
+    pub fn put_law(
+        &self,
+        name: &str,
+        law: &SignalLaw,
+        semantics_id: &[u8; 32],
+    ) -> Result<u64, LawStoreError> {
         check_name(name)?;
         let _guard = self.law_lock.lock();
         let version = self.last_number(name, VERSION_TAG)? + 1;
-        self.store_version(name, version, law)?;
+        self.store_version(name, version, law, semantics_id)?;
         Ok(version)
     }
 
@@ -696,6 +800,57 @@ impl AliceDB {
         Ok(law.evaluate(x)?)
     }
 
+    /// Every `(name, version)` stored under the content identifier `law_id`
+    ///
+    /// Empty when nothing was stored under it: an identifier that addresses no
+    /// law is absence, not damage. An identifier is computed from the law
+    /// together with the numeric semantics it is evaluated under, so a law
+    /// stored under one `semantics_id` does not answer for another.
+    ///
+    /// The order is the byte order of the keys, which is the name length, then
+    /// the name, then the version.
+    ///
+    /// # Errors
+    /// [`LawStoreError::Io`], and [`LawStoreError::Corrupt`] if a key under the
+    /// identifier prefix is damaged.
+    pub fn law_pointers_by_id(
+        &self,
+        law_id: &[u8; 32],
+    ) -> Result<Vec<(String, u64)>, LawStoreError> {
+        let prefix = law_id_prefix(law_id);
+        self.blob
+            .scan_prefix(&prefix)?
+            .into_iter()
+            .map(|(k, _)| law_id_pointer(&k, &prefix))
+            .collect()
+    }
+
+    /// `f(x)` of the law addressed by `law_id`
+    ///
+    /// Well defined even when the identifier addresses several
+    /// `(name, version)` pairs: an identifier is a hash over exactly the inputs
+    /// the evaluation reads, so every law it addresses returns the same bits for
+    /// the same `x`. The first pointer in key order is used.
+    ///
+    /// An `x` outside the law's valid range is refused, never extrapolated.
+    ///
+    /// # Errors
+    /// [`LawStoreError::NotFound`] when no law is stored under the identifier
+    /// (an identifier cannot be turned into a value out of nothing),
+    /// [`LawStoreError::Io`], [`LawStoreError::Corrupt`], and
+    /// [`LawStoreError::Law`] for an `x` outside the valid range.
+    pub fn evaluate_by_id(&self, law_id: &[u8; 32], x: f64) -> Result<f64, LawStoreError> {
+        let (name, version) = self
+            .law_pointers_by_id(law_id)?
+            .into_iter()
+            .next()
+            .ok_or(LawStoreError::NotFound)?;
+        let law = self
+            .load_version(&name, version)?
+            .ok_or(LawStoreError::NotFound)?;
+        Ok(law.evaluate(x)?)
+    }
+
     /// Judges `points` against the latest version of `name` and records the
     /// verdict in the law's history
     ///
@@ -712,6 +867,7 @@ impl AliceDB {
         name: &str,
         points: &[(f64, f64)],
         policy: &IngestPolicy,
+        semantics_id: &[u8; 32],
     ) -> Result<Verdict, LawStoreError> {
         check_name(name)?;
         check_policy(policy)?;
@@ -726,7 +882,7 @@ impl AliceDB {
         let verdict = law.ingest(points, policy);
         let mut record = record_for(&verdict, version, points.len());
         if let Verdict::ParameterUpdate { updated, .. } = &verdict {
-            self.store_version(name, version + 1, updated)?;
+            self.store_version(name, version + 1, updated, semantics_id)?;
             record.new_version = Some(version + 1);
         }
         record.seq = self.last_number(name, HISTORY_TAG)? + 1;

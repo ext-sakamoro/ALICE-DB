@@ -8,9 +8,19 @@ All notable changes to ALICE-DB will be documented in this file.
 - `law_store` module: stores `SignalLaw` (ALICE-Zip `law`, re-exported) under a name in either backend. `AliceDB::put_law` (next version), `get_law` / `get_law_version` (restored through `SignalLaw::from_parts`, which measures the residual again), `evaluate_law` (an `x` outside the valid range is refused, no extrapolation), `ingest_evidence` (judges new points, records the verdict with evidence count and RMS, and stores a parameter update as a new version while the judged version stays readable), `law_history`, `law_versions`, `law_names`. Records are checksummed blobs under the reserved key prefix `"\0alice-law\0"`; the layout is documented in the module, and damaged records, records copied under another key and records `from_parts` refuses are returned as errors (`LawStoreError`)
 - `tests/law_store.rs`: 28 oracles with closed-form expectations (round trip in memory, through `to_bytes`, across close / reopen and blob compaction on the file backend, bit-identical parts; out-of-range refusal; each of the six verdicts recorded in order; versions kept after a parameter update; forged and damaged records; invalid names and policies; concurrent ingests)
 - `examples/law_store.rs`, fuzz target `fuzz_law_record` (decoding arbitrary bytes as a law record)
+- `law_store`: addressing a stored law by its content. `AliceDB::law_pointers_by_id` returns every `(name, version)` stored under a `SignalLaw::law_id`, and `AliceDB::evaluate_by_id` evaluates it — well defined for several pointers because equal identifier implies the evaluation returns the same bits (the converse does not hold, so an identifier is not a deduplication key). `law_id_key` builds the key; the pointer lives in the key, so one identifier addresses several laws without the record format holding a list and storing the same law twice is idempotent. Every path that writes a version writes the key, so the index cannot be complete for one entry point and missing for another
+- `tests/law_id_index.rs`: 9 oracles (one identifier reached from two names evaluating bit-identically, round trip, the numeric semantics reaching the key, the version `ingest_evidence` writes being indexed too, survival through `to_bytes` / `from_bytes`, key families that cannot collide, an unknown identifier being empty rather than an error, and the key layout pinned by a golden)
 - `README_JP.md` (renamed from `README.ja.md`), `scripts/docs_lint.py` + `scripts/test_docs_lint.py` (public-document vocabulary, CHANGELOG structure, README example = crate doctest), `scripts/stub_guard.sh`
 
 ### Changed
+
+- **Breaking:** `AliceDB::put_law` and `AliceDB::ingest_evidence` take the
+  identifier of the numeric semantics the law is evaluated under
+  (`&[u8; 32]`, as published by a deterministic-arithmetic crate). It is needed
+  to compute the content identifier the version is indexed under, and it is a
+  parameter rather than state on the database so that no path can store a
+  version without indexing it
+- `alice-zip` requirement raised to `0.5.2` for `law::SignalLaw::law_id`
 - alice-zip 0.4 → 0.5.1 (no source change was needed; test results unchanged)
 - The crate-level Quick Start is a compiled doctest on the memory backend (it was `ignore`d), and the crate doc states the dual license
 - CI: test matrix adds `ubuntu-24.04-arm`; the law store oracles run on the memory backend alone; the example runs and benches compile on every OS; rustdoc also checks default features; docs lint on Linux / macOS / Windows. `scripts/preflight.sh` runs the same commands (`--quick` includes `cargo test --lib`; `cargo audit` keeps its database under the build directory)

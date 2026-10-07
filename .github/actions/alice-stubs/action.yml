@@ -1,9 +1,13 @@
 name: 'ALICE-DB Optional Bridge Stubs'
 description: |
   Create empty stub crates for ALICE-DB sibling path deps
-  (alice-analytics / alice-crypto / alice-zip)
+  (alice-analytics / alice-crypto)
 
   Each stub declares a license so cargo-deny can evaluate it
+
+  The version of each stub has to satisfy the requirement in Cargo.toml:
+  cargo resolves a path dependency against its own version, so a stub left
+  behind at an older version makes every job fail at the metadata step
 
 runs:
   using: composite
@@ -17,7 +21,7 @@ runs:
         cat > "../ALICE-Analytics/Cargo.toml" <<'TOML'
         [package]
         name = "alice-analytics"
-        version = "0.1.0"
+        version = "0.2.0"
         edition = "2021"
         license = "MIT OR Apache-2.0"
 
@@ -48,18 +52,7 @@ runs:
         TOML
         : > "../ALICE-Crypto/src/lib.rs"
 
-        # ALICE-Zip stub — nested path (../ALICE-Zip/libalice/)
-        mkdir -p "../ALICE-Zip/libalice/src"
-        cat > "../ALICE-Zip/libalice/Cargo.toml" <<'TOML'
-        [package]
-        name = "alice-zip"
-        version = "0.1.0"
-        edition = "2021"
-        license = "MIT OR Apache-2.0"
+        # No alice-zip stub: it comes from crates.io, not a sibling path, so a
+        # stub would be an empty crate nothing resolves against
 
-        [lib]
-        path = "src/lib.rs"
-        TOML
-        : > "../ALICE-Zip/libalice/src/lib.rs"
-
-        echo "Created stubs: alice-analytics / alice-crypto / alice-zip (nested)"
+        echo "Created stubs: alice-analytics / alice-crypto"

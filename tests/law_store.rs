@@ -27,6 +27,10 @@ fn line_law() -> SignalLaw {
     .expect("five distinct points determine a line")
 }
 
+/// Stand-in for the identifier of the numeric semantics the laws are
+/// evaluated under (the arithmetic crate publishes the real one).
+const SEMANTICS: [u8; 32] = [0x11; 32];
+
 const POLICY: IngestPolicy = IngestPolicy {
     abs_tolerance: 0.5,
     break_factor: 4.0,
@@ -77,7 +81,7 @@ fn memory_round_trip_is_bit_identical() {
     let law = line_law().with_oracle(alice_db::law_store::OracleCase::new(
         2.0, 5.0, 1e-9, "table 1",
     ));
-    db.put_law("ohm", &law).unwrap();
+    db.put_law("ohm", &law, &SEMANTICS).unwrap();
     let back = db.get_law("ohm").unwrap().expect("stored law");
     assert_parts_bit_identical(&law.to_parts(), &back.to_parts());
     assert_eq!(db.law_versions("ohm").unwrap(), vec![1]);
@@ -87,8 +91,9 @@ fn memory_round_trip_is_bit_identical() {
 #[test]
 fn snapshot_bytes_carry_laws_to_a_memory_database() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
-    db.ingest_evidence("ohm", &[(2.0, 5.0)], &POLICY).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
+    db.ingest_evidence("ohm", &[(2.0, 5.0)], &POLICY, &SEMANTICS)
+        .unwrap();
     let bytes = db.to_bytes().unwrap();
     let restored = AliceDB::from_bytes(StorageConfig::default(), &bytes).unwrap();
     assert_parts_bit_identical(
@@ -105,7 +110,7 @@ fn file_round_trip_survives_close_and_reopen() {
     let law = line_law();
     {
         let db = AliceDB::open(dir.path()).unwrap();
-        db.put_law("ohm", &law).unwrap();
+        db.put_law("ohm", &law, &SEMANTICS).unwrap();
         db.close().unwrap();
     }
     {
@@ -114,7 +119,9 @@ fn file_round_trip_survives_close_and_reopen() {
         assert_parts_bit_identical(&law.to_parts(), &back.to_parts());
         // write after reopen: offset +0.6 → parameter update (see below)
         let shifted: Vec<(f64, f64)> = line_points().iter().map(|&(x, y)| (x, y + 0.6)).collect();
-        let v = db.ingest_evidence("ohm", &shifted, &POLICY).unwrap();
+        let v = db
+            .ingest_evidence("ohm", &shifted, &POLICY, &SEMANTICS)
+            .unwrap();
         assert!(matches!(v, Verdict::ParameterUpdate { .. }), "{v:?}");
         db.close().unwrap();
     }
@@ -137,7 +144,7 @@ fn file_round_trip_survives_close_and_reopen() {
 fn file_backend_survives_blob_compaction() {
     let dir = tempfile::tempdir().unwrap();
     let db = AliceDB::open(dir.path()).unwrap();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     db.compact_blob_sstable().unwrap();
     drop(db);
     let db = AliceDB::open(dir.path()).unwrap();
@@ -152,7 +159,7 @@ fn file_backend_survives_blob_compaction() {
 #[test]
 fn evaluate_inside_range_matches_the_line() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     // 1 + 2 · 2.5 = 6 (a condition that was not measured)
     assert!((db.evaluate_law("ohm", 2.5).unwrap() - 6.0).abs() < 1e-12);
     // the closed bounds are inside
@@ -163,7 +170,7 @@ fn evaluate_inside_range_matches_the_line() {
 #[test]
 fn evaluate_refuses_out_of_range_and_non_finite() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     for x in [-1e-9, 4.0 + 1e-9, 9.0, f64::NAN, f64::INFINITY] {
         match db.evaluate_law("ohm", x) {
             Err(LawStoreError::Law(LawError::OutOfRange)) => {}
@@ -190,22 +197,22 @@ fn evaluate_unknown_law_is_not_found() {
 #[test]
 fn each_verdict_is_recorded_in_order() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
 
     // 1. no points
     assert_eq!(
-        db.ingest_evidence("ohm", &[], &POLICY).unwrap(),
+        db.ingest_evidence("ohm", &[], &POLICY, &SEMANTICS).unwrap(),
         Verdict::NoEvidence
     );
     // 2. one point at x = 5 outside [0, 4]
     assert_eq!(
-        db.ingest_evidence("ohm", &[(1.0, 3.0), (5.0, 11.0)], &POLICY)
+        db.ingest_evidence("ohm", &[(1.0, 3.0), (5.0, 11.0)], &POLICY, &SEMANTICS)
             .unwrap(),
         Verdict::OutOfRange { outside: 1 }
     );
     // 3. on the line: rms ≈ 0 ≤ band 0.5
     assert!(matches!(
-        db.ingest_evidence("ohm", &[(0.5, 2.0), (3.5, 8.0)], &POLICY)
+        db.ingest_evidence("ohm", &[(0.5, 2.0), (3.5, 8.0)], &POLICY, &SEMANTICS)
             .unwrap(),
         Verdict::Supports { .. }
     ));
@@ -219,13 +226,17 @@ fn each_verdict_is_recorded_in_order() {
             .map(|(i, &x)| (x, 1.0 + 2.0 * x + if i % 2 == 0 { d } else { -d }))
             .collect()
     };
-    let grew = db.ingest_evidence("ohm", &zig(1.0), &POLICY).unwrap();
+    let grew = db
+        .ingest_evidence("ohm", &zig(1.0), &POLICY, &SEMANTICS)
+        .unwrap();
     match grew {
         Verdict::ResidualGrew { rms } => assert!((rms - 1.0).abs() < 1e-12, "{rms}"),
         other => panic!("expected ResidualGrew, got {other:?}"),
     }
     // 5. same zigzag ×3: rms_new = 3 > 2, refit rms 3 · 0.644 > 0.5 → breaks
-    let broke = db.ingest_evidence("ohm", &zig(3.0), &POLICY).unwrap();
+    let broke = db
+        .ingest_evidence("ohm", &zig(3.0), &POLICY, &SEMANTICS)
+        .unwrap();
     match broke {
         Verdict::Breaks { rms } => assert!((rms - 3.0).abs() < 1e-12, "{rms}"),
         other => panic!("expected Breaks, got {other:?}"),
@@ -233,7 +244,10 @@ fn each_verdict_is_recorded_in_order() {
     // 6. the line + 0.6 at the same x: rms_new = 0.6 > 0.5; by symmetry the
     //    refit on old + new is 1.3 + 2x with residuals ±0.3 → rms 0.3 ≤ 0.5
     let shifted: Vec<(f64, f64)> = line_points().iter().map(|&(x, y)| (x, y + 0.6)).collect();
-    match db.ingest_evidence("ohm", &shifted, &POLICY).unwrap() {
+    match db
+        .ingest_evidence("ohm", &shifted, &POLICY, &SEMANTICS)
+        .unwrap()
+    {
         Verdict::ParameterUpdate {
             previous_rms,
             updated,
@@ -278,10 +292,11 @@ fn each_verdict_is_recorded_in_order() {
 fn parameter_update_keeps_the_old_version_readable() {
     let db = memory_db();
     let law = line_law();
-    db.put_law("ohm", &law).unwrap();
+    db.put_law("ohm", &law, &SEMANTICS).unwrap();
     let shifted: Vec<(f64, f64)> = line_points().iter().map(|&(x, y)| (x, y + 0.6)).collect();
-    let Verdict::ParameterUpdate { updated, .. } =
-        db.ingest_evidence("ohm", &shifted, &POLICY).unwrap()
+    let Verdict::ParameterUpdate { updated, .. } = db
+        .ingest_evidence("ohm", &shifted, &POLICY, &SEMANTICS)
+        .unwrap()
     else {
         panic!("expected ParameterUpdate");
     };
@@ -297,7 +312,8 @@ fn parameter_update_keeps_the_old_version_readable() {
     assert!(db.get_law_version("ohm", 3).unwrap().is_none());
     // the next evidence is judged against version 2: 1.3 + 2x itself supports it
     assert!(matches!(
-        db.ingest_evidence("ohm", &[(1.0, 3.3)], &POLICY).unwrap(),
+        db.ingest_evidence("ohm", &[(1.0, 3.3)], &POLICY, &SEMANTICS)
+            .unwrap(),
         Verdict::Supports { .. }
     ));
     assert_eq!(db.law_history("ohm").unwrap()[1].law_version, 2);
@@ -306,14 +322,14 @@ fn parameter_update_keeps_the_old_version_readable() {
 #[test]
 fn put_law_on_an_existing_name_adds_a_version() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     let other = SignalLaw::fit_polynomial(
         &[(0.0, 0.0), (1.0, 1.0), (2.0, 4.0)],
         2,
         Provenance::new("b", "least squares"),
     )
     .unwrap();
-    assert_eq!(db.put_law("ohm", &other).unwrap(), 2);
+    assert_eq!(db.put_law("ohm", &other, &SEMANTICS).unwrap(), 2);
     assert_eq!(db.law_versions("ohm").unwrap(), vec![1, 2]);
     // x² at 1.5
     assert!((db.evaluate_law("ohm", 1.5).unwrap() - 2.25).abs() < 1e-12);
@@ -322,9 +338,10 @@ fn put_law_on_an_existing_name_adds_a_version() {
 #[test]
 fn names_are_independent_even_when_one_is_a_prefix_of_another() {
     let db = memory_db();
-    db.put_law("a", &line_law()).unwrap();
-    db.put_law("ab", &line_law()).unwrap();
-    db.ingest_evidence("ab", &[(1.0, 3.0)], &POLICY).unwrap();
+    db.put_law("a", &line_law(), &SEMANTICS).unwrap();
+    db.put_law("ab", &line_law(), &SEMANTICS).unwrap();
+    db.ingest_evidence("ab", &[(1.0, 3.0)], &POLICY, &SEMANTICS)
+        .unwrap();
     assert_eq!(db.law_versions("a").unwrap(), vec![1]);
     assert!(db.law_history("a").unwrap().is_empty());
     assert_eq!(db.law_history("ab").unwrap().len(), 1);
@@ -343,7 +360,7 @@ fn names_are_independent_even_when_one_is_a_prefix_of_another() {
 #[test]
 fn a_flipped_byte_is_rejected_by_the_checksum() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     let key = law_version_key("ohm", 1).unwrap();
     let mut bytes = db.get_blob(&key).unwrap().unwrap();
     let mid = bytes.len() / 2;
@@ -382,7 +399,7 @@ fn a_truncated_record_is_rejected() {
 #[test]
 fn a_forged_record_with_evidence_outside_the_domain_is_rejected() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     let mut parts = line_law().to_parts();
     parts.evidence.push((7.0, 15.0)); // domain stays [0, 4]
     let forged = encode_law_record("ohm", 1, &parts).unwrap();
@@ -397,7 +414,7 @@ fn a_forged_record_with_evidence_outside_the_domain_is_rejected() {
 #[test]
 fn a_forged_record_with_a_non_finite_coefficient_is_rejected() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     let mut parts = line_law().to_parts();
     parts.coefficients[0] = f64::NAN;
     let forged = encode_law_record("ohm", 1, &parts).unwrap();
@@ -412,8 +429,8 @@ fn a_forged_record_with_a_non_finite_coefficient_is_rejected() {
 #[test]
 fn a_record_copied_under_another_name_or_version_is_rejected() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
-    db.put_law("hooke", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
+    db.put_law("hooke", &line_law(), &SEMANTICS).unwrap();
     let ohm = db
         .get_blob(&law_version_key("ohm", 1).unwrap())
         .unwrap()
@@ -454,7 +471,7 @@ fn invalid_names_are_refused() {
     let db = memory_db();
     for name in ["", "a\0b"] {
         assert!(matches!(
-            db.put_law(name, &line_law()),
+            db.put_law(name, &line_law(), &SEMANTICS),
             Err(LawStoreError::InvalidName)
         ));
         assert!(matches!(db.get_law(name), Err(LawStoreError::InvalidName)));
@@ -463,7 +480,7 @@ fn invalid_names_are_refused() {
             Err(LawStoreError::InvalidName)
         ));
         assert!(matches!(
-            db.ingest_evidence(name, &[(1.0, 3.0)], &POLICY),
+            db.ingest_evidence(name, &[(1.0, 3.0)], &POLICY, &SEMANTICS),
             Err(LawStoreError::InvalidName)
         ));
     }
@@ -474,7 +491,7 @@ fn invalid_names_are_refused() {
 fn ingest_into_an_unknown_law_records_nothing() {
     let db = memory_db();
     assert!(matches!(
-        db.ingest_evidence("none", &[(1.0, 3.0)], &POLICY),
+        db.ingest_evidence("none", &[(1.0, 3.0)], &POLICY, &SEMANTICS),
         Err(LawStoreError::NotFound)
     ));
     assert!(db.law_history("none").unwrap().is_empty());
@@ -483,7 +500,7 @@ fn ingest_into_an_unknown_law_records_nothing() {
 #[test]
 fn invalid_policies_are_refused_and_not_recorded() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     let bad = [
         IngestPolicy {
             abs_tolerance: f64::NAN,
@@ -513,7 +530,7 @@ fn invalid_policies_are_refused_and_not_recorded() {
     for p in &bad {
         assert!(
             matches!(
-                db.ingest_evidence("ohm", &[(1.0, 3.0)], p),
+                db.ingest_evidence("ohm", &[(1.0, 3.0)], p, &SEMANTICS),
                 Err(LawStoreError::InvalidPolicy)
             ),
             "{p:?}"
@@ -525,12 +542,13 @@ fn invalid_policies_are_refused_and_not_recorded() {
 #[test]
 fn non_finite_evidence_is_out_of_range_and_recorded() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     assert_eq!(
         db.ingest_evidence(
             "ohm",
             &[(1.0, f64::NAN), (f64::NAN, 1.0), (2.0, 5.0)],
-            &POLICY
+            &POLICY,
+            &SEMANTICS
         )
         .unwrap(),
         Verdict::OutOfRange { outside: 2 }
@@ -602,7 +620,7 @@ fn a_forged_huge_count_is_refused_without_allocating() {
 #[test]
 fn a_history_key_without_a_version_does_not_make_a_name() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     db.put_blob(
         &alice_db::law_store::law_history_key("ghost", 1).unwrap(),
         b"x",
@@ -616,9 +634,9 @@ fn a_history_key_without_a_version_does_not_make_a_name() {
 #[test]
 fn history_order_holds_past_one_byte() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     for _ in 0..300 {
-        db.ingest_evidence("ohm", &[], &POLICY).unwrap();
+        db.ingest_evidence("ohm", &[], &POLICY, &SEMANTICS).unwrap();
     }
     let seqs: Vec<u64> = db
         .law_history("ohm")
@@ -633,13 +651,14 @@ fn history_order_holds_past_one_byte() {
 #[test]
 fn concurrent_ingests_record_every_verdict() {
     let db = std::sync::Arc::new(memory_db());
-    db.put_law("ohm", &line_law()).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     let threads: Vec<_> = (0..8)
         .map(|_| {
             let db = std::sync::Arc::clone(&db);
             std::thread::spawn(move || {
                 for _ in 0..50 {
-                    db.ingest_evidence("ohm", &[(1.0, 3.0)], &POLICY).unwrap();
+                    db.ingest_evidence("ohm", &[(1.0, 3.0)], &POLICY, &SEMANTICS)
+                        .unwrap();
                 }
             })
         })
@@ -691,9 +710,10 @@ fn sealed_records_with_a_wrong_header_or_tail_are_refused() {
 #[test]
 fn a_verdict_record_copied_under_another_name_is_rejected() {
     let db = memory_db();
-    db.put_law("ohm", &line_law()).unwrap();
-    db.put_law("hooke", &line_law()).unwrap();
-    db.ingest_evidence("ohm", &[(1.0, 3.0)], &POLICY).unwrap();
+    db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
+    db.put_law("hooke", &line_law(), &SEMANTICS).unwrap();
+    db.ingest_evidence("ohm", &[(1.0, 3.0)], &POLICY, &SEMANTICS)
+        .unwrap();
     let key = alice_db::law_store::law_history_key;
     let rec = db.get_blob(&key("ohm", 1).unwrap()).unwrap().unwrap();
     db.put_blob(&key("hooke", 1).unwrap(), &rec).unwrap();

@@ -79,27 +79,37 @@ assert!((avg - 259.75).abs() < 1e-2);
 
 | メソッド | 動作 |
 |----------|------|
-| `put_law(name, &law)` | `name` の次の版として保存する |
+| `put_law(name, &law, &semantics_id)` | `name` の次の版として保存し、内容の識別子で index に入れる |
 | `get_law(name)` / `get_law_version(name, v)` | 版を復元する 残差は保存した証拠から測り直す |
 | `evaluate_law(name, x)` | 最新版の `f(x)` 成立範囲外の `x` は拒否し (`LawError::OutOfRange`)、外挿しない |
-| `ingest_evidence(name, points, &policy)` | 新しい点を判定し (証拠なし / 範囲外 / 支持 / parameter 更新 / 残差増加 / 破綻)、判定を記録する parameter 更新は新しい版として保存し、古い版も読める |
+| `ingest_evidence(name, points, &policy, &semantics_id)` | 新しい点を判定し (証拠なし / 範囲外 / 支持 / parameter 更新 / 残差増加 / 破綻)、判定を記録する parameter 更新は新しい版として保存し、古い版も読める |
+| `law_pointers_by_id(&id)` / `evaluate_by_id(&id, x)` | 1 つの内容識別子の下にある `(name, version)` を全部返す、またそこを通して `f(x)` を返す |
 | `law_history(name)` / `law_versions(name)` / `law_names()` | 記録した判定 (証拠の点数と RMS 付き) を順に、保存した版、保存した名前 |
 
 ```rust
 use alice_db::law_store::{IngestPolicy, Provenance, SignalLaw, Verdict};
 use alice_db::{AliceDB, StorageConfig};
 
+// Identifies the arithmetic the law is evaluated with. It goes into the
+// law's content identifier, so a stored result names both the law and the
+// numeric semantics it was computed under.
+const SEMANTICS: [u8; 32] = [0x11; 32];
+
 let db = AliceDB::in_memory(StorageConfig::default())?;
 // y = 1 + 2x measured at x = 0..=4
 let pts: Vec<(f64, f64)> = (0..5).map(|i| (f64::from(i), 1.0 + 2.0 * f64::from(i))).collect();
 let law = SignalLaw::fit_polynomial(&pts, 1, Provenance::new("run 1", "least squares"))?;
-db.put_law("line", &law)?;
+db.put_law("line", &law, &SEMANTICS)?;
 
 assert!((db.evaluate_law("line", 2.5)? - 6.0).abs() < 1e-12);
 assert!(db.evaluate_law("line", 9.0).is_err()); // outside [0, 4]
 
+// The stored law is reachable by its content identifier as well as by name.
+let id = law.law_id(&SEMANTICS);
+assert_eq!(db.law_pointers_by_id(&id)?, vec![("line".to_string(), 1_u64)]);
+
 let policy = IngestPolicy { abs_tolerance: 0.01, break_factor: 4.0 };
-let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy)?;
+let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy, &SEMANTICS)?;
 assert!(matches!(v, Verdict::Supports { .. }));
 assert_eq!(db.law_history("line")?.len(), 1);
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -111,6 +121,21 @@ assert_eq!(db.law_history("line")?.len(), 1);
 が拒否するレコード (例えば保存した範囲の外にある証拠) はエラーとして返す バイト配置は
 `law_store` module に記載している `cargo run --example law_store` で両方の保存先について
 一連の流れを実行できる
+
+
+### 法則を内容で引く
+
+名前は人が付けるもので、後から変わりうる `SignalLaw::law_id` (ALICE-Zip) は
+法則そのもの (成立範囲と係数) と、評価に使う数値意味論の識別子から計算される
+32 byte の識別子なので、保存した結果が「どの法則から出たか」を名前に依存せず
+名指しできる
+
+`put_law` と `ingest_evidence` はその識別子を受け取り、書き込む版をすべて
+index に入れる `law_pointers_by_id` は 1 つの識別子に対する `(name, version)` を
+全部返し、`evaluate_by_id` はそれを評価する 複数の pointer があっても一意に
+定まるのは、識別子が同じなら評価が全ての `x` で同じ bit を返すため 逆向きは
+成立しない (評価が同じでも識別子は分かれうる) ので、識別子は重複排除の鍵には
+使えない
 
 ## 保存先
 

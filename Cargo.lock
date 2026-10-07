@@ -40,8 +40,9 @@ dependencies = [
 
 [[package]]
 name = "alice-analytics"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
+ "alice-det-math",
  "libm",
 ]
 
@@ -85,15 +86,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "alice-zip"
-version = "0.5.1"
+name = "alice-det-math"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c11662b0bebbcc8af88daf05228ea5315a71a72f26bd38329648908b1560a014"
+checksum = "b30996b43377046e6b1332f49e795792babc9a224bcef3caabd23e639028bea1"
+
+[[package]]
+name = "alice-zip"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b714e56d9d470588e8a3e4ddf21ea67b2bb25f553336451c592f7a40b12b8a6"
 dependencies = [
  "flate2",
  "libm",
  "rand",
  "rand_chacha",
+ "sha2",
 ]
 
 [[package]]
@@ -1210,6 +1218,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

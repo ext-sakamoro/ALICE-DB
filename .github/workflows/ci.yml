@@ -5,9 +5,11 @@ name: CI
 #
 # - test / clippy / doc on the default (file backend) and the full native
 #   feature set (ffi, sdf), and on no default features (memory backend only)
-# - the sibling path dependencies of the optional bridges (alice-analytics,
-#   alice-crypto) are replaced by empty crates (.github/actions/alice-stubs),
-#   so the `analytics` / `crypto` / `python` features are not built here
+# - the remaining sibling path dependency of an optional bridge (alice-crypto)
+#   is replaced by an empty crate (.github/actions/alice-stubs), so the
+#   `crypto` / `python` features are not built here. alice-analytics is a
+#   plain registry dependency, so the `analytics` bridge builds against the
+#   released crate rather than a stub
 
 on:
   push:

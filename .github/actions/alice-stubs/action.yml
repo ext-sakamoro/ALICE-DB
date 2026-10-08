@@ -1,7 +1,7 @@
 name: 'ALICE-DB Optional Bridge Stubs'
 description: |
   Create empty stub crates for ALICE-DB sibling path deps
-  (alice-analytics / alice-crypto)
+  (alice-crypto)
 
   Each stub declares a license so cargo-deny can evaluate it
 
@@ -16,23 +16,6 @@ runs:
       run: |
         set -euo pipefail
 
-        # ALICE-Analytics stub (optional feature)
-        mkdir -p "../ALICE-Analytics/src"
-        cat > "../ALICE-Analytics/Cargo.toml" <<'TOML'
-        [package]
-        name = "alice-analytics"
-        version = "0.2.0"
-        edition = "2021"
-        license = "MIT OR Apache-2.0"
-
-        [features]
-        default = ["std"]
-        std = []
-
-        [lib]
-        path = "src/lib.rs"
-        TOML
-        : > "../ALICE-Analytics/src/lib.rs"
 
         # ALICE-Crypto stub (optional feature, std)
         mkdir -p "../ALICE-Crypto/src"
@@ -55,4 +38,4 @@ runs:
         # No alice-zip stub: it comes from crates.io, not a sibling path, so a
         # stub would be an empty crate nothing resolves against
 
-        echo "Created stubs: alice-analytics / alice-crypto"
+        echo "Created stubs: alice-crypto"

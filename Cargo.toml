@@ -56,7 +56,7 @@ rayon = "1.10"
 parking_lot = "0.12"
 
 # ALICE-Analytics bridge (optional)
-alice-analytics = { path = "../ALICE-Analytics", version = "0.3", optional = true }
+alice-analytics = { version = "0.3", optional = true }
 
 # ALICE-Crypto bridge (optional)
 alice-crypto = { path = "../ALICE-Crypto", version = "0.1", optional = true, default-features = false, features = ["std"] }

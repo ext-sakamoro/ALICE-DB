@@ -23,6 +23,10 @@
 //!   negatives, measured false-positive rate ≤ 2p
 //! - aggregates: sum / mean / min / max / variance of known data
 #![cfg(feature = "fs")]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "the expected value has to come from somewhere independent of the implementation under test: the platform libm is that reference, and every tolerance here is orders of magnitude looser than any disagreement between libm implementations"
+)]
 // numeric oracles cast freely between the index / float domains; the crate's
 // pedantic gate is about API code, not about the reference arithmetic here
 #![allow(

@@ -73,6 +73,17 @@ impl BloomFilter {
         );
         let n = expected_elements.max(1) as f64;
         let ln2 = std::f64::consts::LN_2;
+        // The filter's size, not a stored value. A platform whose `ln` differs
+        // in the last place can round `ceil()` to a different bit count, which
+        // changes how many bytes the serialised filter occupies and its false
+        // positive rate — it does not change which keys the filter accepts, and
+        // no segment value is reconstructed from it. Byte-identical index files
+        // across targets would need this to go through deterministic arithmetic
+        // too; that is not claimed today.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "filter sizing, not a law: no stored value is reconstructed from it"
+        )]
         let m_ideal = -n * false_positive_rate.ln() / (ln2 * ln2);
         let num_bits = m_ideal.ceil().max(1.0) as u64;
         let k_ideal = (m_ideal / n) * ln2;

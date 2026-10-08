@@ -983,6 +983,10 @@ mod python {
 }
 
 #[cfg(all(test, feature = "fs"))]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test input shape only; production law evaluation goes through alice_core::generators"
+)]
 mod tests {
     use super::*;
     use tempfile::tempdir;

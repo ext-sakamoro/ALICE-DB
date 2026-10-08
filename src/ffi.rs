@@ -513,6 +513,10 @@ pub unsafe extern "C" fn alice_db_free_string(s: *mut c_char) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test input shape only; production law evaluation goes through alice_core::generators"
+)]
 mod tests {
     use super::*;
     use std::ffi::CString;

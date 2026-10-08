@@ -13,6 +13,10 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation
 )]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "benchmark input shape only; no stored value is reconstructed from it"
+)]
 
 use alice_db::{AliceDB, StorageConfig};
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};

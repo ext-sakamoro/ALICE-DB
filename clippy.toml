@@ -1,0 +1,43 @@
+# Determinism gate for the law evaluation.
+#
+# A segment stores a model, and reading it back means evaluating that model.
+# A lossless segment additionally stores `original ^ model`, so the stored
+# residual only reconstructs the original when the reader evaluates the model
+# with the same arithmetic the writer used. IEEE 754 does not require the
+# transcendentals to be correctly rounded, so the platform libm is free to
+# differ between OS, CPU and compiler — which makes "the same model" too weak a
+# condition to read data back exactly.
+#
+# The laws therefore come from `alice_core::generators` (point evaluators whose
+# transcendentals are built from IEEE 754 basic operations only), and a residual
+# records the identifier of the arithmetic it was measured against. This gate
+# keeps a local re-implementation from reintroducing a platform-dependent law:
+# without it, replacing the delegation with a hand-written `angle.sin()` passes
+# every test on a machine whose libm happens to agree, and silently stops
+# reconstructing data on one that does not. Measured here: the two agreed on
+# 102,800 of 102,800 samples for a sine, which is exactly why a runtime oracle
+# cannot be the gate.
+#
+# Deliberately absent: `sqrt`, `floor`, `round`, `trunc`, `ceil`, `mul_add`.
+# IEEE 754 specifies each of them exactly.
+#
+# Test fixtures that only need *some* varying signal, and sizing arithmetic that
+# no stored value depends on, carry a scoped allow with the reason.
+disallowed-methods = [
+    { path = "f32::sin", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f32::cos", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f32::tan", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f32::exp", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f32::ln", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f32::log2", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f32::powf", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f32::atan2", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f64::sin", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f64::cos", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f64::tan", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f64::exp", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f64::ln", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f64::log2", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f64::powf", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+    { path = "f64::atan2", reason = "platform libm is not cross-platform bit-exact; evaluate laws through alice_core::generators" },
+]

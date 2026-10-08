@@ -18,6 +18,10 @@
 //!
 //! Every check counts what it compared and fails when the count is zero.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test input shape only; the parity being measured is between backends, and both evaluate the law through alice_core::generators"
+)]
 // Test data generation casts small indices and PRNG words to floats / i64.
 #![allow(
     clippy::cast_precision_loss,

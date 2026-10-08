@@ -304,3 +304,169 @@ fn a_residual_from_different_arithmetic_is_skipped_not_applied() {
         assert_eq!(got.to_bits(), want.to_bits(), "i={i} (range)");
     }
 }
+
+/// ⚠️ zero-copy (mmap / rkyv) 経路も同じ照合をする
+///
+/// `SegmentView` は `DataSegment` とは別の読み出し実装なので、識別子の照合を片方にだけ
+/// 入れると「どちらの API で読んだか」で値が変わる 2026-10-08 の破壊試験では、
+/// zero-copy 側の照合を外す変異がこの test 無しでは 1 件も red にならなかった
+#[test]
+fn the_zero_copy_path_checks_the_identifier_too() {
+    let n = 9_usize;
+    let model = alice_db::model::ModelType::SineWave {
+        frequency: 3.0,
+        amplitude: 2.0,
+        phase: 0.4,
+        offset: 0.25,
+    };
+    let bare = DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4);
+
+    let mut raw = Vec::with_capacity(n * 4);
+    for _ in 0..n {
+        raw.extend_from_slice(&0x0000_0003_u32.to_le_bytes());
+    }
+    let mut other = alice_core::law::SEMANTICS_ID;
+    other[0] ^= 0x01;
+    let blob = alice_db::segment::compress_residual_xor(&raw, &other);
+
+    let segment = DataSegment::new(1, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
+    let bytes = segment.to_rkyv_bytes().expect("rkyv serialise");
+    let view = alice_db::segment::SegmentView::from_vec(bytes).expect("rkyv view");
+
+    let mut compared = 0_usize;
+    for i in 0..n {
+        let want = bare.query_point(i as i64).expect("in range");
+        let got = view
+            .query_point(i as i64)
+            .unwrap_or_else(|| panic!("i={i}: zero-copy の query_point が None"));
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "i={i}: zero-copy 側で識別子不一致の残差が適用されている"
+        );
+        compared += 1;
+    }
+    let range = view.query_range(0, (n - 1) as i64);
+    assert_eq!(range.len(), n, "zero-copy の query_range の件数");
+    for (i, (_, got)) in range.iter().enumerate() {
+        let want = bare.query_point(i as i64).expect("in range");
+        assert_eq!(got.to_bits(), want.to_bits(), "i={i} (zero-copy range)");
+        compared += 1;
+    }
+    assert_eq!(compared, n * 2);
+
+    // 識別子が一致する残差なら zero-copy 側でも適用される (上の assert が
+    // 「残差を一切適用しない」で通る空振りでないことを示す)
+    let good = alice_db::segment::compress_residual_xor(&raw, &alice_core::law::SEMANTICS_ID);
+    let ok_segment =
+        DataSegment::new(1, 0, (n - 1) as i64, bare.model.clone(), n, n * 4).with_residual(good);
+    let ok_view = alice_db::segment::SegmentView::from_vec(
+        ok_segment.to_rkyv_bytes().expect("rkyv serialise"),
+    )
+    .expect("rkyv view");
+    for i in 0..n {
+        let model_value = bare.query_point(i as i64).expect("in range");
+        let want = f32::from_bits(model_value.to_bits() ^ 0x3);
+        let got = ok_view.query_point(i as i64).expect("in range");
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "i={i}: 識別子が一致する残差が zero-copy 側で適用されていない"
+        );
+    }
+}
+
+/// 識別子付き残差の LZMA 経路 (magic 6) を通す
+///
+/// ⚠️ 小さい残差は LZMA で膨らむので raw 経路 (magic 7) に落ちる 破壊試験で
+/// 「書き込み時に識別子を入れない」変異が LZMA 側だけに当たった時、raw しか通らない
+/// test では 1 件も red にならなかった 圧縮が効く大きさの残差で両経路を踏む
+#[test]
+fn both_the_compressed_and_the_raw_pinned_paths_carry_the_identifier() {
+    use alice_db::segment::{residual_semantics, ResidualSemantics};
+
+    // 圧縮が効く: 同じ 4 byte 語を 4096 個 (LZMA で確実に縮む)
+    let mut compressible = Vec::with_capacity(4096 * 4);
+    for _ in 0..4096 {
+        compressible.extend_from_slice(&0x0000_0003_u32.to_le_bytes());
+    }
+    let big =
+        alice_db::segment::compress_residual_xor(&compressible, &alice_core::law::SEMANTICS_ID);
+    assert!(
+        big.len() < compressible.len(),
+        "LZMA 経路に入っていない (blob {} byte >= 入力 {} byte)",
+        big.len(),
+        compressible.len()
+    );
+    assert_eq!(
+        residual_semantics(&big),
+        ResidualSemantics::Pinned(alice_core::law::SEMANTICS_ID),
+        "LZMA 経路の blob が識別子を持っていない"
+    );
+
+    // 圧縮が効かない: 4 語だけ (raw 経路)
+    let small: Vec<u8> = (0..4_u32)
+        .flat_map(|i| (i ^ 0x9e37_79b9).to_le_bytes())
+        .collect();
+    let tiny = alice_db::segment::compress_residual_xor(&small, &alice_core::law::SEMANTICS_ID);
+    assert_eq!(
+        residual_semantics(&tiny),
+        ResidualSemantics::Pinned(alice_core::law::SEMANTICS_ID),
+        "raw 経路の blob が識別子を持っていない"
+    );
+
+    // 両経路の展開が元の byte 列に戻る (header を剥がし損ねたら長さが変わる)
+    assert_eq!(
+        alice_db::segment::decompress_residual(&big),
+        compressible,
+        "LZMA 経路の展開が元に戻らない"
+    );
+    assert_eq!(
+        alice_db::segment::decompress_residual(&tiny),
+        small,
+        "raw 経路の展開が元に戻らない"
+    );
+}
+
+/// `Linear` の法則は 1 つ — `generate_all` と単点経路が同じ除算を使う
+///
+/// ⚠️ `n - 1` が 2 の冪なら `1/(n-1)` は厳密なので、逆数乗算と除算の差が出ない
+/// 上の 3 経路 oracle は timestamp を整数位置に厳密に写すため 2 の冪を選んでおり、
+/// この差を原理的に見られない ⇒ 閉形式と直接比べる
+#[test]
+fn the_linear_law_divides_rather_than_multiplying_by_a_reciprocal() {
+    let mut compared = 0_usize;
+    let mut worst = 0_u32;
+    // n - 1 が 2 の冪でない長さを選ぶ (1/(n-1) が丸められる)
+    for n in [5_usize, 7, 11, 100, 1000] {
+        let (start, end_value) = (-3.0_f64, 7.5_f64);
+        let segment = DataSegment::new(
+            1,
+            0,
+            (n - 1) as i64,
+            alice_db::model::ModelType::Linear {
+                start_value: start,
+                end_value: end_value,
+            },
+            n,
+            n * 4,
+        );
+        let all = segment.generate_all();
+        assert_eq!(all.len(), n);
+        for (i, got) in all.iter().enumerate() {
+            // oracle: start + (end - start) * i / (n - 1) を f64 で評価 (除算 1 回)
+            #[allow(clippy::cast_precision_loss)]
+            let x = i as f64 / (n - 1) as f64;
+            let want = (start + x * (end_value - start)) as f32;
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "Linear n={n} i={i}: {got} vs 閉形式 {want} (逆数乗算なら最終 ulp がずれる)"
+            );
+            worst = worst.max(got.to_bits().abs_diff(want.to_bits()));
+            compared += 1;
+        }
+    }
+    assert!(compared >= 1_000, "比較 {compared} 件 — 空振り");
+    assert_eq!(worst, 0, "bit 一致でない");
+}

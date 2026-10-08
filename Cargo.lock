@@ -40,9 +40,9 @@ dependencies = [
 
 [[package]]
 name = "alice-analytics"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "alice-det-math 0.3.2",
+ "alice-det-math",
  "libm",
 ]
 
@@ -62,7 +62,7 @@ dependencies = [
  "alice-analytics",
  "alice-crypto",
  "alice-db",
- "alice-det-math 0.4.0",
+ "alice-det-math",
  "alice-zip",
  "bincode",
  "crc32fast",
@@ -89,12 +89,6 @@ dependencies = [
 
 [[package]]
 name = "alice-det-math"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b30996b43377046e6b1332f49e795792babc9a224bcef3caabd23e639028bea1"
-
-[[package]]
-name = "alice-det-math"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eef90265249a97cc0fac787cf918f62639991513c0219c33e1853de7f1a28a03"
@@ -105,7 +99,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1f94e967d864cfe3f4654a563f1ac7401d94fd4043cec4ec4ab14b6b232d18c"
 dependencies = [
- "alice-det-math 0.4.0",
+ "alice-det-math",
  "flate2",
  "libm",
  "rand",

@@ -199,10 +199,25 @@ jobs:
         with:
           tool: cargo-semver-checks@0.50.0
 
-      # HEAD~1 と比較 (informational、break あっても block しない)
+      # HEAD~1 と比較 API の変更そのものは informational (計画的な break を block しない)
+      # が、**何も比較しなかった場合は落とす**
+      #
+      # cargo-semver-checks は lint を「その lint が要求する bump が既に満たされて
+      # いるか」で選別するので、Cargo.toml の版が baseline より先行していると全 lint が
+      # 不要判定になり、`0 checks: 0 pass, 254 skip` / `no semver update required` /
+      # exit 0 を返す。文面は「問題なし」と読めるが、実際には 1 件も比較していない。
+      # `--release-type patch` を明示すると major / minor の lint 系統が両方走る
+      # (実測: 0 checks → 223 checks、うち 1 件が本物の破壊的変更を指した)。
       - name: Run cargo semver-checks
         run: |
+          set -o pipefail
           cargo semver-checks check-release \
             --package alice-db \
             --baseline-rev "HEAD~1" \
-            || true
+            --release-type patch 2>&1 | tee semver.log || true
+          ran=$(grep -oE '[0-9]+ checks:' semver.log | grep -oE '[0-9]+' | tail -1)
+          echo "semver-checks ran ${ran:-0} checks"
+          if [ "${ran:-0}" -eq 0 ]; then
+            echo "::error::cargo-semver-checks compared nothing (see the comment above this step)"
+            exit 1
+          fi

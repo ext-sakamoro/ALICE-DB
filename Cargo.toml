@@ -1,6 +1,6 @@
 [package]
 name = "alice-db"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 # alice-zip 0.7 は rust-version 1.87、CI の msrv job が 1.87 で実際に compile する
 rust-version = "1.87"
 edition = "2021"

@@ -4,6 +4,14 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Nothing yet. This section stays non-empty on purpose: `scripts/docs_lint.py`
+  treats an empty `[Unreleased]` as "compared nothing" and fails, so cutting a
+  release means adding the version heading below **and** leaving a line here.
+  Replace this line with the first real entry of the next version.
+
+## [0.3.0-beta.2] - 2026-10-08
+
 ### Added
 - `law_store` module: stores `SignalLaw` (ALICE-Zip `law`, re-exported) under a name in either backend. `AliceDB::put_law` (next version), `get_law` / `get_law_version` (restored through `SignalLaw::from_parts`, which measures the residual again), `evaluate_law` (an `x` outside the valid range is refused, no extrapolation), `ingest_evidence` (judges new points, records the verdict with evidence count and RMS, and stores a parameter update as a new version while the judged version stays readable), `law_history`, `law_versions`, `law_names`. Records are checksummed blobs under the reserved key prefix `"\0alice-law\0"`; the layout is documented in the module, and damaged records, records copied under another key and records `from_parts` refuses are returned as errors (`LawStoreError`)
 - `tests/law_store.rs`: 28 oracles with closed-form expectations (round trip in memory, through `to_bytes`, across close / reopen and blob compaction on the file backend, bit-identical parts; out-of-range refusal; each of the six verdicts recorded in order; versions kept after a parameter update; forged and damaged records; invalid names and policies; concurrent ingests)

@@ -4,11 +4,39 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `alice_db::SEMANTICS_ID`: the identifier of the arithmetic models are
+  evaluated with (re-exported from `alice-zip`, equal to
+  `alice_det_math::SEMANTICS_ID`), so a caller writing a residual with
+  `segment::compress_residual_xor` does not need a direct `alice-zip`
+  dependency to name it
+- `tests/determinism_golden.rs`: SHA-256 over the exact IEEE 754 encodings of
+  model selection and the fitted parameters (lossy and lossless, six fixed
+  series), `query_point` / `query_range` output, every aggregate over the
+  values read back, bloom filter sizing
+  (`num_bits` / `num_hashes` over ten false positive rates and 1 to 5,000,000
+  elements), `law_id` with the evaluation it stands for, and the
+  `SEMANTICS_ID` hex. Each scenario fails when it hashed fewer bytes than its
+  floor, and the file runs in every feature set of the CI test job on every OS
+
 ### Changed
-- Nothing yet. This section stays non-empty on purpose: `scripts/docs_lint.py`
-  treats an empty `[Unreleased]` as "compared nothing" and fails, so cutting a
-  release means adding the version heading below **and** leaving a line here.
-  Replace this line with the first real entry of the next version.
+
+- `alice-det-math` 0.4 is a direct dependency (the version `alice-zip` 0.7
+  uses). Bloom filter sizing takes its logarithm from `alice_det_math::ln64`
+  instead of the platform `ln`: the filter size is written with the SSTable,
+  so a platform whose `ln` differs in the last place could write a different
+  file from the same entries. The fit error that ranks candidate models and
+  the query variance square with an explicit multiplication instead of
+  `powi(2)`. No stored bits change on aarch64-apple-darwin: the new golden
+  digests are the same with the previous code, and filter sizes agreed on all
+  21,299,890 `(n, rate)` pairs tried although the two logarithms differ in the
+  last place on 1,220 of 74,693 sampled inputs
+- `clippy.toml` `disallowed-methods` grows from 16 to the 50 entries
+  `alice-zip` uses (inverse trigonometric and hyperbolic functions,
+  `exp2` / `exp_m1` / `ln_1p` / `log` / `log10` / `cbrt` / `hypot`, and
+  `powi`, whose multiplication order is unspecified)
+- CI and `scripts/preflight.sh`: every test step (default / `ffi,sdf` / no default features) also requires `determinism_golden` to run and pass
 
 ## [0.3.0-beta.2] - 2026-10-08
 
@@ -38,20 +66,6 @@ All notable changes to ALICE-DB will be documented in this file.
   fixtures are confirmed to carry the previous law's values, a freshly written
   residual names its arithmetic, old blobs report themselves as carrying none,
   and a residual naming a different arithmetic is skipped rather than applied
-
-- `alice_db::SEMANTICS_ID`: the identifier of the arithmetic models are
-  evaluated with (re-exported from `alice-zip`, equal to
-  `alice_det_math::SEMANTICS_ID`), so a caller writing a residual with
-  `segment::compress_residual_xor` does not need a direct `alice-zip`
-  dependency to name it
-- `tests/determinism_golden.rs`: SHA-256 over the exact IEEE 754 encodings of
-  model selection and the fitted parameters (lossy and lossless, six fixed
-  series), `query_point` / `query_range` output, every aggregate over the
-  values read back, bloom filter sizing
-  (`num_bits` / `num_hashes` over ten false positive rates and 1 to 5,000,000
-  elements), `law_id` with the evaluation it stands for, and the
-  `SEMANTICS_ID` hex. Each scenario fails when it hashed fewer bytes than its
-  floor, and the file runs in every feature set of the CI test job on every OS
 
 ### Changed
 
@@ -86,23 +100,9 @@ All notable changes to ALICE-DB will be documented in this file.
   multi-sine and polynomial laws in `segment` are gone; `Linear` had two
   implementations as well (a reciprocal multiply in `generate_all`, a division
   in the point law) and now has one
-- `alice-det-math` 0.4 is a direct dependency (the version `alice-zip` 0.7
-  uses). Bloom filter sizing takes its logarithm from `alice_det_math::ln64`
-  instead of the platform `ln`: the filter size is written with the SSTable,
-  so a platform whose `ln` differs in the last place could write a different
-  file from the same entries. The fit error that ranks candidate models and
-  the query variance square with an explicit multiplication instead of
-  `powi(2)`. No stored bits change on aarch64-apple-darwin: the new golden
-  digests are the same with the previous code, and filter sizes agreed on all
-  21,299,890 `(n, rate)` pairs tried although the two logarithms differ in the
-  last place on 1,220 of 74,693 sampled inputs
-- `clippy.toml` `disallowed-methods` grows from 16 to the 50 entries
-  `alice-zip` uses (inverse trigonometric and hyperbolic functions,
-  `exp2` / `exp_m1` / `ln_1p` / `log` / `log10` / `cbrt` / `hypot`, and
-  `powi`, whose multiplication order is unspecified)
 - alice-zip 0.4 → 0.5.1 (no source change was needed; test results unchanged)
 - The crate-level Quick Start is a compiled doctest on the memory backend (it was `ignore`d), and the crate doc states the dual license
-- CI: every test step also requires `determinism_golden` to run and pass; test matrix adds `ubuntu-24.04-arm`; the law store oracles run on the memory backend alone; the example runs and benches compile on every OS; rustdoc also checks default features; docs lint on Linux / macOS / Windows. `scripts/preflight.sh` runs the same commands (`--quick` includes `cargo test --lib`; `cargo audit` keeps its database under the build directory)
+- CI: test matrix adds `ubuntu-24.04-arm`; the law store oracles run on the memory backend alone; the example runs and benches compile on every OS; rustdoc also checks default features; docs lint on Linux / macOS / Windows. `scripts/preflight.sh` runs the same commands (`--quick` includes `cargo test --lib`; `cargo audit` keeps its database under the build directory)
 - README rewritten from the source: what it is not for, installation with `cargo add`, the law store, storage backends; performance and compression figures without measurement conditions were removed
 
 ## [0.3.0-beta.1] - 2026-10-06

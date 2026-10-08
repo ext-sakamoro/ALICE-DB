@@ -57,7 +57,7 @@ use wide::f64x4;
 /// `generate_all` (alice-zip) was right.  Lossless mode hid all of it
 /// because the residual was computed against the same wrong value.
 mod law {
-    use std::f64::consts::PI;
+    use alice_core::generators;
 
     /// Fractional sample position of `timestamp` in a segment of `n` samples
     /// spanning `start..=end` (uniform spacing).
@@ -70,38 +70,29 @@ mod law {
         (timestamp - start) as f64 / range * (n - 1) as f64
     }
 
+    /// `Σ cⱼ·iʲ` — delegates to the law in `alice_core`
+    ///
+    /// ⚠️ Horner with separate multiply and add, **not** `mul_add`. Until
+    /// 0.3.0 this was a local copy that used `mul_add`; the fused form rounds
+    /// once instead of twice, so it is a different law wearing the same name.
+    /// `alice_core::law::SignalLaw::law_id` identifies the non-fused form.
     #[inline(always)]
-    pub(super) fn polynomial_at(coefficients: impl DoubleEndedIterator<Item = f64>, i: f64) -> f32 {
-        let mut result = 0.0f64;
-        for c in coefficients.rev() {
-            result = result.mul_add(i, c);
-        }
-        result as f32
+    pub(super) fn polynomial_at(coefficients: &[f64], i: f64) -> f32 {
+        generators::polynomial_at(coefficients, i)
     }
 
+    /// `dc + Σ w(k)·mag/n · cos(2πk·i/n + φ)` — delegates to the law in `alice_core`
     #[inline(always)]
     pub(super) fn fourier_at(
-        coefficients: impl Iterator<Item = (usize, f32, f32)>,
+        coefficients: &[(usize, f32, f32)],
         dc_offset: f32,
         n: usize,
         i: f64,
     ) -> f32 {
-        if n == 0 {
-            return dc_offset;
-        }
-        let inv_n = 1.0 / n as f64;
-        let mut sum = dc_offset as f64;
-        for (k, mag, phase) in coefficients {
-            if k >= n {
-                continue;
-            }
-            let weight = if k == 0 || 2 * k == n { 1.0 } else { 2.0 };
-            let angle = 2.0 * PI * k as f64 * i * inv_n + phase as f64;
-            sum += weight * mag as f64 * inv_n * angle.cos();
-        }
-        sum as f32
+        generators::fourier_at(n, coefficients, dc_offset, i)
     }
 
+    /// `offset + A·sin(2πf·i/n + φ)` — delegates to the law in `alice_core`
     #[inline(always)]
     pub(super) fn sine_at(
         frequency: f32,
@@ -111,25 +102,18 @@ mod law {
         n: usize,
         i: f64,
     ) -> f32 {
-        let inv_n = if n == 0 { 0.0 } else { 1.0 / n as f64 };
-        let angle = 2.0 * PI * frequency as f64 * i * inv_n + phase as f64;
-        (offset as f64 + amplitude as f64 * angle.sin()) as f32
+        generators::sine_at(n, frequency, amplitude, phase, offset, i)
     }
 
+    /// `dc + Σⱼ Aⱼ·sin(2πfⱼ·i/n + φⱼ)` — delegates to the law in `alice_core`
     #[inline(always)]
     pub(super) fn multisine_at(
-        components: impl Iterator<Item = (f32, f32, f32)>,
+        components: &[(f32, f32, f32)],
         dc_offset: f32,
         n: usize,
         i: f64,
     ) -> f32 {
-        let inv_n = if n == 0 { 0.0 } else { 1.0 / n as f64 };
-        let mut sum = dc_offset as f64;
-        for (freq, amp, phase) in components {
-            let angle = 2.0 * PI * freq as f64 * i * inv_n + phase as f64;
-            sum += amp as f64 * angle.sin();
-        }
-        sum as f32
+        generators::multi_sine_at(n, components, dc_offset, i)
     }
 
     #[inline(always)]
@@ -308,11 +292,16 @@ impl DataSegment {
         let value = self.evaluate_model_at(i);
 
         // Apply residual correction if available (decompress on-the-fly)
+        // A residual anchored to a different arithmetic would turn the model
+        // value into one that is neither the original nor the model, so it is
+        // skipped rather than applied — see [`residual_is_applicable`].
         if let Some(ref residual) = self.residual_blob {
-            let kind = residual_kind(residual);
-            let decompressed = decompress_residual(residual);
-            let idx = self.timestamp_to_index(timestamp);
-            return Some(apply_residual(value, kind, &decompressed, idx));
+            if residual_is_applicable(residual) {
+                let kind = residual_kind(residual);
+                let decompressed = decompress_residual(residual);
+                let idx = self.timestamp_to_index(timestamp);
+                return Some(apply_residual(value, kind, &decompressed, idx));
+            }
         }
 
         Some(value)
@@ -375,7 +364,7 @@ impl DataSegment {
                 step,
                 start_time,
                 n,
-                |i| law::fourier_at(coefficients.iter().copied(), *dc_offset, *sample_count, i),
+                |i| law::fourier_at(coefficients, *dc_offset, *sample_count, i),
             ),
             ModelType::SineWave {
                 frequency,
@@ -401,7 +390,7 @@ impl DataSegment {
                 step,
                 start_time,
                 n,
-                |i| law::multisine_at(components.iter().copied(), *dc_offset, n, i),
+                |i| law::multisine_at(components, *dc_offset, n, i),
             ),
             ModelType::Constant { value } => {
                 let v = *value as f32;
@@ -444,11 +433,13 @@ impl DataSegment {
 
         // Apply residuals in separate pass (decompress once, then apply)
         if let Some(ref residual) = self.residual_blob {
-            let kind = residual_kind(residual);
-            let decompressed = decompress_residual(residual);
-            for (timestamp, value) in &mut results {
-                let idx = self.timestamp_to_index(*timestamp);
-                *value = apply_residual(*value, kind, &decompressed, idx);
+            if residual_is_applicable(residual) {
+                let kind = residual_kind(residual);
+                let decompressed = decompress_residual(residual);
+                for (timestamp, value) in &mut results {
+                    let idx = self.timestamp_to_index(*timestamp);
+                    *value = apply_residual(*value, kind, &decompressed, idx);
+                }
             }
         }
 
@@ -491,7 +482,7 @@ impl DataSegment {
             t += step4;
         }
         law::fill_range(results, t as i64, query_end, step, start_time, n, |i| {
-            law::polynomial_at(coefficients.iter().copied(), i)
+            law::polynomial_at(coefficients, i)
         });
     }
 
@@ -514,44 +505,8 @@ impl DataSegment {
         let n = self.metadata.point_count;
 
         match &self.model {
-            ModelType::Polynomial { coefficients, .. } => {
-                generators::generate_polynomial(n, coefficients)
-            }
-            ModelType::Fourier {
-                coefficients,
-                dc_offset,
-                sample_count,
-            } => {
-                let coefs: Vec<(usize, f32, f32)> = coefficients.clone();
-                generators::generate_from_coefficients(*sample_count, &coefs, *dc_offset)
-            }
-            ModelType::SineWave {
-                frequency,
-                amplitude,
-                phase,
-                offset,
-            } => generators::generate_sine_wave(n, *frequency, *amplitude, *phase, *offset),
-            ModelType::MultiSine {
-                components,
-                dc_offset,
-            } => generators::generate_multi_sine(n, components, *dc_offset),
-            ModelType::Constant { value } => {
-                vec![*value as f32; n]
-            }
-            ModelType::Linear {
-                start_value,
-                end_value,
-            } => {
-                // Pre-compute reciprocal to avoid repeated division in iterator
-                let inv_n_minus_1 = if n > 1 { 1.0 / (n - 1) as f64 } else { 0.0 };
-                let delta = end_value - start_value;
-                (0..n)
-                    .map(|i| {
-                        let t = i as f64 * inv_n_minus_1;
-                        (start_value + t * delta) as f32
-                    })
-                    .collect()
-            }
+            // Materialised (non-analytic) models have no law to evaluate at a
+            // position; they *are* the samples.
             ModelType::PerlinNoise {
                 seed,
                 scale,
@@ -559,7 +514,7 @@ impl DataSegment {
                 persistence,
                 lacunarity,
             } => {
-                // 1D value-noise fBm (alice-zip 0.4 `generate_fbm_1d`, the law
+                // 1D value-noise fBm (alice-zip `generate_fbm_1d`, the law
                 // alice-zip 0.3 exposed as `generate_perlin_advanced(n, 1, ..)`;
                 // sample values are unchanged). Parameters outside the law's
                 // domain (`scale <= 0`, `octaves == 0`) can only come from a
@@ -571,10 +526,28 @@ impl DataSegment {
                 compressed_data,
                 dtype,
                 ..
-            } => {
-                // Decompress LZMA data
-                self.decompress_raw(compressed_data, *dtype, n)
-            }
+            } => self.decompress_raw(compressed_data, *dtype, n),
+
+            // Every analytic model is its law evaluated at `i = 0 ..= n-1`.
+            //
+            // ⚠️ Until 0.3.0 this arm called the *array* generators in
+            // `alice_core` while `query_point` / `query_range` called the point
+            // law, and the two disagreed: on the same segment 544 of 1206
+            // compared samples came back with different bits (`SineWave` 168,
+            // `MultiSine` 181, `Fourier` 195). `query_range` and `query_point`
+            // agreed with each other, so this arm was the one out of step —
+            // and it is `pub`, so the disagreement was observable from outside
+            // the crate. `MemTable::seal` measures its residual against
+            // `query_point`, which makes the point law the one the stored data
+            // is anchored to. `tests/law_single_source.rs` pins all three
+            // paths to the same bits.
+            _ => (0..n)
+                .map(|i| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let pos = i as f64;
+                    self.evaluate_model_at(pos)
+                })
+                .collect(),
         }
     }
 
@@ -583,14 +556,12 @@ impl DataSegment {
     fn evaluate_model_at(&self, i: f64) -> f32 {
         let n = self.metadata.point_count;
         match &self.model {
-            ModelType::Polynomial { coefficients, .. } => {
-                law::polynomial_at(coefficients.iter().copied(), i)
-            }
+            ModelType::Polynomial { coefficients, .. } => law::polynomial_at(coefficients, i),
             ModelType::Fourier {
                 coefficients,
                 dc_offset,
                 sample_count,
-            } => law::fourier_at(coefficients.iter().copied(), *dc_offset, *sample_count, i),
+            } => law::fourier_at(coefficients, *dc_offset, *sample_count, i),
             ModelType::SineWave {
                 frequency,
                 amplitude,
@@ -600,7 +571,7 @@ impl DataSegment {
             ModelType::MultiSine {
                 components,
                 dc_offset,
-            } => law::multisine_at(components.iter().copied(), *dc_offset, n, i),
+            } => law::multisine_at(components, *dc_offset, n, i),
             ModelType::Constant { value } => *value as f32,
             ModelType::Linear {
                 start_value,
@@ -720,6 +691,70 @@ const RESIDUAL_RAW: u8 = 1;
 const RESIDUAL_XOR_LZMA: u8 = 2;
 /// Magic byte: raw XOR residual
 const RESIDUAL_XOR_RAW: u8 = 3;
+/// Magic byte: LZMA-compressed XOR residual **carrying the arithmetic identifier**
+const RESIDUAL_XOR_PINNED_LZMA: u8 = 6;
+/// Magic byte: raw XOR residual carrying the arithmetic identifier
+const RESIDUAL_XOR_PINNED_RAW: u8 = 7;
+/// Length of the arithmetic identifier a pinned residual carries
+const SEMANTICS_ID_LEN: usize = 32;
+
+/// Which arithmetic the model values behind a residual were produced with.
+///
+/// A residual stores `original ^ model`, so it only reconstructs the original
+/// when the reader evaluates the law with the **same arithmetic** the writer
+/// used. IEEE 754 does not require `sin` / `cos` to be correctly rounded, so
+/// "the same law" is not enough — the implementation of the transcendentals is
+/// part of what the residual is anchored to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidualSemantics {
+    /// Written before 0.3.0, with no record of the arithmetic used.
+    ///
+    /// The model values came from the platform libm of whichever machine wrote
+    /// the segment, so the residual reconstructs the original **only on a
+    /// machine whose libm agrees with that one**. Nothing in the blob says
+    /// which machine that was, so this cannot be checked — reading such a
+    /// segment elsewhere can silently return values off in the last place.
+    Unpinned,
+    /// The model values were produced with the arithmetic this identifier names.
+    ///
+    /// Compare it against the identifier of the arithmetic in use
+    /// (`alice_core::law::SEMANTICS_ID`): equal means the residual reconstructs
+    /// the original exactly on any target, different means it would not, and
+    /// that is detectable instead of silent.
+    Pinned([u8; SEMANTICS_ID_LEN]),
+}
+
+/// The arithmetic a residual blob is anchored to — see [`ResidualSemantics`].
+#[must_use]
+pub fn residual_semantics(blob: &[u8]) -> ResidualSemantics {
+    match blob.first() {
+        Some(&RESIDUAL_XOR_PINNED_LZMA | &RESIDUAL_XOR_PINNED_RAW)
+            if blob.len() > SEMANTICS_ID_LEN =>
+        {
+            let mut id = [0_u8; SEMANTICS_ID_LEN];
+            id.copy_from_slice(&blob[1..=SEMANTICS_ID_LEN]);
+            ResidualSemantics::Pinned(id)
+        }
+        _ => ResidualSemantics::Unpinned,
+    }
+}
+
+/// Whether applying this residual with the arithmetic in use reconstructs the
+/// original, rather than producing a value that is neither the original nor the
+/// model.
+///
+/// [`ResidualSemantics::Unpinned`] answers `true`: those blobs predate the
+/// identifier and applying them is the established behaviour (exact on the
+/// machine that wrote them). A [`ResidualSemantics::Pinned`] blob answers
+/// `true` only when its identifier matches, and the query paths then return the
+/// model value on its own rather than a corrupted one.
+#[must_use]
+pub fn residual_is_applicable(blob: &[u8]) -> bool {
+    match residual_semantics(blob) {
+        ResidualSemantics::Unpinned => true,
+        ResidualSemantics::Pinned(id) => id == alice_core::law::SEMANTICS_ID,
+    }
+}
 
 /// How a residual blob corrects the model output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -737,7 +772,12 @@ pub enum ResidualKind {
 #[must_use]
 pub fn residual_kind(blob: &[u8]) -> ResidualKind {
     match blob.first() {
-        Some(&RESIDUAL_XOR_LZMA | &RESIDUAL_XOR_RAW) => ResidualKind::Xor,
+        Some(
+            &RESIDUAL_XOR_LZMA
+            | &RESIDUAL_XOR_RAW
+            | &RESIDUAL_XOR_PINNED_LZMA
+            | &RESIDUAL_XOR_PINNED_RAW,
+        ) => ResidualKind::Xor,
         _ => ResidualKind::Additive,
     }
 }
@@ -758,22 +798,34 @@ pub fn apply_residual(value: f32, kind: ResidualKind, decompressed: &[u8], idx: 
 }
 
 /// Compress an XOR residual (`original.to_bits() ^ model.to_bits()` per
-/// sample, LE) — the exact-reconstruction format written since 2026-09-17.
+/// sample, LE) together with the identifier of the arithmetic the model values
+/// came from.
 ///
-/// Format: `[1 byte magic] [data]`, raw fallback when LZMA would expand.
+/// Format: `[1 byte magic] [32 byte arithmetic identifier] [data]`, raw
+/// fallback when LZMA would expand.
+///
+/// The identifier is what makes the blob self-describing. A residual only
+/// reconstructs the original when the reader evaluates the law with the same
+/// arithmetic, and IEEE 754 leaves the transcendentals free to differ between
+/// targets, so without it a reader cannot tell an exact reconstruction from a
+/// value that is neither the original nor the model. Blobs written before
+/// 0.3.0 carry no identifier ([`ResidualSemantics::Unpinned`]) and are still
+/// read, with that limitation.
 #[must_use]
-pub fn compress_residual_xor(raw: &[u8]) -> Vec<u8> {
+pub fn compress_residual_xor(raw: &[u8], semantics_id: &[u8; SEMANTICS_ID_LEN]) -> Vec<u8> {
     let mut compressed = Vec::new();
     if lzma_rs::lzma_compress(&mut std::io::Cursor::new(raw), &mut compressed).is_ok()
         && compressed.len() < raw.len()
     {
-        let mut out = Vec::with_capacity(1 + compressed.len());
-        out.push(RESIDUAL_XOR_LZMA);
+        let mut out = Vec::with_capacity(1 + SEMANTICS_ID_LEN + compressed.len());
+        out.push(RESIDUAL_XOR_PINNED_LZMA);
+        out.extend_from_slice(semantics_id);
         out.extend_from_slice(&compressed);
         out
     } else {
-        let mut out = Vec::with_capacity(1 + raw.len());
-        out.push(RESIDUAL_XOR_RAW);
+        let mut out = Vec::with_capacity(1 + SEMANTICS_ID_LEN + raw.len());
+        out.push(RESIDUAL_XOR_PINNED_RAW);
+        out.extend_from_slice(semantics_id);
         out.extend_from_slice(raw);
         out
     }
@@ -843,6 +895,20 @@ pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
             }
         }
         RESIDUAL_RAW | RESIDUAL_XOR_RAW => blob[1..].to_vec(),
+        RESIDUAL_XOR_PINNED_RAW => blob.get(1 + SEMANTICS_ID_LEN..).unwrap_or(&[]).to_vec(),
+        RESIDUAL_XOR_PINNED_LZMA => {
+            let Some(payload) = blob.get(1 + SEMANTICS_ID_LEN..) else {
+                return Vec::new();
+            };
+            let mut decompressed = Vec::new();
+            if lzma_rs::lzma_decompress(&mut std::io::Cursor::new(payload), &mut decompressed)
+                .is_ok()
+            {
+                decompressed
+            } else {
+                Vec::new()
+            }
+        }
         RESIDUAL_XOR_LZMA => {
             let mut decompressed = Vec::new();
             if lzma_rs::lzma_decompress(&mut std::io::Cursor::new(&blob[1..]), &mut decompressed)
@@ -1204,10 +1270,12 @@ impl SegmentView {
         // Lossless mode stores per-sample residuals; the in-memory path applied
         // them, the mmap path did not until 0.2.0-beta.2.
         if let Some(residual) = self.archived.residual_blob.as_ref() {
-            let kind = residual_kind(residual.as_slice());
-            let decompressed = decompress_residual(residual.as_slice());
-            let idx = self.archived_timestamp_to_index(timestamp);
-            return Some(apply_residual(value, kind, &decompressed, idx));
+            if residual_is_applicable(residual.as_slice()) {
+                let kind = residual_kind(residual.as_slice());
+                let decompressed = decompress_residual(residual.as_slice());
+                let idx = self.archived_timestamp_to_index(timestamp);
+                return Some(apply_residual(value, kind, &decompressed, idx));
+            }
         }
         Some(value)
     }
@@ -1313,28 +1381,29 @@ impl SegmentView {
                 step,
                 start_time,
                 n,
-                |i| law::multisine_at(components.iter().map(|c| (c.0, c.1, c.2)), *dc_offset, n, i),
+                |i| law::multisine_at(components, *dc_offset, n, i),
             ),
             ArchivedModelType::Fourier {
                 coefficients,
                 dc_offset,
                 sample_count,
-            } => law::fill_range(
-                &mut results,
-                query_start,
-                query_end,
-                step,
-                start_time,
-                n,
-                |i| {
-                    law::fourier_at(
-                        coefficients.iter().map(|c| (c.0 as usize, c.1, c.2)),
-                        *dc_offset,
-                        *sample_count as usize,
-                        i,
-                    )
-                },
-            ),
+            } => {
+                // The archived bin index is `u32`; widen once outside the loop
+                // rather than per sample (the law takes `usize`).
+                let coefs: Vec<(usize, f32, f32)> = coefficients
+                    .iter()
+                    .map(|c| (c.0 as usize, c.1, c.2))
+                    .collect();
+                law::fill_range(
+                    &mut results,
+                    query_start,
+                    query_end,
+                    step,
+                    start_time,
+                    n,
+                    |i| law::fourier_at(&coefs, *dc_offset, *sample_count as usize, i),
+                );
+            }
             ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
                 let all = self.materialise_archived_samples();
                 law::fill_range(
@@ -1351,11 +1420,13 @@ impl SegmentView {
 
         // Lossless residuals (see `query_point`)
         if let Some(residual) = self.archived.residual_blob.as_ref() {
-            let kind = residual_kind(residual.as_slice());
-            let decompressed = decompress_residual(residual.as_slice());
-            for (timestamp, value) in &mut results {
-                let idx = self.archived_timestamp_to_index(*timestamp);
-                *value = apply_residual(*value, kind, &decompressed, idx);
+            if residual_is_applicable(residual.as_slice()) {
+                let kind = residual_kind(residual.as_slice());
+                let decompressed = decompress_residual(residual.as_slice());
+                for (timestamp, value) in &mut results {
+                    let idx = self.archived_timestamp_to_index(*timestamp);
+                    *value = apply_residual(*value, kind, &decompressed, idx);
+                }
             }
         }
 
@@ -1369,7 +1440,7 @@ impl SegmentView {
         let n = self.archived.metadata.point_count as usize;
         match &self.archived.model {
             ArchivedModelType::Polynomial { coefficients, .. } => {
-                law::polynomial_at(coefficients.as_slice().iter().copied(), i)
+                law::polynomial_at(coefficients.as_slice(), i)
             }
             ArchivedModelType::Constant { value } => *value as f32,
             ArchivedModelType::Linear {
@@ -1385,17 +1456,18 @@ impl SegmentView {
             ArchivedModelType::MultiSine {
                 components,
                 dc_offset,
-            } => law::multisine_at(components.iter().map(|c| (c.0, c.1, c.2)), *dc_offset, n, i),
+            } => law::multisine_at(components, *dc_offset, n, i),
             ArchivedModelType::Fourier {
                 coefficients,
                 dc_offset,
                 sample_count,
-            } => law::fourier_at(
-                coefficients.iter().map(|c| (c.0 as usize, c.1, c.2)),
-                *dc_offset,
-                *sample_count as usize,
-                i,
-            ),
+            } => {
+                let coefs: Vec<(usize, f32, f32)> = coefficients
+                    .iter()
+                    .map(|c| (c.0 as usize, c.1, c.2))
+                    .collect();
+                law::fourier_at(&coefs, *dc_offset, *sample_count as usize, i)
+            }
             ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
                 // Non-analytic models: materialise the sample vector and index it.
                 // (0.2.0-beta.1 returned 0.0 here — every value stored through the

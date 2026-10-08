@@ -12,6 +12,25 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/law_id_index.rs`: 9 oracles (one identifier reached from two names evaluating bit-identically, round trip, the numeric semantics reaching the key, the version `ingest_evidence` writes being indexed too, survival through `to_bytes` / `from_bytes`, key families that cannot collide, an unknown identifier being empty rather than an error, and the key layout pinned by a golden)
 - `README_JP.md` (renamed from `README.ja.md`), `scripts/docs_lint.py` + `scripts/test_docs_lint.py` (public-document vocabulary, CHANGELOG structure, README example = crate doctest), `scripts/stub_guard.sh`
 
+- `segment::ResidualSemantics` with `residual_semantics` and
+  `residual_is_applicable`: a residual blob says which arithmetic its model
+  values came from. Blobs written before this version carry no identifier
+  (`Unpinned`) and are still read, exact on the machine that wrote them and not
+  checkable elsewhere; blobs written from now on carry it (`Pinned`). A pinned
+  blob whose identifier does not match the arithmetic in use is **not applied**
+  — the query paths return the model value rather than a corrupted one, and the
+  mismatch is visible through `residual_semantics`
+- `tests/law_single_source.rs`: the three read paths return the same bits for
+  every analytic model over four lengths (2 / 5 / 65 / 129, chosen so that an
+  integer timestamp maps to an integer sample position exactly), with a
+  comparison-count gate and a per-path and per-model breakdown in the failure
+  message
+- `tests/legacy_segment_compat.rs`: segments serialised by the previous version
+  (embedded byte fixtures, not re-generated here) still read back exactly, the
+  fixtures are confirmed to carry the previous law's values, a freshly written
+  residual names its arithmetic, old blobs report themselves as carrying none,
+  and a residual naming a different arithmetic is skipped rather than applied
+
 ### Changed
 
 - **Breaking:** `AliceDB::put_law` and `AliceDB::ingest_evidence` take the
@@ -20,7 +39,31 @@ All notable changes to ALICE-DB will be documented in this file.
   to compute the content identifier the version is indexed under, and it is a
   parameter rather than state on the database so that no path can store a
   version without indexing it
-- `alice-zip` requirement raised to `0.5.2` for `law::SignalLaw::law_id`
+- **Breaking:** the three read paths now return the same bits. `generate_all`
+  called the array generators in `alice-zip` while `query_point` and
+  `query_range` called the point law, and the two disagreed: on the same
+  segment 544 of 1206 compared samples came back with different bits
+  (`SineWave` 168, `MultiSine` 181, `Fourier` 195; `query_range` and
+  `query_point` agreed with each other, so `generate_all` was the one out of
+  step, and it is `pub`). Every analytic model is now its law evaluated at
+  `i = 0 ..= n-1` through the point law, which is also what `MemTable::seal`
+  measures a residual against, so the stored data is anchored to the path that
+  reads it. `generate_all` on a `Fourier` model returns `point_count` samples
+  rather than `sample_count`
+- **Breaking:** `segment::compress_residual_xor` takes the identifier of the
+  arithmetic the model values were produced with (`&[u8; 32]`), and writes it
+  into the blob. A residual stores `original ^ model`, so it only reconstructs
+  the original when the reader evaluates the law with the same arithmetic;
+  IEEE 754 leaves the transcendentals free to differ between targets, so
+  without the identifier a reader cannot tell an exact reconstruction from a
+  value that is neither the original nor the model
+- `alice-zip` requirement raised to `0.7` so that the laws are evaluated
+  through its point evaluators (`sine_at` / `multi_sine_at` / `fourier_at` /
+  `polynomial_at`), whose transcendentals come from a deterministic-arithmetic
+  crate rather than the platform libm. The local copies of the sine, Fourier,
+  multi-sine and polynomial laws in `segment` are gone; `Linear` had two
+  implementations as well (a reciprocal multiply in `generate_all`, a division
+  in the point law) and now has one
 - alice-zip 0.4 → 0.5.1 (no source change was needed; test results unchanged)
 - The crate-level Quick Start is a compiled doctest on the memory backend (it was `ignore`d), and the crate doc states the dual license
 - CI: test matrix adds `ubuntu-24.04-arm`; the law store oracles run on the memory backend alone; the example runs and benches compile on every OS; rustdoc also checks default features; docs lint on Linux / macOS / Windows. `scripts/preflight.sh` runs the same commands (`--quick` includes `cargo test --lib`; `cargo audit` keeps its database under the build directory)

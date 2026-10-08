@@ -22,7 +22,13 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
 - **Exact storage by default.** The default `FitConfig` is lossy: a model is
   accepted when its error is under the documented threshold of its kind (for
   example relative MSE < 0.1 for a single sine). Set `lossless: true` in
-  `FitConfig` to store an XOR residual and read back the exact bits.
+  `FitConfig` to store an XOR residual and read back the exact bits. A residual
+  stores `original ^ model`, so it reconstructs the original only when the
+  reader evaluates the law with the same arithmetic; the blob therefore carries
+  the identifier of that arithmetic, and a residual naming a different one is
+  skipped rather than applied (`segment::residual_semantics` reports which).
+  Residuals written before 0.3.0 carry no identifier: they are exact on the
+  machine that wrote them, and that cannot be checked anywhere else.
 - **Irregular timestamps.** A segment assumes uniform spacing between its first
   and last timestamp; series with gaps are not reproduced point for point.
 - **General SQL or document workloads.** Values are `f32` per `i64`

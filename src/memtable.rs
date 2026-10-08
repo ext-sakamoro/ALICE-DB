@@ -228,7 +228,10 @@ impl MemTable {
                 let residual = original.to_bits() ^ reconstructed.to_bits();
                 residual_bytes.extend_from_slice(&residual.to_le_bytes());
             }
-            segment = segment.with_residual(crate::segment::compress_residual_xor(&residual_bytes));
+            segment = segment.with_residual(crate::segment::compress_residual_xor(
+                &residual_bytes,
+                &alice_core::law::SEMANTICS_ID,
+            ));
         }
 
         segment

@@ -23,6 +23,7 @@ dependencies = [
 name = "alice-db"
 version = "0.3.0-beta.2"
 dependencies = [
+ "alice-det-math",
  "alice-zip",
  "bincode",
  "crc32fast",

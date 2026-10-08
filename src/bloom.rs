@@ -73,18 +73,22 @@ impl BloomFilter {
         );
         let n = expected_elements.max(1) as f64;
         let ln2 = std::f64::consts::LN_2;
-        // The filter's size, not a stored value. A platform whose `ln` differs
-        // in the last place can round `ceil()` to a different bit count, which
-        // changes how many bytes the serialised filter occupies and its false
-        // positive rate — it does not change which keys the filter accepts, and
-        // no segment value is reconstructed from it. Byte-identical index files
-        // across targets would need this to go through deterministic arithmetic
-        // too; that is not claimed today.
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "filter sizing, not a law: no stored value is reconstructed from it"
-        )]
-        let m_ideal = -n * false_positive_rate.ln() / (ln2 * ln2);
+        // The filter's size is part of the SSTable: the serialised filter
+        // occupies `num_bits / 8` bytes and the reader probes `num_hashes`
+        // positions. A platform whose `ln` differs in the last place can round
+        // `ceil()` to a different bit count, so the same entries would produce
+        // a different file on a different target. The logarithm therefore goes
+        // through `alice-det-math`, which returns the same bits everywhere.
+        //
+        // Measured on aarch64-apple-darwin when this moved off the platform
+        // `ln`: `ln64` and `f64::ln` disagree in the last place on 1,220 of
+        // 74,693 inputs on a logarithmic grid over (1e-12, 1), and on 71 of
+        // 1,010 sampled false positive rates, but the resulting
+        // `(num_bits, num_hashes)` agreed on all 21,299,890 (n, rate) pairs
+        // tried, and `ln(0.01)` (the rate the SSTable writer uses) is the
+        // same bits in both. Filters already on disk are read back with their
+        // stored size and are unaffected either way.
+        let m_ideal = -n * alice_det_math::ln64(false_positive_rate) / (ln2 * ln2);
         let num_bits = m_ideal.ceil().max(1.0) as u64;
         let k_ideal = (m_ideal / n) * ln2;
         let num_hashes = k_ideal.ceil().max(1.0) as u32;

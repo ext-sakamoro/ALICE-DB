@@ -20,6 +20,14 @@ crate-type = ["cdylib", "rlib"]
 # (stored by `law_store`, 0.5.2+ for `law::SignalLaw::law_id`)
 alice_core = { package = "alice-zip", version = "0.7" }
 
+# Every transcendental this crate evaluates itself (bloom filter sizing, model
+# selection error) goes through `alice-det-math`, whose kernels are built from
+# IEEE 754 basic operations only and so return the same bits on every target.
+# The same major as alice-zip 0.7 uses, so `alice_det_math::SEMANTICS_ID` and
+# `alice_core::law::SEMANTICS_ID` name the same arithmetic (pinned in
+# tests/determinism_golden.rs). This crate always builds with `std`.
+alice-det-math = { version = "0.4", default-features = false, features = ["std"] }
+
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.7", features = ["validation", "std"] }
 # File backend only (`fs` feature): zero-copy segment / blob SSTable reads
@@ -75,6 +83,8 @@ js-sys = "0.3"
 criterion = "0.5"
 tempfile = "3.10"
 rand = "0.8"
+# tests/determinism_golden.rs: digests over the exact IEEE 754 encodings
+sha2 = "0.10"
 # Enables the open-file audit for every test build of this crate (src/fs_audit.rs)
 alice-db = { path = ".", default-features = false, features = ["open-file-audit"] }
 

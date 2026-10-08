@@ -262,7 +262,7 @@ impl<'a> QueryBuilder<'a> {
         let mean: f64 = points.iter().map(|&(_, v)| v as f64).sum::<f64>() / points.len() as f64;
         points
             .iter()
-            .map(|&(_, v)| (v as f64 - mean).powi(2))
+            .map(|&(_, v)| (v as f64 - mean) * (v as f64 - mean))
             .sum::<f64>()
             / points.len() as f64
     }

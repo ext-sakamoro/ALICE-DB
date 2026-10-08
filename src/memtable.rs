@@ -404,13 +404,13 @@ impl MemTable {
         let mse: f32 = values
             .iter()
             .zip(reconstructed.iter())
-            .map(|(a, b)| (a - b).powi(2))
+            .map(|(a, b)| (a - b) * (a - b))
             .sum::<f32>()
             * inv_len;
 
         let variance: f32 = {
             let mean = values.iter().sum::<f32>() * inv_len;
-            values.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() * inv_len
+            values.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() * inv_len
         };
 
         let relative_error = if variance > 1e-10 {
@@ -469,13 +469,13 @@ impl MemTable {
         let mse: f32 = values
             .iter()
             .zip(reconstructed.iter())
-            .map(|(a, b)| (a - b).powi(2))
+            .map(|(a, b)| (a - b) * (a - b))
             .sum::<f32>()
             * inv_len;
 
         let variance: f32 = {
             let mean = values.iter().sum::<f32>() * inv_len;
-            values.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() * inv_len
+            values.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() * inv_len
         };
 
         let relative_error = if variance > 1e-10 {

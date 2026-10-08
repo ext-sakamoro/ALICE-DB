@@ -223,6 +223,15 @@ pub mod transaction;
 pub mod ffi;
 
 // Re-exports for convenience
+/// Identifier of the arithmetic this crate evaluates models with
+///
+/// A lossless residual records it (see [`segment::ResidualSemantics`]), and a
+/// reader applies a residual only when the identifier it carries is this one.
+/// Pass it to [`segment::compress_residual_xor`] when writing a residual
+/// measured against this crate's model evaluation. It is the identifier
+/// `alice-zip` publishes for its point evaluators, which are built on
+/// `alice-det-math` like every other transcendental here.
+pub use alice_core::law::SEMANTICS_ID;
 #[cfg(feature = "analytics")]
 pub use analytics_bridge::{flush_metrics_to_db, metric_key, AnalyticsSink, VARIANTS_PER_METRIC};
 pub use checksum::{

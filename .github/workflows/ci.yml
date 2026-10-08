@@ -39,15 +39,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Each step fails when no test ran at all, and when the named oracle
       # binary did not run (a feature mismatch would skip it silently).
+      # determinism_golden pins bit patterns whose expected digests are the
+      # same on every OS and in every feature set, so it is named in each step.
       - name: Test (default = file backend)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat -- cargo test
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden -- cargo test
       - name: Test (full native feature set)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat -- cargo test --features "$NATIVE_FEATURES"
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden -- cargo test --features "$NATIVE_FEATURES"
       - name: Test (no default features = memory backend only)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat -- cargo test --no-default-features
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden -- cargo test --no-default-features
       - name: Test (law store oracles, memory backend only)
         shell: bash
         run: scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store

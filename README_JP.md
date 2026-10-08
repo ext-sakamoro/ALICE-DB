@@ -219,6 +219,7 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | Crate | 関係 |
 |-------|------|
 | [ALICE-Zip](https://github.com/ext-sakamoro/ALICE-Zip) | モデルの当てはめと生成器、`law::SignalLaw` |
+| [ALICE-DetMath](https://github.com/ext-sakamoro/ALICE-DetMath) | どの target でも同じ bit を返す超越関数 (bloom filter の大きさ、ALICE-Zip 経由の法則評価)、`SEMANTICS_ID` |
 | [ALICE-Analytics](https://github.com/ext-sakamoro/ALICE-Analytics) | ストリーミング集計 (`analytics` feature) |
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | 保存時暗号化 (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | 組込み機器でのモデル当てはめ |

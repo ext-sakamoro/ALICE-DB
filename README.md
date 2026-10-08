@@ -230,6 +230,7 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | Crate | Relation |
 |-------|----------|
 | [ALICE-Zip](https://github.com/ext-sakamoro/ALICE-Zip) | model fitting and generators; `law::SignalLaw` |
+| [ALICE-DetMath](https://github.com/ext-sakamoro/ALICE-DetMath) | transcendentals that return the same bits on every target (bloom filter sizing, and the laws through ALICE-Zip); `SEMANTICS_ID` |
 | [ALICE-Analytics](https://github.com/ext-sakamoro/ALICE-Analytics) | streaming aggregation (`analytics` feature) |
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | encryption at rest (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | model fitting on embedded devices |

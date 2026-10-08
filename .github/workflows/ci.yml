@@ -41,13 +41,13 @@ jobs:
       # binary did not run (a feature mismatch would skip it silently).
       - name: Test (default = file backend)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity -- cargo test
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat -- cargo test
       - name: Test (full native feature set)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity -- cargo test --features "$NATIVE_FEATURES"
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat -- cargo test --features "$NATIVE_FEATURES"
       - name: Test (no default features = memory backend only)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity -- cargo test --no-default-features
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat -- cargo test --no-default-features
       - name: Test (law store oracles, memory backend only)
         shell: bash
         run: scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store

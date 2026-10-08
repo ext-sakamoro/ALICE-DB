@@ -27,6 +27,19 @@
 //! 解析 model のすべてで、3 経路が **bit 一致**すること 許容差では比べない (旧実装の
 //! 不一致はどれも 1e-6 以下なので、ゆるい許容差では 1 件も捕まらない)
 
+// numeric oracles cast freely between the index / float domains; the crate's
+// pedantic gate is about API code, not about the reference arithmetic here
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::unreadable_literal
+)]
 use alice_db::model::ModelType;
 use alice_db::segment::DataSegment;
 

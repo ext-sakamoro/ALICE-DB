@@ -32,6 +32,19 @@
 //! 旧 blob が `Unpinned` と報告されること / ⚠️ **識別子が違う blob は適用されず model 値が
 //! 返ること** (原信号でも model でもない値を黙って返さない)
 
+// numeric oracles cast freely between the index / float domains; the crate's
+// pedantic gate is about API code, not about the reference arithmetic here
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::unreadable_literal
+)]
 use alice_db::segment::DataSegment;
 
 fn unhex(s: &str) -> Vec<u8> {

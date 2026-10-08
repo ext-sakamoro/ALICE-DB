@@ -50,11 +50,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "alice-zip"
-version = "0.5.2"
+name = "alice-det-math"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b714e56d9d470588e8a3e4ddf21ea67b2bb25f553336451c592f7a40b12b8a6"
+checksum = "eef90265249a97cc0fac787cf918f62639991513c0219c33e1853de7f1a28a03"
+
+[[package]]
+name = "alice-zip"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1f94e967d864cfe3f4654a563f1ac7401d94fd4043cec4ec4ab14b6b232d18c"
 dependencies = [
+ "alice-det-math",
  "flate2",
  "libm",
  "rand",

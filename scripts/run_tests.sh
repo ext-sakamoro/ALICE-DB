@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# scripts/run_tests.sh <required-test-binary> -- <cargo test command...>
+# scripts/run_tests.sh <required-test-binary>[,<more>...] -- <cargo test command...>
 #
 # Runs the given cargo test command and fails unless
 #   - the command itself succeeds,
 #   - at least one test passed in total, and
-#   - the named integration test binary ran and passed at least one test.
+#   - every named integration test binary ran and passed at least one test.
 # A feature or target mismatch otherwise turns a test step into a silent
 # no-op that still reports success.
+#
+# Several names are given comma separated. Naming a binary is what keeps a
+# suite from disappearing: `cargo test` without `--test` runs every target, so
+# a suite that stops being built reports nothing rather than failing.
 set -euo pipefail
 
-required="$1"
+IFS=',' read -r -a required <<< "$1"
 shift
 [[ "${1:-}" == "--" ]] && shift
 
@@ -19,7 +23,8 @@ trap 'rm -f "$log"' EXIT
 "$@" 2>&1 | tee "$log"
 
 total=0
-required_passed=0
+declare -A required_passed=()
+for name in "${required[@]}"; do required_passed["$name"]=0; done
 current=""
 while IFS= read -r line; do
   case "$line" in
@@ -29,21 +34,31 @@ while IFS= read -r line; do
     "test result: "*)
       n=$(printf '%s\n' "$line" | sed -E 's/.* ([0-9]+) passed.*/\1/')
       total=$((total + n))
-      if [[ "$current" == *"tests/${required}.rs"* || "$current" == *"tests\\${required}.rs"* ]]; then
-        required_passed=$((required_passed + n))
-      fi
+      for name in "${required[@]}"; do
+        if [[ "$current" == *"tests/${name}.rs"* || "$current" == *"tests\\${name}.rs"* ]]; then
+          required_passed["$name"]=$((required_passed["$name"] + n))
+        fi
+      done
       ;;
   esac
 # strip CR (Windows) and ANSI colour codes (CARGO_TERM_COLOR=always puts one
 # right after "Running", which would hide the binary name from the match above)
 done < <(tr -d '\r' < "$log" | sed "s/$(printf '\033')\[[0-9;]*m//g")
 
-echo "run_tests: ${total} tests passed in total, ${required_passed} in ${required}"
+summary=""
+for name in "${required[@]}"; do
+  summary+=" ${required_passed[$name]} in ${name},"
+done
+echo "run_tests: ${total} tests passed in total,${summary%,}"
 if [[ "$total" -eq 0 ]]; then
   echo "run_tests: no test ran" >&2
   exit 1
 fi
-if [[ "$required_passed" -eq 0 ]]; then
-  echo "run_tests: ${required} did not run any test" >&2
-  exit 1
-fi
+missing=0
+for name in "${required[@]}"; do
+  if [[ "${required_passed[$name]}" -eq 0 ]]; then
+    echo "run_tests: ${name} did not run any test" >&2
+    missing=1
+  fi
+done
+[[ "$missing" -eq 0 ]] || exit 1

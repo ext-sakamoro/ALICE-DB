@@ -46,7 +46,8 @@ All notable changes to ALICE-DB will be documented in this file.
   dependency to name it
 - `tests/determinism_golden.rs`: SHA-256 over the exact IEEE 754 encodings of
   model selection and the fitted parameters (lossy and lossless, six fixed
-  series), `query_point` / `query_range` output, bloom filter sizing
+  series), `query_point` / `query_range` output, every aggregate over the
+  values read back, bloom filter sizing
   (`num_bits` / `num_hashes` over ten false positive rates and 1 to 5,000,000
   elements), `law_id` with the evaluation it stands for, and the
   `SEMANTICS_ID` hex. Each scenario fails when it hashed fewer bytes than its

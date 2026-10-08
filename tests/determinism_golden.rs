@@ -9,7 +9,8 @@
 //!   parameters it is stored with (`memtable.rs`, the fit error ranks the
 //!   candidates)
 //! - **reading back** — `query_point` / `query_range` evaluate the stored model,
-//!   and a lossless segment XORs a residual onto exactly those bits
+//!   and a lossless segment XORs a residual onto exactly those bits; the
+//!   aggregates are computed from those values
 //! - **index sizing** — the bloom filter written next to a blob `SSTable` is
 //!   `num_bits` / `num_hashes` sized from a logarithm (`bloom.rs`)
 //!
@@ -35,13 +36,13 @@
 //!
 //! Recorded on aarch64-apple-darwin when bloom sizing moved from the platform
 //! `ln` to `alice_det_math::ln64` and the fit error from `powi(2)` to an
-//! explicit multiplication. The previous code produces the same five digests
+//! explicit multiplication. The previous code produces the same six digests
 //! in all three feature sets, so the move changed no stored bits there.
 
 use alice_db::bloom::BloomFilter;
 use alice_db::law_store::{Provenance, SignalLaw};
 use alice_db::segment::decompress_residual;
-use alice_db::{DataSegment, FitConfig, MemTable, ModelType};
+use alice_db::{Aggregation, AliceDB, DataSegment, FitConfig, MemTable, ModelType, StorageConfig};
 use sha2::{Digest, Sha256};
 
 /// Collects the bits a scenario produced
@@ -363,6 +364,45 @@ fn query_point_and_query_range_are_the_recorded_bits() {
         bits,
         values * 4,
         "2b8604dc4a9af339621c6f157162c2b9d29191f1b9692ed9cdeb6207ee3b25df",
+    );
+}
+
+/// The aggregates are computed from the values read back, so they follow the
+/// model's bits, and `Variance` / `StdDev` add arithmetic of their own
+/// (`query_engine.rs`).
+#[test]
+fn aggregates_are_the_recorded_bits() {
+    let aggregations = [
+        Aggregation::Sum,
+        Aggregation::Avg,
+        Aggregation::Min,
+        Aggregation::Max,
+        Aggregation::Count,
+        Aggregation::First,
+        Aggregation::Last,
+        Aggregation::StdDev,
+        Aggregation::Variance,
+    ];
+    let mut bits = Bits::default();
+    let mut scalars = 0;
+    for (name, data) in series() {
+        let db = AliceDB::in_memory(StorageConfig::default()).expect("in-memory database");
+        db.put_batch(&data).expect("in-memory write");
+        db.flush().expect("in-memory flush");
+        let end = data.last().expect("not empty").0;
+        bits.tag(name);
+        for (start, stop) in [(0, end), (end / 4, end / 2)] {
+            for agg in aggregations {
+                bits.f64(db.aggregate(start, stop, agg).expect("in-memory aggregate"));
+                scalars += 1;
+            }
+        }
+    }
+    assert_golden(
+        "aggregates",
+        bits,
+        scalars * 8,
+        "e63000b2772f7d157633277f0f688c3a7c8d7a2a7491729d4f061856cd15e713",
     );
 }
 

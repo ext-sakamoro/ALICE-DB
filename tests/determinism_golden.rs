@@ -221,8 +221,10 @@ fn series() -> Vec<Series> {
         ("linear", ts(100, &|i| 0.25f32.mul_add(x(i), -3.0))),
         (
             "quadratic",
-            ts(128, &|i| {
-                let t = x(i) / 128.0;
+            // 100 points: 400 bytes over a 48-byte model is a ratio that
+            // `a / b` and `a * (1 / b)` round differently
+            ts(100, &|i| {
+                let t = x(i) / 100.0;
                 3.0 * t * t - 2.0 * t + 0.5
             }),
         ),
@@ -324,7 +326,7 @@ fn model_selection_is_the_recorded_bits() {
         bits,
         // the lossless residuals alone are 4 bytes per point
         points / 2 * 4,
-        "92b93535061e707389a08115d74493765ce47e48966be71b709ddd3d65059425",
+        "d6c3e1e7fe4031262f743c0b326c57b28e34857bafd7e0f3e37e256d304ea160",
     );
 }
 
@@ -363,7 +365,7 @@ fn query_point_and_query_range_are_the_recorded_bits() {
         "query_point and query_range",
         bits,
         values * 4,
-        "2b8604dc4a9af339621c6f157162c2b9d29191f1b9692ed9cdeb6207ee3b25df",
+        "84e4d8d5dec997c81798274963b5375e42cd70bd32a9b41bff76e3b46fb3c07c",
     );
 }
 
@@ -402,7 +404,7 @@ fn aggregates_are_the_recorded_bits() {
         "aggregates",
         bits,
         scalars * 8,
-        "e63000b2772f7d157633277f0f688c3a7c8d7a2a7491729d4f061856cd15e713",
+        "113119281a0da813f3d1362e2d6a8a7d87b1bf2c352f0cca5088ea5103ffbb40",
     );
 }
 

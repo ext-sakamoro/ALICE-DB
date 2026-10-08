@@ -23,8 +23,11 @@ trap 'rm -f "$log"' EXIT
 "$@" 2>&1 | tee "$log"
 
 total=0
-declare -A required_passed=()
-for name in "${required[@]}"; do required_passed["$name"]=0; done
+# ⚠️ Indexed arrays, not an associative one: `declare -A` needs bash 4, and the
+# macOS runner's /bin/bash is 3.2 — the CI step failed with
+# `declare: -A: invalid option` while a Homebrew bash 5 ran it locally.
+required_passed=()
+for i in "${!required[@]}"; do required_passed[$i]=0; done
 current=""
 while IFS= read -r line; do
   case "$line" in
@@ -34,9 +37,10 @@ while IFS= read -r line; do
     "test result: "*)
       n=$(printf '%s\n' "$line" | sed -E 's/.* ([0-9]+) passed.*/\1/')
       total=$((total + n))
-      for name in "${required[@]}"; do
+      for i in "${!required[@]}"; do
+        name="${required[$i]}"
         if [[ "$current" == *"tests/${name}.rs"* || "$current" == *"tests\\${name}.rs"* ]]; then
-          required_passed["$name"]=$((required_passed["$name"] + n))
+          required_passed[$i]=$((required_passed[$i] + n))
         fi
       done
       ;;
@@ -46,8 +50,8 @@ while IFS= read -r line; do
 done < <(tr -d '\r' < "$log" | sed "s/$(printf '\033')\[[0-9;]*m//g")
 
 summary=""
-for name in "${required[@]}"; do
-  summary+=" ${required_passed[$name]} in ${name},"
+for i in "${!required[@]}"; do
+  summary="${summary} ${required_passed[$i]} in ${required[$i]},"
 done
 echo "run_tests: ${total} tests passed in total,${summary%,}"
 if [[ "$total" -eq 0 ]]; then
@@ -55,9 +59,9 @@ if [[ "$total" -eq 0 ]]; then
   exit 1
 fi
 missing=0
-for name in "${required[@]}"; do
-  if [[ "${required_passed[$name]}" -eq 0 ]]; then
-    echo "run_tests: ${name} did not run any test" >&2
+for i in "${!required[@]}"; do
+  if [[ "${required_passed[$i]}" -eq 0 ]]; then
+    echo "run_tests: ${required[$i]} did not run any test" >&2
     missing=1
   fi
 done

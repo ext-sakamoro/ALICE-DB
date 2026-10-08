@@ -437,16 +437,21 @@ fn both_the_compressed_and_the_raw_pinned_paths_carry_the_identifier() {
 fn the_linear_law_divides_rather_than_multiplying_by_a_reciprocal() {
     let mut compared = 0_usize;
     let mut worst = 0_u32;
-    // n - 1 が 2 の冪でない長さを選ぶ (1/(n-1) が丸められる)
-    for n in [5_usize, 7, 11, 100, 1000] {
-        let (start, end_value) = (-3.0_f64, 7.5_f64);
+    // ⚠️ 長さの選び方が歯を決める 2 つの形が f32 出力で違う値を出すのは
+    //    **零交差** だけで、`start + x·(stop − start)` が 0 になる位置で除算は厳密に
+    //    0.0 を返し、逆数乗算は 4.44e-16 を返す (f32 にしても消えない)
+    //    `start = -3.0` / `stop = 7.5` では n = 78 (i = 22) / 92 (i = 26) /
+    //    106 (i = 30) がそれに当たる 実測では無作為な長さ 94,902 sample のうち
+    //    差が出たのは 10 件だけなので、⚠️ **長さを適当に選ぶと歯が無い**
+    for n in [5_usize, 7, 11, 78, 92, 106, 100, 1000] {
+        let (start, stop) = (-3.0_f64, 7.5_f64);
         let segment = DataSegment::new(
             1,
             0,
             (n - 1) as i64,
             alice_db::model::ModelType::Linear {
                 start_value: start,
-                end_value: end_value,
+                end_value: stop,
             },
             n,
             n * 4,
@@ -457,7 +462,7 @@ fn the_linear_law_divides_rather_than_multiplying_by_a_reciprocal() {
             // oracle: start + (end - start) * i / (n - 1) を f64 で評価 (除算 1 回)
             #[allow(clippy::cast_precision_loss)]
             let x = i as f64 / (n - 1) as f64;
-            let want = (start + x * (end_value - start)) as f32;
+            let want = (start + x * (stop - start)) as f32;
             assert_eq!(
                 got.to_bits(),
                 want.to_bits(),

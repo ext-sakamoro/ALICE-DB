@@ -162,7 +162,7 @@ index に入れる `law_pointers_by_id` は 1 つの識別子に対する `(name
 | `crypto` | no | ALICE-Crypto による保存時暗号化 (`crypto_bridge::EncryptedDB`、`fs` を含む) |
 | `sdf` | no | Morton code で索引する SDF 空間データの保存 (`fs` を含む) |
 
-`analytics` と `crypto` は隣のリポジトリ `../ALICE-Analytics` と `../ALICE-Crypto` に依存する
+`analytics` と `crypto` は crates.io の公開版 `alice-analytics` 0.3 と `alice-crypto` 0.3 に依存する
 
 ## モデルの種類
 

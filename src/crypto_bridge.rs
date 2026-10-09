@@ -175,12 +175,16 @@ mod tests {
                 use_mmap: false,
                 ..Default::default()
             };
-            let db = AliceDB::with_config(config).unwrap();
+            // The encrypted WAL belongs to the storage engine. `AliceDB` also
+            // holds the blob WAL's advisory lock, which `mem::forget` would
+            // leak to the reopen below (a real crash releases it with the
+            // process), so the crash is simulated one layer down
+            let engine = crate::storage_engine::StorageEngine::new(config).unwrap();
             for i in 0..20 {
-                db.put(i, i as f32 * 3.0).unwrap();
+                engine.put(i, i as f32 * 3.0).unwrap();
             }
             // Simulate crash: forget without close
-            std::mem::forget(db);
+            std::mem::forget(engine);
         }
 
         // Reopen with same key - WAL should replay

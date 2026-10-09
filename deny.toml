@@ -2,7 +2,7 @@
 # https://embarkstudios.github.io/cargo-deny/
 #
 # ALICE-DB 自体は AGPL-3.0-or-later OR LicenseRef-Commercial (下の exception で自己許可)
-# sibling path dep は alice-analytics / alice-crypto の 2 つ (CI では alice-stubs の空 crate)
+# 依存の alice-* はすべて crates.io の公開版 (sibling path dep は無い)
 
 [graph]
 all-features = false
@@ -86,7 +86,7 @@ license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 name = "alice-db"
 allow = ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]
 
-# AGPL sibling path dep (crypto feature、CI では MIT stub / local は実 crate)
+# AGPL の依存 (crypto feature)
 [[licenses.exceptions]]
 name = "alice-crypto"
 allow = ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]
@@ -96,7 +96,7 @@ allow = ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]
 # ---------------------------------------------------------------------------
 [bans]
 multiple-versions = "warn"
-wildcards = "allow"   # path dep が wildcard version になるため必須
+wildcards = "allow"   # dev-dependency の自己参照 (path = ".") が wildcard version になるため必須
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"

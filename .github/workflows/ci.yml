@@ -5,11 +5,9 @@ name: CI
 #
 # - test / clippy / doc on the default (file backend) and the full native
 #   feature set (ffi, sdf), and on no default features (memory backend only)
-# - the remaining sibling path dependency of an optional bridge (alice-crypto)
-#   is replaced by an empty crate (.github/actions/alice-stubs), so the
-#   `crypto` / `python` features are not built here. alice-analytics is a
-#   plain registry dependency, so the `analytics` bridge builds against the
-#   released crate rather than a stub
+# - alice-analytics and alice-crypto are plain registry dependencies, so the
+#   `analytics` / `crypto` bridges build and test against the released crates
+#   (both are in NATIVE_FEATURES). Only `python` is not built here
 
 on:
   push:
@@ -20,8 +18,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
-  # full native feature set (no python / sibling bridges), shared by test / clippy / doc
-  NATIVE_FEATURES: "ffi,sdf"
+  # full native feature set (everything but python), shared by test / clippy / doc
+  NATIVE_FEATURES: "ffi,sdf,analytics,crypto"
 
 jobs:
   test:
@@ -34,8 +32,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
       # the toolchain itself comes from rust-toolchain.toml
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -74,8 +70,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -96,8 +90,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -117,8 +109,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
       - uses: dtolnay/rust-toolchain@1.87
       - uses: Swatinem/rust-cache@v2
       # library only: the dev-dependencies follow their own MSRV
@@ -133,22 +123,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-hack
         uses: taiki-e/install-action@cargo-hack
       - name: Powerset ({fs, ffi, sdf} depth 2)
-        run: cargo hack check --lib --feature-powerset --depth 2 --exclude-features python,analytics,crypto
+        run: cargo hack check --lib --feature-powerset --depth 2 --exclude-features python
 
   doc:
     name: Doc (RUSTDOCFLAGS=-Dwarnings)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo doc (no-deps, default features)

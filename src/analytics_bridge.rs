@@ -77,6 +77,10 @@ pub const fn metric_key(name_hash: u64, timestamp: i64, variant: u8) -> i64 {
 /// - `timestamp`: The epoch timestamp for this flush cycle
 ///
 /// Returns the number of metric entries written.
+///
+/// # Errors
+///
+/// Returns the error from [`AliceDB::put_batch`] when the batch cannot be written.
 pub fn flush_metrics_to_db<const SLOTS: usize, const QUEUE_SIZE: usize>(
     pipeline: &MetricPipeline<SLOTS, QUEUE_SIZE>,
     db: &AliceDB,
@@ -167,6 +171,10 @@ impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZ
     ///
     /// - `path`: Database directory path
     /// - `alpha`: `DDSketch` relative error parameter
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`AliceDB::open`] when the database cannot be opened.
     pub fn open(path: &str, alpha: f64) -> io::Result<Self> {
         let db = AliceDB::open(path)?;
         Ok(Self::new(db, alpha))
@@ -178,6 +186,10 @@ impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZ
     /// slots to the database using the given timestamp.
     ///
     /// Returns the number of entries written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`flush_metrics_to_db`]; the flush count is not advanced.
     pub fn persist(&mut self, timestamp: i64) -> io::Result<usize> {
         self.pipeline.flush();
         let count = flush_metrics_to_db(&self.pipeline, &self.db, timestamp)?;
@@ -188,6 +200,10 @@ impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZ
     /// Persist and then reset all metric slots for the next aggregation window.
     ///
     /// Returns the number of entries written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`Self::persist`]; the slots are not reset.
     pub fn persist_and_reset(&mut self, timestamp: i64) -> io::Result<usize> {
         let count = self.persist(timestamp)?;
         self.pipeline.reset();
@@ -195,6 +211,10 @@ impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZ
     }
 
     /// Force flush the database to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`AliceDB::flush`].
     pub fn flush_db(&self) -> io::Result<()> {
         self.db.flush()
     }
@@ -256,7 +276,7 @@ mod tests {
         let count = flush_metrics_to_db(&pipeline, &db, 1000).unwrap();
         // 2 metrics × (3 base + 3 quantiles for histogram, 3 base for counter)
         // req_hash: counter(3 base entries) + lat_hash: histogram(3 base + 3 quantiles)
-        assert!(count >= 6, "count = {}", count);
+        assert!(count >= 6, "count = {count}");
 
         db.flush().unwrap();
         db.close().unwrap();
@@ -277,7 +297,7 @@ mod tests {
 
         // Persist
         let count = sink.persist(1000).unwrap();
-        assert!(count >= 3, "count = {}", count); // counter, gauge, cardinality at minimum
+        assert!(count >= 3, "count = {count}"); // counter, gauge, cardinality at minimum
 
         assert_eq!(sink.flush_count(), 1);
 
@@ -306,7 +326,13 @@ mod tests {
         sink.pipeline.flush();
 
         let slot = sink.pipeline.get_slot(hash).unwrap();
-        assert_eq!(slot.counter, 30.0); // Reset worked, not 80
+        #[allow(
+            clippy::float_cmp,
+            reason = "30 additions of 1.0 are exact, so the reset is checked bit for bit"
+        )]
+        {
+            assert_eq!(slot.counter, 30.0); // Reset worked, not 80
+        }
 
         let c2 = sink.persist(2000).unwrap();
         assert!(c2 >= 3);

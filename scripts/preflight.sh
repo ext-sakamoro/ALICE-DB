@@ -26,7 +26,7 @@ case "${1:-}" in
 esac
 MSRV=1.87
 
-export CARGO_TERM_COLOR=always RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf"
+export CARGO_TERM_COLOR=always RUSTFLAGS="-Dwarnings" NATIVE_FEATURES="ffi,sdf,analytics,crypto"
 
 step() { printf '\n\033[1;34m== %s\033[0m\n' "$*"; }
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing tool: $1 ($2)" >&2; exit 1; }; }
@@ -105,7 +105,7 @@ fi
 
 step "ci.yml / feature-powerset: {fs, ffi, sdf} depth 2"
 need cargo-hack "cargo install cargo-hack --locked"
-cargo hack check --lib --feature-powerset --depth 2 --exclude-features python,analytics,crypto
+cargo hack check --lib --feature-powerset --depth 2 --exclude-features python
 
 step "fuzz.yml: build every fuzz target (nightly)"
 if has_toolchain nightly && cargo +nightly fuzz --version >/dev/null 2>&1; then

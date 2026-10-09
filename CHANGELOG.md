@@ -6,6 +6,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Fixed
 
+- `crypto_bridge` の `test_encrypted_wal_replay` が常に失敗していた 書き込み後の「クラッシュ」を `AliceDB` の `mem::forget` で模していたため blob WAL の advisory lock が同じ process に残り、開き直しが `WouldBlock` になる (v0.2.0-alpha.3 で lock を入れて以降) CI は `crypto` feature を build していなかったので表に出なかった 暗号化 WAL を持つ storage engine の層でクラッシュを模す形に直した
 - README / README_JP / `examples/law_store.rs` の使い方が、法則の内容識別子に渡す値として架空の定数 (`const SEMANTICS: [u8; 32] = [0x11; 32]`) を使っていた crate が `alice_db::SEMANTICS_ID` として 実物 (この build が実際に使う算術の識別子) を re-export しているので、3 箇所すべてそれに差し替えた 架空の値を使うと、保存した法則が「どの算術で計算したか」を名乗らず、別の build で復元した時に同じ識別子を再現できない
 - README / README_JP の ```rust block が何の検査も通っていなかった `src/lib.rs` の `#[cfg(doctest)]` で両 README を doctest として取り込み、`ci.yml` と `scripts/preflight.sh` に `cargo test --doc` の step を足した (公開 doc の構成は変えない) 実測: 両 README の 2 block ずつ計 4 本が doctest として実行され、`put_law` を存在しない method 名に替えると `no method named ... found` で FAILED になる
 
@@ -27,6 +28,8 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 
+- 依存を `alice-zip` 0.7 → 0.8、`alice-crypto` 0.1 → 0.3 に上げた `alice-crypto` は path + version (`../ALICE-Crypto`, `"0.1"`) から crates.io の公開版への依存に替えた (隣の checkout は既に 0.3.0 で、要求 `"0.1"` を満たさず build できなかった) 本 crate が使う `seal` / `open` / `derive_key` / `hash` / `Key` / `CipherError` に変更は無い 保存済みの記録に関わる値は変わらない: `tests/determinism_golden.rs` の `SEMANTICS_ID`・model 選択・`law_id` の digest は 0.8 でも同じ値で通る
+- CI と `scripts/preflight.sh` の `NATIVE_FEATURES` に `analytics` と `crypto` を加えた それまで CI は `alice-crypto` を空の stub crate に置き換えており、`analytics` も対象外だったので、どちらの bridge も CI で compile されていなかった stub を作る `.github/actions/alice-stubs` は削除、`cargo hack` の除外は `python` だけにした `analytics_bridge` の clippy pedantic の指摘 (`# Errors` 節 5 件、test 3 件) を直した
 - `alice-det-math` 0.4 is a direct dependency (the version `alice-zip` 0.7
   uses). Bloom filter sizing takes its logarithm from `alice_det_math::ln64`
   instead of the platform `ln`: the filter size is written with the SSTable,

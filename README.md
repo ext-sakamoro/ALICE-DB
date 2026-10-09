@@ -172,8 +172,8 @@ A given sequence of writes reads back bit-identically from either backend
 | `crypto` | no | ALICE-Crypto encryption at rest (`crypto_bridge::EncryptedDB`, implies `fs`) |
 | `sdf` | no | SDF spatial data storage with Morton-code indexing (implies `fs`) |
 
-`analytics` and `crypto` depend on the sibling repositories `../ALICE-Analytics`
-and `../ALICE-Crypto`.
+`analytics` and `crypto` depend on the released `alice-analytics` 0.3 and
+`alice-crypto` 0.3 from crates.io.
 
 ## Model types
 

@@ -50,11 +50,15 @@ dependencies = [
 
 [[package]]
 name = "alice-crypto"
-version = "0.1.0"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1781a2586100a4cb728d8168eb3925ed20f6d3c8b9c5df8067f6d0512da7b24a"
 dependencies = [
  "blake3",
+ "chacha20",
  "chacha20poly1305",
  "getrandom 0.2.17",
+ "zeroize",
 ]
 
 [[package]]
@@ -97,9 +101,9 @@ checksum = "eef90265249a97cc0fac787cf918f62639991513c0219c33e1853de7f1a28a03"
 
 [[package]]
 name = "alice-zip"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1f94e967d864cfe3f4654a563f1ac7401d94fd4043cec4ec4ab14b6b232d18c"
+checksum = "f495875be71f89350189fa875b2cc3feb10181f214175b7bacfbbf77f8b8e4f3"
 dependencies = [
  "alice-det-math",
  "flate2",

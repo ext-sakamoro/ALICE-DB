@@ -51,8 +51,6 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
         with:
@@ -80,10 +78,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
-      # cargo-deny-action runs in a container that mounts only the workspace,
-      # so the sibling path dependencies are invisible there; install instead
       - name: Install cargo-deny
         uses: taiki-e/install-action@v2
         with:
@@ -118,13 +112,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
 
-      # sibling path dep があるので cargo package の metadata 解決に stub が要る
-      # (stub が必要なのは package step だけ 展開後の .crate では path dep が
-      #  crates.io の version 要求に置き換わるので、隔離 build は実物を引く
-      #  = 宣言した version 要求が publish 済 version と噛み合うかまで検査される)
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
-
+      # 依存はすべて crates.io の version 要求なので、隔離 build は公開済の実物を引く
+      # (= 宣言した version 要求が publish 済 version と噛み合うかまで検査される)
       # publish される .crate に必要な file が全部入っているかを見る
       #
       # include_str! / include_bytes! が package 境界を越える、exclude を効かせ過ぎる、
@@ -159,9 +148,6 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
 
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
-
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
@@ -187,9 +173,6 @@ jobs:
           fetch-depth: 0  # baseline-rev 比較のため full history 必要
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      - name: Create ALICE optional bridge stubs
-        uses: ./.github/actions/alice-stubs
 
       # version 明示 pin: `@latest` は rustc MSRV を追いかける (0.50.0 = 1.93+) ので、
       # rust-toolchain.toml の pin が遅れると赤になる (2026-09-14 事案) toolchain と

@@ -6,11 +6,7 @@
 //! ```
 
 use alice_db::law_store::{IngestPolicy, OracleCase, Provenance, SignalLaw, Verdict};
-use alice_db::{AliceDB, StorageConfig};
-
-/// Stand-in for the identifier of the numeric semantics the laws are
-/// evaluated under (the arithmetic crate publishes the real one).
-const SEMANTICS: [u8; 32] = [0x11; 32];
+use alice_db::{AliceDB, StorageConfig, SEMANTICS_ID};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // y = 1 + 2x measured at x = 0..=4
@@ -52,7 +48,7 @@ fn run(
     policy: &IngestPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let backend = if db.is_in_memory() { "memory" } else { "file" };
-    db.put_law("line", law, &SEMANTICS)?;
+    db.put_law("line", law, &SEMANTICS_ID)?;
     println!("[{backend}] f(2.5) = {}", db.evaluate_law("line", 2.5)?);
     match db.evaluate_law("line", 9.0) {
         Err(e) => println!("[{backend}] f(9) refused: {e}"),
@@ -65,7 +61,7 @@ fn run(
         .map(|i| (f64::from(i), 1.6 + 2.0 * f64::from(i)))
         .collect();
     for evidence in [&again[..], &shifted[..]] {
-        let verdict = db.ingest_evidence("line", evidence, policy, &SEMANTICS)?;
+        let verdict = db.ingest_evidence("line", evidence, policy, &SEMANTICS_ID)?;
         let label = match &verdict {
             Verdict::Supports { rms } => format!("supports (rms {rms:.3e})"),
             Verdict::ParameterUpdate { previous_rms, .. } => {

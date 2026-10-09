@@ -85,6 +85,11 @@ scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_st
 step "ci.yml / test: law_store example"
 cargo run --example law_store
 
+# README / README_JP の ```rust block は src/lib.rs の cfg(doctest) 経由で
+# doctest として取り込んでいる ci.yml の同名 step と対で置く
+step "ci.yml / test: doctests (includes both READMEs)"
+cargo test --doc
+
 step "ci.yml / test: benches compile"
 cargo bench --no-run
 

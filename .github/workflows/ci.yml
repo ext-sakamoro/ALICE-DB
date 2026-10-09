@@ -57,6 +57,11 @@ jobs:
         run: scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
       - name: Example (law_store, file + memory backend)
         run: cargo run --example law_store
+      # README / README_JP の ```rust block は src/lib.rs の cfg(doctest) で
+      # doctest として取り込んでいる この step が無いと、README の使い方が
+      # API の変更で compile できなくなっても誰も気付かない
+      - name: Doctests (includes both READMEs)
+        run: cargo test --doc
       - name: Benches compile
         run: cargo bench --no-run
 

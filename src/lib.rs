@@ -191,6 +191,19 @@
     clippy::too_many_lines
 )]
 
+// README の ```rust block を doctest として実行する
+// ⚠️ 配線しないと README の使い方は何の gate も通らず、API が動いた時に黙って腐る
+// (2026-10-09 実測: 両 README と examples/law_store.rs が `[0x11; 32]` という
+//  架空の semantics 識別子を使ったままだった crate は実物を re-export している)
+// `cfg(doctest)` なので公開 doc の構成は変わらず、`cargo test --doc` でのみ compile される
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README_JP.md")]
+pub struct ReadmeJpDoctests;
+
 #[cfg(feature = "analytics")]
 pub mod analytics_bridge;
 pub mod blob;

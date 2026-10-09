@@ -4,6 +4,11 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- README / README_JP / `examples/law_store.rs` の使い方が、法則の内容識別子に渡す値として架空の定数 (`const SEMANTICS: [u8; 32] = [0x11; 32]`) を使っていた crate が `alice_db::SEMANTICS_ID` として 実物 (この build が実際に使う算術の識別子) を re-export しているので、3 箇所すべてそれに差し替えた 架空の値を使うと、保存した法則が「どの算術で計算したか」を名乗らず、別の build で復元した時に同じ識別子を再現できない
+- README / README_JP の ```rust block が何の検査も通っていなかった `src/lib.rs` の `#[cfg(doctest)]` で両 README を doctest として取り込み、`ci.yml` と `scripts/preflight.sh` に `cargo test --doc` の step を足した (公開 doc の構成は変えない) 実測: 両 README の 2 block ずつ計 4 本が doctest として実行され、`put_law` を存在しない method 名に替えると `no method named ... found` で FAILED になる
+
 ### Added
 
 - `alice_db::SEMANTICS_ID`: the identifier of the arithmetic models are

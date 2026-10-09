@@ -98,28 +98,29 @@ reference values.
 
 ```rust
 use alice_db::law_store::{IngestPolicy, Provenance, SignalLaw, Verdict};
-use alice_db::{AliceDB, StorageConfig};
+use alice_db::{AliceDB, SEMANTICS_ID, StorageConfig};
 
-// Identifies the arithmetic the law is evaluated with. It goes into the
-// law's content identifier, so a stored result names both the law and the
-// numeric semantics it was computed under.
-const SEMANTICS: [u8; 32] = [0x11; 32];
+// `SEMANTICS_ID` identifies the arithmetic the law is evaluated with. It is
+// re-exported from the crate that provides the point evaluators, so it is the
+// identifier of the arithmetic this build actually uses -- do not substitute a
+// constant of your own. It goes into the law's content identifier, so a stored
+// result names both the law and the numeric semantics it was computed under.
 
 let db = AliceDB::in_memory(StorageConfig::default())?;
 // y = 1 + 2x measured at x = 0..=4
 let pts: Vec<(f64, f64)> = (0..5).map(|i| (f64::from(i), 1.0 + 2.0 * f64::from(i))).collect();
 let law = SignalLaw::fit_polynomial(&pts, 1, Provenance::new("run 1", "least squares"))?;
-db.put_law("line", &law, &SEMANTICS)?;
+db.put_law("line", &law, &SEMANTICS_ID)?;
 
 assert!((db.evaluate_law("line", 2.5)? - 6.0).abs() < 1e-12);
 assert!(db.evaluate_law("line", 9.0).is_err()); // outside [0, 4]
 
 // The stored law is reachable by its content identifier as well as by name.
-let id = law.law_id(&SEMANTICS);
+let id = law.law_id(&SEMANTICS_ID);
 assert_eq!(db.law_pointers_by_id(&id)?, vec![("line".to_string(), 1_u64)]);
 
 let policy = IngestPolicy { abs_tolerance: 0.01, break_factor: 4.0 };
-let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy, &SEMANTICS)?;
+let v = db.ingest_evidence("line", &[(0.5, 2.0), (3.5, 8.0)], &policy, &SEMANTICS_ID)?;
 assert!(matches!(v, Verdict::Supports { .. }));
 assert_eq!(db.law_history("line")?.len(), 1);
 # Ok::<(), Box<dyn std::error::Error>>(())

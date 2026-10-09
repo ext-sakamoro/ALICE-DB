@@ -10,14 +10,14 @@ name: Security & Hygiene
 
 on:
   push:
-    branches: [main]
+    # ci/**: the same checks on a branch before it is fast-forwarded to main
+    branches: [main, 'ci/**']
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
       - 'deny.toml'
       - '.github/workflows/security-audit.yml'
-      - '.github/actions/**'
       - 'scripts/stub_guard.sh'
   pull_request:
     branches: [main]
@@ -27,7 +27,6 @@ on:
       - 'src/**'
       - 'deny.toml'
       - '.github/workflows/security-audit.yml'
-      - '.github/actions/**'
       - 'scripts/stub_guard.sh'
   schedule:
     # every Monday 09:00 UTC

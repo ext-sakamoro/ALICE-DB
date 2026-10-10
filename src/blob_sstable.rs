@@ -62,8 +62,9 @@
 //!   ...  8   magic          "ALICEEND"
 //! ```
 //!
-//! Version 3 differs from version 2 only in accepting tombstone records;
-//! the version history is on the `FORMAT_VERSION_*` constants.
+//! Versions 2 and 3 have the same layout and are read the same way: the
+//! reader accepts tombstone records under every version. The writer stamps
+//! 3; the version history is on the `FORMAT_VERSION_*` constants.
 //!
 //! # Atomic replacement
 //!

@@ -129,9 +129,10 @@ const WAL_SRC: &str = include_str!("../src/blob_wal.rs");
 #[test]
 fn docs_name_the_checksum_that_the_code_computes() {
     for (name, src) in [("blob_sstable.rs", SSTABLE_SRC), ("blob_wal.rs", WAL_SRC)] {
-        let lower = src.to_lowercase();
+        // The one allowed mention says what the checksum is not.
+        let lower = src.to_lowercase().replace("not crc-32c", "");
         assert!(
-            !lower.contains("crc32c"),
+            !lower.contains("crc32c") && !lower.contains("crc-32c"),
             "{name} still names CRC-32C; the code computes CRC-32 (IEEE) via crc32fast"
         );
         assert!(
@@ -150,8 +151,22 @@ fn sstable_doc_states_the_version_the_writer_stamps() {
     );
     for field in [
         "bloom_size",
+        "trailer  4             CRC-32 over the entire record above",
+        "trailer  4             CRC-32 over the bloom section above",
+        "Footer, v2 and v3 (24 bytes, at end of file)",
+        "Footer, v1 (16 bytes; v1 files have no bloom section)",
+        "Versions 2 and 3 have the same layout and are read the same way",
         "value_kind     u8  (0x00 = Raw, 0x01 = Compressed, 0x02 = Tombstone)",
     ] {
         assert!(doc.contains(field), "module doc lacks `{field}`");
     }
+}
+
+#[test]
+fn wal_doc_states_the_record_trailer() {
+    assert!(
+        module_doc(WAL_SRC)
+            .contains("trailer 4     crc32           CRC-32 over everything from offset 0 upward"),
+        "WAL record trailer line in the module doc"
+    );
 }

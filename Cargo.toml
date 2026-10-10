@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # ALICE-Zip core (crates.io): procedural generators, zlib, and `law::SignalLaw`
 # (stored by `law_store`, 0.5.2+ for `law::SignalLaw::law_id`)
-alice_core = { package = "alice-zip", version = "0.8" }
+alice_core = { package = "alice-zip", version = "0.9" }
 
 # Every transcendental this crate evaluates itself (bloom filter sizing, model
 # selection error) goes through `alice-det-math`, whose kernels are built from
@@ -56,7 +56,7 @@ rayon = "1.10"
 parking_lot = "0.12"
 
 # ALICE-Analytics bridge (optional)
-alice-analytics = { version = "0.3", optional = true }
+alice-analytics = { version = "0.4", optional = true }
 
 # ALICE-Crypto bridge (optional)
 alice-crypto = { version = "0.4", optional = true, default-features = false, features = ["std"] }

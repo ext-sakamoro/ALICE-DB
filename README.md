@@ -7,7 +7,8 @@ flushed, ALICE-DB fits candidate models (polynomial, Fourier, sine, Perlin
 noise, constant, linear, with an LZMA fallback) to the buffered points through
 [ALICE-Zip](https://github.com/ext-sakamoro/ALICE-Zip) and stores the model that
 describes them instead of the samples; a point or range query evaluates the
-model. Alongside the time series it has a byte-keyed blob store, and a law store
+model. Alongside the time series it has exact series (values stored bit for
+bit under any `i64` key, no model), a byte-keyed blob store, and a law store
 that keeps fitted laws together with their evidence, valid range and the
 verdicts of later evidence.
 
@@ -28,9 +29,17 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
   the identifier of that arithmetic, and a residual naming a different one is
   skipped rather than applied (`segment::residual_semantics` reports which).
   Residuals written before 0.3.0 carry no identifier: they are exact on the
-  machine that wrote them, and that cannot be checked anywhere else.
-- **Irregular timestamps.** A segment assumes uniform spacing between its first
-  and last timestamp; series with gaps are not reproduced point for point.
+  machine that wrote them, and that cannot be checked anywhere else. Values
+  that must come back exactly under arbitrary keys belong in an
+  [exact series](#exact-series).
+- **Irregular timestamps in the model store.** A segment keeps no per-point
+  timestamps and reads its points back on an even grid between its first and
+  last timestamp. In the default (lossy) mode a series with gaps is not
+  reproduced point for point. Lossless mode cuts a new segment wherever the
+  spacing changes, so increasing timestamps with any gaps read back exactly
+  (at the cost of small segments that compress poorly), and it refuses a
+  timestamp at or below one already written with
+  `LosslessKeyOrderError` instead of storing it inexactly.
 - **General SQL or document workloads.** Values are `f32` per `i64`
   timestamp, plus opaque blobs and laws.
 
@@ -38,6 +47,7 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
 
 - [Installation](#installation)
 - [Example](#example)
+- [Exact series](#exact-series)
 - [Laws: evidence, valid range and verdicts](#laws-evidence-valid-range-and-verdicts)
 - [Storage backends](#storage-backends)
 - [Features](#features)
@@ -79,6 +89,30 @@ let avg = db.aggregate(0, 999, Aggregation::Avg)?;
 assert!((avg - 259.75).abs() < 1e-2);
 # Ok::<(), std::io::Error>(())
 ```
+
+## Exact series
+
+For records that must read back exactly (metrics, simulation step counters,
+sparse or out-of-order keys) use a named series instead of the model store.
+Each point is one record of the blob store: `f32` and `f64` values keep their
+bits, a scan returns exactly the keys that were written, in key order, and
+separate names never see each other's points.
+
+```rust
+use alice_db::{AliceDB, StorageConfig};
+
+let db = AliceDB::in_memory(StorageConfig::default())?;
+let energy = db.series("energy")?;
+for (i, step) in [0i64, 1, 1000, 1_000_003, 1 << 40, (1 << 53) - 1].into_iter().enumerate() {
+    energy.put_f32(step, 0.1 + i as f32 * 1.7)?;
+}
+assert_eq!(energy.get_f32(1000)?, Some(0.1 + 2.0 * 1.7));
+assert_eq!(energy.scan_f32(0, 1 << 41)?.len(), 5);
+# Ok::<(), std::io::Error>(())
+```
+
+The `analytics` feature writes its metrics into the series
+`analytics_bridge::METRICS_SERIES`.
 
 ## Laws: evidence, valid range and verdicts
 
@@ -168,12 +202,12 @@ A given sequence of writes reads back bit-identically from either backend
 | `fs` | yes | File storage (`open` / `with_config`: WAL, mmap, advisory locks). Without it only the memory backend is available |
 | `ffi` | no | C / C++ / C# FFI (implies `fs`), headers in `bindings/` |
 | `python` | no | Python bindings (PyO3 + NumPy, implies `fs`) |
-| `analytics` | no | ALICE-Analytics bridge: aggregated metrics to time series (implies `fs`) |
+| `analytics` | no | ALICE-Analytics bridge: aggregated metrics to an exact series (implies `fs`) |
 | `crypto` | no | ALICE-Crypto encryption at rest (`crypto_bridge::EncryptedDB`, implies `fs`) |
 | `sdf` | no | SDF spatial data storage with Morton-code indexing (implies `fs`) |
 
 `analytics` and `crypto` depend on the released `alice-analytics` 0.3 and
-`alice-crypto` 0.3 from crates.io.
+`alice-crypto` 0.4 from crates.io.
 
 ## Model types
 

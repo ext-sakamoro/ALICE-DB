@@ -6,8 +6,9 @@
 バッファした点へ [ALICE-Zip](https://github.com/ext-sakamoro/ALICE-Zip) で候補モデル
 (多項式、Fourier、sine、Perlin noise、定数、一次式、LZMA による fallback) を当てはめ、
 サンプルの代わりにそれを記述するモデルを保存する 点・範囲の問い合わせはモデルを評価して
-答える 時系列とは別に、byte をキーにした blob ストアと、当てはめた法則を証拠・成立範囲・
-後から来た証拠の判定と一緒に保存する law ストアを持つ
+答える 時系列とは別に、値を任意の `i64` key でビットのまま保存する exact series (モデルを
+使わない)、byte をキーにした blob ストア、当てはめた法則を証拠・成立範囲・後から来た証拠の
+判定と一緒に保存する law ストアを持つ
 
 保存先はディレクトリ (WAL、mmap したセグメント、advisory lock、既定で有効な `fs` feature)
 かプロセスのメモリ (`AliceDB::in_memory`、`wasm32-unknown-unknown` でもビルドできる)
@@ -24,8 +25,12 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
   持ち、別の算術を名乗る残差は適用せずに飛ばす (`segment::residual_semantics` が報告する)
   0.3.0 より前に書かれた残差は識別子を持たず、書いた機械では厳密だがそれを他の場所で
   確かめる手段が無い
-- **不規則なタイムスタンプ** セグメントは最初と最後のタイムスタンプの間を等間隔と仮定するので、
-  欠けのある系列は点ごとには再現しない
+  任意の key で厳密に読み戻す必要がある値は [exact series](#exact-series) に置く
+- **モデル保存での不規則なタイムスタンプ** セグメントは点ごとのタイムスタンプを持たず、
+  最初と最後のタイムスタンプの間の等間隔の格子で読み戻す 既定 (非可逆) では欠けのある系列は
+  点ごとには再現しない lossless では間隔の変わる所で新しいセグメントを切るので、増加する
+  タイムスタンプは間隔によらず厳密に読み戻る (小さいセグメントに分かれ圧縮は効かない) 既に
+  書いたタイムスタンプ以下を書くと、不正確に保存する代わりに `LosslessKeyOrderError` で拒む
 - **一般的な SQL やドキュメント用途** 値は `i64` タイムスタンプごとの `f32` と、不透明な
   blob と、法則だけ
 
@@ -33,6 +38,7 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
 
 - [インストール](#インストール)
 - [使用例](#使用例)
+- [Exact series](#exact-series)
 - [法則: 証拠・成立範囲・判定](#法則-証拠成立範囲判定)
 - [保存先](#保存先)
 - [Feature](#feature)
@@ -74,6 +80,27 @@ let avg = db.aggregate(0, 999, Aggregation::Avg)?;
 assert!((avg - 259.75).abs() < 1e-2);
 # Ok::<(), std::io::Error>(())
 ```
+
+## Exact series
+
+厳密に読み戻す必要がある記録 (メトリクス、シミュレーションの step、疎な key や順不同の key) は
+モデル保存ではなく名前付きの series に置く 1 点が blob 保存の 1 record になり、`f32` / `f64` の
+値はビットを保ち、scan は書いた key だけを key 順で返し、名前が違えば互いの点は見えない
+
+```rust
+use alice_db::{AliceDB, StorageConfig};
+
+let db = AliceDB::in_memory(StorageConfig::default())?;
+let energy = db.series("energy")?;
+for (i, step) in [0i64, 1, 1000, 1_000_003, 1 << 40, (1 << 53) - 1].into_iter().enumerate() {
+    energy.put_f32(step, 0.1 + i as f32 * 1.7)?;
+}
+assert_eq!(energy.get_f32(1000)?, Some(0.1 + 2.0 * 1.7));
+assert_eq!(energy.scan_f32(0, 1 << 41)?.len(), 5);
+# Ok::<(), std::io::Error>(())
+```
+
+`analytics` feature はメトリクスを series `analytics_bridge::METRICS_SERIES` に書く
 
 ## 法則: 証拠・成立範囲・判定
 
@@ -158,11 +185,11 @@ index に入れる `law_pointers_by_id` は 1 つの識別子に対する `(name
 | `fs` | yes | ファイル保存 (`open` / `with_config`: WAL、mmap、advisory lock) 無効にするとメモリの保存先だけになる |
 | `ffi` | no | C / C++ / C# FFI (`fs` を含む)、ヘッダは `bindings/` |
 | `python` | no | Python バインディング (PyO3 + NumPy、`fs` を含む) |
-| `analytics` | no | ALICE-Analytics 連携: 集計したメトリクスを時系列へ (`fs` を含む) |
+| `analytics` | no | ALICE-Analytics 連携: 集計したメトリクスを exact series へ (`fs` を含む) |
 | `crypto` | no | ALICE-Crypto による保存時暗号化 (`crypto_bridge::EncryptedDB`、`fs` を含む) |
 | `sdf` | no | Morton code で索引する SDF 空間データの保存 (`fs` を含む) |
 
-`analytics` と `crypto` は crates.io の公開版 `alice-analytics` 0.3 と `alice-crypto` 0.3 に依存する
+`analytics` と `crypto` は crates.io の公開版 `alice-analytics` 0.3 と `alice-crypto` 0.4 に依存する
 
 ## モデルの種類
 

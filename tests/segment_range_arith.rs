@@ -50,19 +50,22 @@ fn within_deadline<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send +
     let handle = std::thread::spawn(move || {
         let _ = tx.send(f());
     });
-    if let Ok(v) = rx.recv_timeout(DEADLINE) {
-        handle.join().expect("worker thread");
-        v
-    } else {
-        // A panic on the worker thread drops the sender without a value
-        if handle.is_finished() {
-            match handle.join() {
-                Err(e) => std::panic::resume_unwind(e),
-                Ok(()) => panic!("{what}: no result"),
-            }
+    match rx.recv_timeout(DEADLINE) {
+        Ok(v) => {
+            handle.join().expect("spawned thread");
+            v
         }
-        eprintln!("{what}: did not return within {DEADLINE:?}; a range read is not terminating");
-        std::process::exit(101);
+        // A panic on the spawned thread drops the sender without a value
+        Err(mpsc::RecvTimeoutError::Disconnected) => match handle.join() {
+            Err(e) => std::panic::resume_unwind(e),
+            Ok(()) => panic!("{what}: no result"),
+        },
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            eprintln!(
+                "{what}: did not return within {DEADLINE:?}; a range read is not terminating"
+            );
+            std::process::exit(101);
+        }
     }
 }
 

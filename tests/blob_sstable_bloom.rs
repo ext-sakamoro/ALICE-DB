@@ -73,7 +73,7 @@ fn v2_bloom_rejects_clearly_absent_keys() {
 /// `open()` back-compat path.
 fn write_v1_sstable(path: &std::path::Path) {
     // Header:  magic (8) + version u32 LE = 1 (4) + num_records u64 LE = 1 (8) + reserved u32 = 0 (4)
-    // Records: key_len(4) + value_len(4) + value_kind(1) + key(N) + value(M) + crc32c(4)
+    // Records: key_len(4) + value_len(4) + value_kind(1) + key(N) + value(M) + crc32(4)
     // Footer:  records_size u64 LE (8) + magic (8)
     let key = b"legacy-key";
     let value = b"legacy-val";

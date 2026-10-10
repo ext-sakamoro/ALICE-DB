@@ -159,7 +159,7 @@ fn truncated_wal_tail_drops_partial_record_but_keeps_prior_records() {
     assert_eq!(db.get_blob(b"k2").unwrap(), None);
 }
 
-/// A record whose CRC32C does not match its payload must be dropped, and
+/// A record whose CRC-32 does not match its payload must be dropped, and
 /// nothing that comes after it is trusted either.
 #[test]
 fn corrupted_record_stops_replay_at_that_record() {

@@ -20,8 +20,11 @@
 //!  9      1     value_kind      0x00 = Raw, 0x01 = Compressed; ignored on Delete
 //! 10      N     key             key_len bytes
 //! 10+N    M     value           value_len bytes (absent on Delete)
-//! trailer 4     crc32c          checksum over everything from offset 0 upward
+//! trailer 4     crc32           CRC-32 over everything from offset 0 upward
 //! ```
+//!
+//! The checksum is CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`,
+//! as computed by `crc32fast`), not CRC-32C.
 //!
 //! # Truncation and recovery
 //!
@@ -29,7 +32,7 @@
 //! - A short read at any point past a full record boundary is treated as
 //!   a clean end-of-log (e.g. the process crashed mid-write). All fully
 //!   framed records preceding the truncation are yielded.
-//! - A record whose CRC32C does not match its payload is treated as
+//! - A record whose CRC-32 does not match its payload is treated as
 //!   corruption: the record is dropped and replay stops there (later
 //!   records may exist but their offsets are no longer trustworthy).
 //! - An empty or missing WAL file yields no records; the store opens
@@ -109,7 +112,7 @@ const VALUE_KIND_COMPRESSED: u8 = 0x01;
 ///   1 (type) + 4 (`key_len`) + 4 (`value_len`) + 1 (`value_kind`)
 const HEADER_LEN: usize = 10;
 
-/// CRC32C trailer.
+/// CRC-32 (IEEE) trailer.
 const CRC_LEN: usize = 4;
 
 /// A single logical operation reconstructed from the WAL.
@@ -397,7 +400,7 @@ impl Drop for BlobWal {
     }
 }
 
-/// Serialise one record: [header][key][value?][crc32c].
+/// Serialise one record: [header][key][value?][CRC-32].
 fn serialise_record(
     record_type: u8,
     key: &[u8],

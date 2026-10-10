@@ -77,8 +77,8 @@ if [[ $quick -eq 1 ]]; then
 fi
 
 step "ci.yml / test: default, full native feature set, no default features, law_store (memory)"
-scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,crash_reopen_process -- cargo test
-scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,crash_reopen_process -- cargo test --features "$NATIVE_FEATURES"
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,crash_reopen_process,blob_format_pin -- cargo test
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,crash_reopen_process,blob_format_pin -- cargo test --features "$NATIVE_FEATURES"
 scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden -- cargo test --no-default-features
 scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
 

@@ -23,28 +23,47 @@
 //!
 //! # File layout
 //!
+//! All integers are little-endian. Every checksum in this file is
+//! CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`, as computed by
+//! `crc32fast`), not CRC-32C.
+//!
 //! ```text
 //! Header (24 bytes):
 //!   0   8   magic          "ALICEBBS"
-//!   8   4   version        u32 LE (currently 1)
+//!   8   4   version        u32 LE (written: 3; read: 1, 2, 3)
 //!  12   8   num_records    u64 LE (may be zero for an empty snapshot)
-//!  20   4   reserved       u32 LE (must be zero — v0.2.0-alpha.4 slot)
+//!  20   4   reserved       u32 LE (written as zero)
 //!
 //! Records section (sorted ascending by key):
 //!   [record 1][record 2]...[record N]
 //!
 //! Each record:
 //!   0   4   key_len        u32 LE
-//!   4   4   value_len      u32 LE
-//!   8   1   value_kind     u8  (0x00 = Raw, 0x01 = Compressed)
+//!   4   4   value_len      u32 LE (0 for a tombstone)
+//!   8   1   value_kind     u8  (0x00 = Raw, 0x01 = Compressed, 0x02 = Tombstone)
 //!   9   key_len            key bytes
 //!   9+key_len   value_len  value bytes
-//!   trailer  4              crc32c over the entire record above
+//!   trailer  4             CRC-32 over the entire record above
 //!
-//! Footer (16 bytes, at end of file):
-//!   ...  8   records_size   u64 LE (total byte length of the records section)
+//! Bloom section (v2 and v3):
+//!   0   8   num_bits       u64 LE
+//!   8   4   num_hashes     u32 LE
+//!  12   8   bits_len       u64 LE
+//!  20   bits_len           filter bits
+//!   trailer  4             CRC-32 over the bloom section above
+//!
+//! Footer, v2 and v3 (24 bytes, at end of file):
+//!   ...  8   records_size   u64 LE (byte length of the records section)
+//!   ...  8   bloom_size     u64 LE (byte length of the bloom section)
+//!   ...  8   magic          "ALICEEND"
+//!
+//! Footer, v1 (16 bytes; v1 files have no bloom section):
+//!   ...  8   records_size   u64 LE
 //!   ...  8   magic          "ALICEEND"
 //! ```
+//!
+//! Version 3 differs from version 2 only in accepting tombstone records;
+//! the version history is on the `FORMAT_VERSION_*` constants.
 //!
 //! # Atomic replacement
 //!
@@ -106,7 +125,7 @@ const VALUE_KIND_COMPRESSED: u8 = 0x01;
 const VALUE_KIND_TOMBSTONE: u8 = 0x02;
 
 /// Prelude of the Bloom section:
-/// `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + crc32c (u32)`.
+/// `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + CRC-32 (u32)`.
 const BLOOM_HEADER_LEN: usize = 8 + 4 + 8 + 4;
 
 /// False-positive rate target for the Bloom filter attached to each
@@ -979,7 +998,7 @@ fn build_offset_index(
         if hasher.finalize() != expected_crc {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "sstable record CRC32C mismatch",
+                "sstable record CRC-32 mismatch",
             ));
         }
         if value_kind != VALUE_KIND_RAW
@@ -1028,7 +1047,7 @@ fn build_offset_index(
     Ok(out)
 }
 
-/// Emit the byte encoding of one record plus its trailing CRC32C.
+/// Emit the byte encoding of one record plus its trailing CRC-32 (IEEE).
 fn serialise_record(key: &[u8], value_kind: u8, value: &[u8]) -> io::Result<Vec<u8>> {
     let key_len = u32::try_from(key.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "sstable key exceeds u32::MAX"))?;
@@ -1054,8 +1073,8 @@ fn serialise_record(key: &[u8], value_kind: u8, value: &[u8]) -> io::Result<Vec<
     Ok(buf)
 }
 
-/// Encode the Bloom filter as a byte sequence with a CRC32C trailer.
-/// Layout: `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + bloom_bits + crc32c`.
+/// Encode the Bloom filter as a byte sequence with a CRC-32 (IEEE) trailer.
+/// Layout: `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + bloom_bits + CRC-32`.
 fn serialise_bloom(bloom: &BloomFilter) -> io::Result<Vec<u8>> {
     let bits = bloom.as_bits();
     let bits_len = u64::try_from(bits.len()).map_err(|_| {
@@ -1114,7 +1133,7 @@ fn parse_bloom(bytes: &[u8]) -> io::Result<BloomFilter> {
     if hasher.finalize() != expected_crc {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "sstable bloom CRC32C mismatch",
+            "sstable bloom CRC-32 mismatch",
         ));
     }
     // Bits section: after the fixed header, before the CRC.
@@ -1170,7 +1189,7 @@ fn parse_records(bytes: &[u8], expected_count: u64) -> io::Result<Vec<(Vec<u8>, 
         if hasher.finalize() != expected_crc {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "sstable record CRC32C mismatch",
+                "sstable record CRC-32 mismatch",
             ));
         }
 

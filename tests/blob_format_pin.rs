@@ -132,7 +132,9 @@ fn docs_name_the_checksum_that_the_code_computes() {
         // The one allowed mention says what the checksum is not.
         let lower = src.to_lowercase().replace("not crc-32c", "");
         assert!(
-            !lower.contains("crc32c") && !lower.contains("crc-32c"),
+            ["crc32c", "crc-32c", "castagnoli", "82f63b78"]
+                .iter()
+                .all(|other| !lower.contains(other)),
             "{name} still names CRC-32C; the code computes CRC-32 (IEEE) via crc32fast"
         );
         assert!(

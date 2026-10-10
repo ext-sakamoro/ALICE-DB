@@ -12,6 +12,8 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 # fuzz_law_record wraps inputs in a valid checksum to reach the body parser
 crc32fast = "1.4"
+# fuzz_index_lookup: a fresh directory per input for the on-disk store
+tempfile = "3"
 
 [dependencies.alice-db]
 path = ".."

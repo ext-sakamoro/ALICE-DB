@@ -4,6 +4,11 @@
 # (serialize 3939 / index 1895 / query 2159 / law_record 493). A target that
 # does not call the crate, or stops at a checksum, covers tens of edges
 # (fuzz_law_record before the checksum wrap: 33), far below its floor.
+#
+# The floors must hold without the seeds in fuzz/regressions: they are taken
+# from runs that start from an empty corpus or that the seeds only speed up.
+# fuzz_index_lookup with the on-disk store, empty corpus, 60 s: cov 1913
+# (floor 1000); with the seeds, 180 s: cov 3204.
 fuzz_serialize_roundtrip 2000
 fuzz_index_lookup 1000
 fuzz_query_parse 1000

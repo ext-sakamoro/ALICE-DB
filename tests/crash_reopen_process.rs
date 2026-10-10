@@ -9,6 +9,13 @@
 //! this path through `AliceDB`. Here the operating system releases the lock and
 //! the open file handles exactly as it does after a real crash.
 //!
+//! Power loss is not covered. A killed process leaves its writes in the
+//! operating system's page cache, which survives `SIGKILL` and
+//! `TerminateProcess`, so removing an `fsync` (`sync_all`) leaves this test
+//! green. Durability across power loss needs a different instrument (a file
+//! wrapper that records where `sync_all` is called, or a fault-injecting
+//! block device)
+//!
 //! The child is this same test binary, re-entered through `crash_child_entry`
 //! with `ALICE_DB_CRASH_CHILD` set; without that variable the entry returns at
 //! once.

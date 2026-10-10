@@ -5,9 +5,11 @@ name: Fuzz
 #
 # - fuzz_law_record: stored law records (law_store::decode_law_record), both as
 #   given and wrapped in a valid checksum so the body parser is reached
-# - fuzz_query_parse / fuzz_serialize_roundtrip / fuzz_index_lookup: scaffolds
-#   that do not call alice-db yet (no public parser / row codec / index API to
-#   drive)
+# - fuzz_serialize_roundtrip: AliceDB::from_bytes on arbitrary bytes, and the
+#   to_bytes -> from_bytes round trip of arbitrary points and blobs
+# - fuzz_index_lookup: blob put / get / delete / prefix scan against a BTreeMap
+# - fuzz_query_parse: the query builder with arbitrary ranges, aggregations,
+#   group-by, limit and offset
 #
 # cargo-fuzz is installed with `cargo install`: the prebuilt binaries target
 # musl, which the sanitizer build refuses.
@@ -87,27 +89,34 @@ jobs:
           fi
           echo "seconds=$DURATION" >> "$GITHUB_OUTPUT"
 
-      # A crash fails the job (it is a defect in the published crate, not
-      # informational). Each target must also execute at least one input: a
-      # run that never executed anything is not a pass. The summary records
-      # runs and libFuzzer's coverage so a target stuck behind a check (low
-      # cov) is visible.
+      # A crash fails the job (it is a defect, not informational). Each target
+      # must execute inputs and reach at least its coverage floor in
+      # fuzz/coverage-floor.txt (scripts/fuzz_reach.py): a target that does not
+      # call the crate, or stops at a checksum, covers far less. The
+      # committed inputs in fuzz/regressions/<target> are replayed as an
+      # extra corpus. The summary row is written even when the run crashed
       - name: Run fuzz target (time-boxed)
         shell: bash
         env:
           CARGO_TERM_COLOR: never
         run: |
-          set -o pipefail
           cd fuzz
-          cargo +nightly fuzz run "${{ matrix.target }}" -- \
+          T="${{ matrix.target }}"
+          extra=()
+          if [ -d "regressions/$T" ]; then extra=("regressions/$T"); fi
+          mkdir -p "corpus/$T"
+          set +e
+          cargo +nightly fuzz run "$T" "corpus/$T" "${extra[@]}" -- \
             -max_total_time=${{ steps.dur.outputs.seconds }} 2>&1 | tee fuzz-run.log
+          rc=${PIPESTATUS[0]}
+          set -e
           runs=$(grep -oE "Done [0-9]+ runs" fuzz-run.log | tail -1 | grep -oE "[0-9]+" || true)
           cov=$(grep -oE "DONE +cov: [0-9]+" fuzz-run.log | tail -1 | grep -oE "[0-9]+$" || true)
-          echo "| ${{ matrix.target }} | ${runs:-0} runs | cov ${cov:-?} |" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${runs:-0}" -le 0 ]; then
-            echo "::error::fuzz target ${{ matrix.target }} executed 0 inputs"
-            exit 1
-          fi
+          status=ok
+          if [ "$rc" -ne 0 ]; then status="crashed (exit $rc)"; fi
+          echo "| $T | ${runs:-0} runs | cov ${cov:-?} | $status |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          python3 ../scripts/fuzz_reach.py "$T" fuzz-run.log coverage-floor.txt
 
       - name: Upload crash artifacts
         if: failure()

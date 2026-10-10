@@ -1,0 +1,10 @@
+# fuzz target  minimum final libFuzzer coverage (scripts/fuzz_reach.py)
+#
+# About half of what each target reached in a 90 s local run on 2026-10-10
+# (serialize 3939 / index 1895 / query 2159 / law_record 493). A target that
+# does not call the crate, or stops at a checksum, covers tens of edges
+# (fuzz_law_record before the checksum wrap: 33), far below its floor.
+fuzz_serialize_roundtrip 2000
+fuzz_index_lookup 1000
+fuzz_query_parse 1000
+fuzz_law_record 250

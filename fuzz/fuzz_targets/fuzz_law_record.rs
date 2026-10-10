@@ -13,7 +13,9 @@
 
 #![no_main]
 
-use alice_db::law_store::{decode_law_record, encode_law_record, SignalLaw, LAW_RECORD_MAGIC};
+use alice_db::law_store::{
+    decode_law_record, encode_law_record, SignalLaw, LAW_RECORD_FORMAT, LAW_RECORD_MAGIC,
+};
 use libfuzzer_sys::fuzz_target;
 
 fn check(record: &[u8]) {
@@ -28,7 +30,7 @@ fuzz_target!(|data: &[u8]| {
     check(data);
     let mut wrapped = Vec::with_capacity(data.len() + 16);
     wrapped.extend_from_slice(&LAW_RECORD_MAGIC);
-    wrapped.extend_from_slice(&1u32.to_le_bytes()); // LAW_RECORD_FORMAT
+    wrapped.extend_from_slice(&LAW_RECORD_FORMAT.to_le_bytes());
     wrapped.extend_from_slice(data);
     let crc = crc32fast::hash(&wrapped);
     wrapped.extend_from_slice(&crc.to_le_bytes());

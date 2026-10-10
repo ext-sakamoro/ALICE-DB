@@ -1,25 +1,68 @@
-//! Fuzz target: 攻撃者制御 index key で任意 key lookup が panic せず終端することを検証
+//! Fuzz target: the blob key index (`put_blob` / `get_blob` / `delete_blob` /
+//! `scan_blob_prefix`) against a `BTreeMap` model
 //!
-//! ALICE-DB v0.1.0 では public index API が未 export のため、本 target は
-//! scaffold として byte slice 走査のみを行う。
-//! index API 復活後は `alice_db::index::lookup(&idx, &key)` 等の呼び出しへ差し替える。
+//! Arbitrary keys and operations; after each operation the store must agree
+//! with the model on the key just touched, and at the end on every prefix
+//! scanned. Any panic or disagreement is a defect in the index.
 
 #![no_main]
 
+use alice_db::{AliceDB, StorageConfig};
+use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
+use std::collections::BTreeMap;
 
-fuzz_target!(|data: &[u8]| {
-    // 巨大 input による fuzzer timeout 回避
-    if data.len() > 64 * 1024 {
+#[derive(Debug, Arbitrary)]
+enum Op {
+    Put(Vec<u8>, Vec<u8>),
+    Get(Vec<u8>),
+    Delete(Vec<u8>),
+    Scan(Vec<u8>),
+}
+
+fuzz_target!(|ops: Vec<Op>| {
+    if ops.len() > 256 {
         return;
     }
-    // 現段階では走査自体で panic せず終端することを保証
-    let mut sum: u64 = 0;
-    for &b in data {
-        sum = sum.wrapping_add(b as u64);
+    let db = AliceDB::in_memory(StorageConfig::default()).expect("in-memory db");
+    let mut model: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    for op in ops {
+        match op {
+            Op::Put(k, v) => {
+                if k.is_empty() || k.len() > 256 || v.len() > 4096 {
+                    continue;
+                }
+                if db.put_blob(&k, &v).is_ok() {
+                    model.insert(k, v);
+                }
+            }
+            Op::Get(k) => {
+                if let Ok(got) = db.get_blob(&k) {
+                    assert_eq!(
+                        got.as_ref(),
+                        model.get(&k),
+                        "get_blob disagrees with the model"
+                    );
+                }
+            }
+            Op::Delete(k) => {
+                if db.delete_blob(&k).is_ok() {
+                    model.remove(&k);
+                }
+            }
+            Op::Scan(prefix) => {
+                if prefix.len() > 256 {
+                    continue;
+                }
+                if let Ok(got) = db.scan_blob_prefix(&prefix) {
+                    let want: Vec<(Vec<u8>, Vec<u8>)> = model
+                        .iter()
+                        .filter(|(k, _)| k.starts_with(&prefix))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    assert_eq!(got, want, "scan_blob_prefix disagrees with the model");
+                }
+            }
+        }
     }
-    // index lookup 実装後は以下のような呼び出しに差し替え:
-    //   let idx = alice_db::index::Index::default();
-    //   let _ = idx.lookup(data);
-    let _ = sum;
 });

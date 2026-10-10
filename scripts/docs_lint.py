@@ -254,10 +254,17 @@ def check(root: str) -> tuple[list[str], dict[str, int]]:
         if cv and released and cv not in released and semver_key(cv) < semver_key(released[0]):
             errors.append(f"CHANGELOG.md: Cargo.toml version {cv} is older than the newest section [{released[0]}]")
         body = unreleased_body(cl)
-        # an [Unreleased] with no text is the state right after a release, the same
-        # as having no [Unreleased]: nothing to compare. Text without a category
-        # heading is still caught below (categories 0 → compared nothing)
-        if body is not None and body.strip():
+        # An [Unreleased] with no text is the state right after a release, and is
+        # accepted only when the Cargo.toml version has its released section. A
+        # version bump with an empty [Unreleased] and no section for that version
+        # fails. Text without a category heading still fails as "compared nothing"
+        if body is not None and not body.strip():
+            if cv and cv in released:
+                counts["categories"] = 1  # released, nothing unreleased to compare
+            else:
+                errors.append(f"CHANGELOG.md: [Unreleased] is empty and Cargo.toml version {cv} has no section")
+                counts["categories"] = 1
+        elif body is not None:
             cats = re.findall(r"^### (\w+)", body, re.M)
             counts["categories"] = len(cats)
             for c in sorted(set(cats)):

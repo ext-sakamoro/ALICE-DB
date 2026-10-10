@@ -335,6 +335,12 @@ class Changelog(unittest.TestCase):
         e = errors({"CHANGELOG.md": cl})
         self.assertTrue(any("compared nothing" in x and "categories" in x for x in e), e)
 
+    def test_an_empty_unreleased_without_a_section_for_the_cargo_version_fails(self):
+        # Cargo.toml says 1.5.0, [Unreleased] is empty, and there is no [1.5.0]
+        cl = CHANGELOG.split("### Added")[0] + "## [1.4.0]" + CHANGELOG.split("## [1.4.0]")[1]
+        e = errors({"CHANGELOG.md": cl})
+        self.assertTrue(any("[Unreleased] is empty" in x and "1.5.0" in x for x in e), e)
+
     def test_an_empty_unreleased_right_after_a_release_passes(self):
         # the state after cutting a release: the heading stays, with nothing under it
         cl = CHANGELOG.split("### Added")[0] + "## [1.5.0] - 2026-10-11\n\n### Added\n\n- x\n\n" \

@@ -254,11 +254,13 @@ def check(root: str) -> tuple[list[str], dict[str, int]]:
         if cv and released and cv not in released and semver_key(cv) < semver_key(released[0]):
             errors.append(f"CHANGELOG.md: Cargo.toml version {cv} is older than the newest section [{released[0]}]")
         body = unreleased_body(cl)
-        # An [Unreleased] with no text is the state right after a release, and is
+        # An [Unreleased] with no entries is the state right after a release, and is
         # accepted only when the Cargo.toml version has its released section. A
         # version bump with an empty [Unreleased] and no section for that version
         # fails. Text without a category heading still fails as "compared nothing"
-        if body is not None and not body.strip():
+        # category headings with no entry under them count as empty too
+        entries = [ln for ln in (body or "").splitlines() if ln.strip() and not ln.startswith("### ")]
+        if body is not None and not entries:
             if cv and cv in released:
                 counts["categories"] = 1  # released, nothing unreleased to compare
             else:

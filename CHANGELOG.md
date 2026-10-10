@@ -39,10 +39,11 @@ All notable changes to ALICE-DB will be documented in this file.
 ### Changed
 
 - **破壊的変更 (`analytics` feature):** `alice-analytics` を 0.2 から 0.3 に上げた `analytics_bridge` の `flush_metrics_to_db` / `AnalyticsSink` が受け渡す `MetricPipeline` などは依存先の版ごとに別の型なので、`alice-analytics` 0.2 の型を作って渡している利用者は compile できなくなる (利用者も 0.3 に上げる) 0.3 は `alice-det-math` 0.4 を要求するので、依存グラフの det-math が 1 版 (0.4.0) になり、保存した Law の評価と分析側の推定値が同じ算術で計算される (従来は 0.3.2 と 0.4.0 が同居していた) `alice-analytics` は path + version の依存から公開版への依存に替え、CI は analytics ブリッジを実物に対して build する
+- 保存する metric の値は 0.3.0-beta.2 と bit 単位で同じ: 公開済の 0.3.0-beta.2 (`alice-analytics` 0.2、`alice-det-math` 0.3.2) と 0.3.0 (`alice-analytics` 0.3、`alice-det-math` 0.4.0) に同じ event 列 (counter / gauge / 幅広い histogram / unique、20 回の flush) を与え、`flush_metrics_to_db` に渡る 720 値と `scan` で読み戻す 720 値がどちらも全て一致した HLL と DDSketch が使う `ln64` / `exp64` も 0.3.2 と 0.4.0 で 400 万入力ずつ一致する (同じ手順で std の `ln` とは 4978 件異なる)
 - 依存を `alice-zip` 0.7 → 0.8、`alice-crypto` 0.1 → 0.4 に上げた `alice-crypto` は path + version (`../ALICE-Crypto`, `"0.1"`) から crates.io の公開版への依存に替えた (隣の checkout は既に 0.3.0 で、要求 `"0.1"` を満たさず build できなかった) 本 crate が使う `seal` / `open` / `derive_key` / `hash` / `Key` / `CipherError` に変更は無い (0.3.0 と 0.4.0 の公開版で `stream.rs` / `hash.rs` / `kdf.rs` と依存は同一、0.4.1 は crate-type から `cdylib` を外しただけなので、暗号化した WAL と record の byte 列は変わらない) 公開済の 0.3.0-beta.2 は `alice-zip` ^0.7 を要求していたため、他の ALICE crate と組むと `alice-zip` が 0.7 と 0.8 の 2 版 link されていた 保存済みの記録に関わる値は変わらない: `tests/determinism_golden.rs` の `SEMANTICS_ID`・model 選択・`law_id` の digest は 0.8 でも同じ値で通る
 - CI と `scripts/preflight.sh` の `NATIVE_FEATURES` に `analytics` と `crypto` を加えた それまで CI は `alice-crypto` を空の stub crate に置き換えており、`analytics` も対象外だったので、どちらの bridge も CI で compile されていなかった stub を作る `.github/actions/alice-stubs` は削除、`cargo hack` の除外は `python` だけにした `analytics_bridge` の clippy pedantic の指摘 (`# Errors` 節 5 件、test 3 件) を直した
-- `alice-det-math` 0.4 is a direct dependency (the version `alice-zip` 0.7
-  uses). Bloom filter sizing takes its logarithm from `alice_det_math::ln64`
+- `alice-det-math` 0.4 is a direct dependency (the version `alice-zip` 0.8
+  and `alice-analytics` 0.3 use). Bloom filter sizing takes its logarithm from `alice_det_math::ln64`
   instead of the platform `ln`: the filter size is written with the SSTable,
   so a platform whose `ln` differs in the last place could write a different
   file from the same entries. The fit error that ranks candidate models and

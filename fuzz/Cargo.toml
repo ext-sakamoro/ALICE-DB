@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+# fuzz_law_record wraps inputs in a valid checksum to reach the body parser
+crc32fast = "1.4"
 
 [dependencies.alice-db]
 path = ".."

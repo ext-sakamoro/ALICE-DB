@@ -47,6 +47,7 @@ version = "0.0.0"
 dependencies = [
  "alice-db",
  "arbitrary",
+ "crc32fast",
  "libfuzzer-sys",
 ]
 

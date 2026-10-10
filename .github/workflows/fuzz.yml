@@ -3,7 +3,8 @@ name: Fuzz
 # Time-boxed libFuzzer runs (cargo-fuzz, nightly): attacker-controlled bytes
 # must not panic or exhaust memory.
 #
-# - fuzz_law_record: stored law records (law_store::decode_law_record)
+# - fuzz_law_record: stored law records (law_store::decode_law_record), both as
+#   given and wrapped in a valid checksum so the body parser is reached
 # - fuzz_query_parse / fuzz_serialize_roundtrip / fuzz_index_lookup: scaffolds
 #   that do not call alice-db yet (no public parser / row codec / index API to
 #   drive)
@@ -47,6 +48,8 @@ jobs:
   fuzz:
     name: Fuzz — ${{ matrix.target }}
     runs-on: ubuntu-latest
+    # build + a 60 s run normally take under 10 min
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -84,24 +87,33 @@ jobs:
           fi
           echo "seconds=$DURATION" >> "$GITHUB_OUTPUT"
 
-      # run は informational: crash 発見は block せず artifact で triage
+      # A crash fails the job (it is a defect in the published crate, not
+      # informational). Each target must also execute at least one input: a
+      # run that never executed anything is not a pass. The summary records
+      # runs and libFuzzer's coverage so a target stuck behind a check (low
+      # cov) is visible.
       - name: Run fuzz target (time-boxed)
-        id: run
-        continue-on-error: true
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
         run: |
+          set -o pipefail
           cd fuzz
           cargo +nightly fuzz run "${{ matrix.target }}" -- \
-            -max_total_time=${{ steps.dur.outputs.seconds }}
+            -max_total_time=${{ steps.dur.outputs.seconds }} 2>&1 | tee fuzz-run.log
+          runs=$(grep -oE "Done [0-9]+ runs" fuzz-run.log | tail -1 | grep -oE "[0-9]+" || true)
+          cov=$(grep -oE "DONE +cov: [0-9]+" fuzz-run.log | tail -1 | grep -oE "[0-9]+$" || true)
+          echo "| ${{ matrix.target }} | ${runs:-0} runs | cov ${cov:-?} |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${runs:-0}" -le 0 ]; then
+            echo "::error::fuzz target ${{ matrix.target }} executed 0 inputs"
+            exit 1
+          fi
 
-      - name: Upload crash artifacts (if any)
-        if: steps.run.outcome == 'failure'
+      - name: Upload crash artifacts
+        if: failure()
         uses: actions/upload-artifact@v6
         with:
           name: fuzz-crash-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore
           retention-days: 14
-
-      - name: Report crash (informational)
-        if: steps.run.outcome == 'failure'
-        run: echo "::warning::fuzz target ${{ matrix.target }} found a crash — see fuzz-crash-${{ matrix.target }} artifact"

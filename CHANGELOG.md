@@ -6,6 +6,8 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Fixed
 
+- Fuzz の workflow が crash を見つけても成功していた (run の step が `continue-on-error`) crash で job を失敗させ、各 target が 1 件以上の入力を実行したことを確かめ (0 件は失敗)、target ごとの実行数と coverage を job summary に出す crash の入力は失敗時に artifact として残す
+- `fuzz_law_record` が record 末尾の CRC32 を越えられず、本体の parser に届いていなかった (180 秒で coverage 33) 入力をそのままに加え、magic・format・入力・正しい CRC32 で包んだ形でも decode する (coverage 482、2380 万件で crash 無し)
 - blob `SSTable` (`blob_sstable.rs`) と blob WAL (`blob_wal.rs`) の形式の記述が実装と合っていなかった checksum は CRC-32C と書いていたが、実装 (`crc32fast`) は CRC-32 (IEEE 802.3、多項式 `0xEDB88320`) を計算している SSTable の header の版は「currently 1」と書いていたが、書き手は 3 を書き、読み手は 1 / 2 / 3 を読む 記述には bloom section、24 byte の footer (`records_size` / `bloom_size` / magic)、tombstone の `value_kind = 0x02` も無かった 形式も実装も変えず、記述を実装に合わせた (既存の file はそのまま読める) `tests/blob_format_pin.rs` は 1 件の record を書いた SSTable と WAL の byte 列を、独立に実装した CRC-32 (IEEE) と照合し、module doc が checksum と版を実装どおりに書いているかも検査する 確認: record / bloom / WAL の CRC、版、reserved の値、doc の版の行の 6 つの変異でどれも red
 - `crypto_bridge` の `test_encrypted_wal_replay` が常に失敗していた 書き込み後の「クラッシュ」を `AliceDB` の `mem::forget` で模していたため blob WAL の advisory lock が同じ process に残り、開き直しが `WouldBlock` になる (v0.2.0-alpha.3 で lock を入れて以降) CI は `crypto` feature を build していなかったので表に出なかった 暗号化 WAL を持つ storage engine の層でクラッシュを模す形に直した
 - README / README_JP / `examples/law_store.rs` の使い方が、法則の内容識別子に渡す値として架空の定数 (`const SEMANTICS: [u8; 32] = [0x11; 32]`) を使っていた crate が `alice_db::SEMANTICS_ID` として 実物 (この build が実際に使う算術の識別子) を re-export しているので、3 箇所すべてそれに差し替えた 架空の値を使うと、保存した法則が「どの算術で計算したか」を名乗らず、別の build で復元した時に同じ識別子を再現できない

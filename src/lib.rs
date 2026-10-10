@@ -228,6 +228,7 @@ pub mod replication;
 pub mod sdf_bridge;
 pub mod segment;
 pub mod seqlock;
+pub mod series;
 pub mod snapshot;
 pub mod storage_engine;
 pub mod transaction;
@@ -247,8 +248,8 @@ pub mod ffi;
 pub use alice_core::law::SEMANTICS_ID;
 #[cfg(feature = "analytics")]
 pub use analytics_bridge::{
-    flush_metrics_to_db, metric_blob_key, metric_key, metric_name_hash, read_metric, scan_metric,
-    AnalyticsSink, MetricPoint, METRIC_KEY_PREFIX, VARIANTS_PER_METRIC,
+    flush_metrics_to_db, metric_key, metric_name_hash, read_metric, scan_metric, AnalyticsSink,
+    MetricPoint, METRICS_SERIES, VARIANTS_PER_METRIC,
 };
 pub use checksum::{
     Checksum, ChecksumAlgorithm, ChecksummedHeader, ChecksummedReader, ChecksummedWriter,
@@ -265,6 +266,7 @@ pub use replication::{
 };
 pub use segment::DataSegment;
 pub use seqlock::{OptimisticError, OptimisticLock, OptimisticTxn, SeqLock, Version};
+pub use series::{Series, SeriesValue};
 pub use storage_engine::{StorageConfig, StorageEngine, StorageStats};
 pub use transaction::{LockManager, LockMode, MvccStore, TxnError, TxnId, TxnStatus};
 

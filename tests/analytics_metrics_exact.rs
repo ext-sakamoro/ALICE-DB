@@ -15,10 +15,12 @@
 
 use alice_analytics::pipeline::{MetricEvent, MetricPipeline};
 use alice_db::analytics_bridge::{
-    flush_metrics_to_db, metric_blob_key, metric_key, metric_name_hash, read_metric, scan_metric,
-    AnalyticsSink, MetricPoint, METRIC_KEY_PREFIX, VARIANTS_PER_METRIC,
+    flush_metrics_to_db, metric_key, metric_name_hash, read_metric, scan_metric, AnalyticsSink,
+    MetricPoint, METRICS_SERIES, VARIANTS_PER_METRIC,
 };
+use alice_db::blob_wal::SyncPolicy;
 use alice_db::law_store::LAW_KEY_PREFIX;
+use alice_db::series::{series_key, SERIES_KEY_PREFIX};
 use alice_db::{AliceDB, StorageConfig};
 use std::collections::BTreeSet;
 
@@ -135,6 +137,12 @@ fn compare(db: &AliceDB, want: &[(u64, [f32; 6])], ts: i64) -> usize {
     matched
 }
 
+/// File backend whose blob WAL syncs only on request: these scenarios test
+/// what is read back, not durability, and a sync per record makes them slow
+fn open_manual(path: &std::path::Path) -> AliceDB {
+    AliceDB::open_with_blob_sync_policy(path, SyncPolicy::Manual).unwrap()
+}
+
 fn snapshot(pipeline: &Pipeline, hashes: &[u64]) -> Vec<(u64, [f32; 6])> {
     hashes.iter().map(|&h| (h, expected(pipeline, h))).collect()
 }
@@ -144,7 +152,7 @@ fn snapshot(pipeline: &Pipeline, hashes: &[u64]) -> Vec<(u64, [f32; 6])> {
 fn round_trip_840_values_bit_exact() {
     on_big_stack(|| {
         let dir = tempfile::tempdir().unwrap();
-        let db = AliceDB::open(dir.path()).unwrap();
+        let db = open_manual(dir.path());
         let hashes = metric_hashes();
         let mut pipeline = Pipeline::new(0.01);
         fill(&mut pipeline, &hashes, 0);
@@ -163,7 +171,7 @@ fn round_trip_840_values_bit_exact() {
 fn two_flush_cycles_keep_both() {
     on_big_stack(|| {
         let dir = tempfile::tempdir().unwrap();
-        let mut sink = AnalyticsSink::<SLOTS, QUEUE>::new(AliceDB::open(dir.path()).unwrap(), 0.01);
+        let mut sink = AnalyticsSink::<SLOTS, QUEUE>::new(open_manual(dir.path()), 0.01);
         let hashes = metric_hashes();
 
         fill(&mut sink.pipeline, &hashes, 1);
@@ -256,45 +264,56 @@ fn in_memory_backend_reads_back_exact() {
     });
 }
 
-/// The stored key format: prefix, then `metric_key` as big-endian `u64`.
-/// A reader built from these bytes (another language, a migration tool)
-/// depends on exactly this layout.
+/// The stored record format: series key of `metric_key`, value = `f32`
+/// bits little-endian. A reader built from these bytes (another language, a
+/// migration tool) depends on exactly this layout.
 #[test]
-fn blob_key_layout_is_pinned() {
-    assert_eq!(METRIC_KEY_PREFIX, b"\0alice-metric\0");
-    // neither prefix is a prefix of the other
-    assert!(!METRIC_KEY_PREFIX.starts_with(LAW_KEY_PREFIX));
-    assert!(!LAW_KEY_PREFIX.starts_with(METRIC_KEY_PREFIX));
+fn record_layout_is_pinned() {
+    assert_eq!(METRICS_SERIES, "alice-analytics/metrics");
+    let k = metric_key(0xABC_DE123, 0x12_3456_789A, 5);
+    // (0xDE123 << 44) | (0x12_3456_789A << 4) | 5, sign bit flipped
+    assert_eq!(u64::from_ne_bytes(k.to_ne_bytes()), 0xDE12_3123_4567_89A5);
+    let mut want = SERIES_KEY_PREFIX.to_vec();
+    want.extend_from_slice(METRICS_SERIES.as_bytes());
+    want.push(0);
+    want.extend_from_slice(&[0x5E, 0x12, 0x31, 0x23, 0x45, 0x67, 0x89, 0xA5]);
+    assert_eq!(series_key(METRICS_SERIES, k).unwrap(), want);
 
-    let key = metric_blob_key(0xABC_DE123, 0x12_3456_789A, 5);
-    let mut want = METRIC_KEY_PREFIX.to_vec();
-    // (0xDE123 << 44) | (0x12_3456_789A << 4) | 5
-    want.extend_from_slice(&[0xDE, 0x12, 0x31, 0x23, 0x45, 0x67, 0x89, 0xA5]);
-    assert_eq!(key.as_slice(), want.as_slice());
-
-    // a name hash with the top key bit set (negative `metric_key`) sorts
-    // after one without it, like the unsigned key
-    let low = metric_blob_key(0x7_FFFF, 0, 0);
-    let high = metric_blob_key(0x8_0000, 0, 0);
-    assert!(metric_key(0x8_0000, 0, 0) < 0);
-    assert!(low < high);
+    let db = AliceDB::in_memory(StorageConfig::default()).unwrap();
+    let h = 0xABC_DE123;
+    let ts = 0x12_3456_789A;
+    db.series(METRICS_SERIES)
+        .unwrap()
+        .put_f32(k, -0.75)
+        .unwrap();
+    assert_eq!(
+        db.get_blob(&want).unwrap().unwrap(),
+        (-0.75f32).to_bits().to_le_bytes()
+    );
+    assert_eq!(read_metric(&db, h, ts, 5).unwrap(), Some(-0.75));
 }
 
-/// A metric scan never returns records of a metric that shares the first
-/// two key bytes, nor law records
+/// A metric scan never returns points of a metric whose hash differs only
+/// in its low 4 bits, nor other series
 #[test]
 fn scan_metric_returns_only_that_metric() {
     let db = AliceDB::in_memory(StorageConfig::default()).unwrap();
     // same top 16 bits of the 20-bit hash, different low 4 bits
-    let a = 0x1234_0u64;
-    let b = 0x1234_7u64;
+    let a = 0x0001_2340_u64;
+    let b = 0x0001_2347_u64;
     for (h, v) in [(a, 1.5f32), (b, -2.5f32)] {
         for ts in [5i64, 1, 3] {
-            db.put_blob(&metric_blob_key(h, ts, 2), &v.to_bits().to_le_bytes())
+            db.series(METRICS_SERIES)
+                .unwrap()
+                .put_f32(metric_key(h, ts, 2), v)
                 .unwrap();
         }
     }
     db.put_blob(&[LAW_KEY_PREFIX, b"x".as_slice()].concat(), b"law")
+        .unwrap();
+    db.series("other")
+        .unwrap()
+        .put_f32(metric_key(a, 3, 2), 9.0)
         .unwrap();
     let points = scan_metric(&db, a).unwrap();
     assert_eq!(

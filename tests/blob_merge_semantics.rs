@@ -149,3 +149,45 @@ fn interleaved_keys_resolve_independently_in_prefix_scans() {
     assert_eq!(db.scan_blob_prefix(b"a").unwrap(), want);
     assert_eq!(db.scan_blob_prefix(b"b").unwrap(), vec![kv(b"b", b"1")]);
 }
+
+#[test]
+fn an_unflushed_delete_survives_compaction_and_reopen() {
+    // the delete is only in the memtable when compaction merges it with the
+    // SSTable holding the value: compaction must keep the delete's effect
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path());
+    db.put_blob(b"k", b"v1").unwrap();
+    db.put_blob(b"other", b"x").unwrap();
+    db.compact_blob_sstable().unwrap();
+    db.delete_blob(b"k").unwrap();
+    db.compact_all_blob_sstables().unwrap();
+    assert_eq!(
+        get(&db, b"k"),
+        None,
+        "get after compacting an unflushed delete"
+    );
+    assert_eq!(scan(&db), vec![kv(b"other", b"x")], "scan after compaction");
+    let db = reopen(db, dir.path());
+    assert_eq!(get(&db, b"k"), None, "get after reopen");
+    assert_eq!(scan(&db), vec![kv(b"other", b"x")], "scan after reopen");
+}
+
+#[test]
+fn a_key_equal_to_the_prefix_is_in_its_prefix_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path());
+    db.put_blob(b"a", b"1").unwrap();
+    db.put_blob(b"ab", b"1").unwrap();
+    db.put_blob(b"b", b"1").unwrap();
+    let want = vec![kv(b"a", b"1"), kv(b"ab", b"1")];
+    assert_eq!(db.scan_blob_prefix(b"a").unwrap(), want, "memtable only");
+    db.compact_blob_sstable().unwrap();
+    assert_eq!(db.scan_blob_prefix(b"a").unwrap(), want, "from an SSTable");
+    db.put_blob(b"a", b"2").unwrap();
+    assert_eq!(
+        db.scan_blob_prefix(b"a").unwrap(),
+        vec![kv(b"a", b"2"), kv(b"ab", b"1")],
+        "the memtable's value of the prefix key masks the SSTable's"
+    );
+    assert_eq!(db.scan_blob_prefix(b"ab").unwrap(), vec![kv(b"ab", b"1")]);
+}

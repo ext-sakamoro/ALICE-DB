@@ -18,6 +18,11 @@
 //! After every flush, compaction and reopen, every key ever touched is read
 //! back with `get` and the whole store is scanned. Every operation on a valid
 //! key must succeed: an `Err` is a defect as much as a disagreement is.
+//!
+//! What this target can find from an empty corpus within a time budget is not
+//! the guarantee: the inputs in `fuzz/regressions/fuzz_index_lookup` (replayed
+//! on every run) and the fixed sequences in `tests/blob_merge_semantics.rs`
+//! are. The search is for what neither of them lists yet.
 
 #![no_main]
 

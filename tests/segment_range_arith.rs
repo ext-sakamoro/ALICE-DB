@@ -35,7 +35,7 @@
 //! non-terminating loop turns CI red instead of hanging it.
 
 use alice_db::segment::{compress_residual_xor, SegmentView};
-use alice_db::{AliceDB, DataSegment, FitConfig, MemTable, StorageConfig, SEMANTICS_ID};
+use alice_db::{AliceDB, DataSegment, FitConfig, MemTable, ModelType, StorageConfig, SEMANTICS_ID};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -253,6 +253,39 @@ fn alice_db_scan_and_get_on_extreme_keys() {
                 "get {}",
                 keys[i]
             );
+        }
+    }
+}
+
+/// A degenerate segment (`point_count <= 1` with a positive span) holds one
+/// point and a range read returns one point, at the start of the query,
+/// on both paths. Until 0.3.0 it returned every integer timestamp of the
+/// span
+#[test]
+fn degenerate_segment_returns_one_point() {
+    for point_count in [0usize, 1] {
+        let reads = within_deadline("degenerate query_range", move || {
+            let seg = DataSegment::new(
+                1,
+                0,
+                10,
+                ModelType::Constant { value: 42.0 },
+                point_count,
+                4,
+            );
+            let view = SegmentView::from_vec(seg.to_rkyv_bytes().unwrap()).unwrap();
+            [
+                seg.query_range(0, 10),
+                view.query_range(0, 10),
+                seg.query_range(i64::MIN, i64::MAX),
+                view.query_range(i64::MIN, i64::MAX),
+                seg.query_range(3, 10),
+                view.query_range(3, 10),
+            ]
+        });
+        for (i, got) in reads.iter().enumerate() {
+            let at = if i < 4 { 0 } else { 3 };
+            assert_eq!(got, &[(at, 42.0)], "point_count {point_count}, read {i}");
         }
     }
 }

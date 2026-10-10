@@ -1559,6 +1559,46 @@ impl SegmentView {
 mod tests {
     use super::*;
 
+    /// `law::grid_ceil` rounds up to the next point of the even grid
+    /// `start + ⌊k·range/(n−1)⌋`; expected values are worked out by hand
+    #[test]
+    fn grid_ceil_rounds_up_to_the_next_grid_point() {
+        use super::law::grid_ceil;
+        // 100, 107, …, 233 (n = 20, step 7)
+        assert_eq!(grid_ceil(100, 233, 20, 100), Some(100));
+        assert_eq!(grid_ceil(100, 233, 20, 101), Some(107));
+        assert_eq!(grid_ceil(100, 233, 20, 106), Some(107));
+        assert_eq!(grid_ceil(100, 233, 20, 107), Some(107));
+        assert_eq!(grid_ceil(100, 233, 20, 227), Some(233));
+        assert_eq!(grid_ceil(100, 233, 20, 233), Some(233));
+        assert_eq!(grid_ceil(100, 233, 20, 234), None);
+        assert_eq!(grid_ceil(100, 233, 20, 99), Some(100));
+        assert_eq!(grid_ceil(100, 233, 20, i64::MIN), Some(100));
+        assert_eq!(grid_ceil(100, 233, 20, i64::MAX), None);
+        // a step that is not an integer: 0, 3, 6, 10 (⌊10k/3⌋)
+        assert_eq!(grid_ceil(0, 10, 4, 1), Some(3));
+        assert_eq!(grid_ceil(0, 10, 4, 3), Some(3));
+        assert_eq!(grid_ceil(0, 10, 4, 4), Some(6));
+        assert_eq!(grid_ceil(0, 10, 4, 7), Some(10));
+        // negative keys: −70, −63, …, 0
+        assert_eq!(grid_ceil(-70, 0, 11, -69), Some(-63));
+        assert_eq!(grid_ceil(-70, 0, 11, -63), Some(-63));
+        assert_eq!(grid_ceil(-70, 0, 11, -1), Some(0));
+        // the whole of i64: n = 2 is the two ends, n = 3 adds
+        // MIN + ⌊(2^64 − 1)/2⌋ = −1
+        let (min, max) = (i64::MIN, i64::MAX);
+        assert_eq!(grid_ceil(min, max, 2, min), Some(min));
+        assert_eq!(grid_ceil(min, max, 2, min + 1), Some(max));
+        assert_eq!(grid_ceil(min, max, 2, max), Some(max));
+        assert_eq!(grid_ceil(min, max, 3, -2), Some(-1));
+        assert_eq!(grid_ceil(min, max, 3, -1), Some(-1));
+        assert_eq!(grid_ceil(min, max, 3, 0), Some(max));
+        // a single point: only the start is on the grid
+        assert_eq!(grid_ceil(5, 5, 1, 5), Some(5));
+        assert_eq!(grid_ceil(5, 5, 1, 6), None);
+        assert_eq!(grid_ceil(0, 10, 1, 3), None);
+    }
+
     #[test]
     fn test_constant_segment() {
         let segment = DataSegment::new(

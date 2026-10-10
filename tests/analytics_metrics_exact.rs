@@ -327,3 +327,52 @@ fn scan_metric_returns_only_that_metric() {
     assert_eq!(read_metric(&db, b, 3, 2).unwrap(), Some(-2.5));
     assert_eq!(read_metric(&db, b, 4, 2).unwrap(), None);
 }
+
+/// `persist` and `flush_db` leave every value readable from a fresh open of
+/// the directory, with a blob WAL that never syncs on its own
+/// (`SyncPolicy::Manual`) and no other flush call in between
+///
+/// Not covered: whether `persist` / `flush_db` actually reach `fsync`
+/// (`AliceDB::flush_blobs`). Removing that call leaves this test green. The
+/// blob WAL writes each record with `write_all` on an unbuffered `File`, so
+/// a record is in the operating system's page cache when `put` returns, and
+/// a reopen in this process (or after the writer process is killed) reads
+/// it whether or not it was synced; dropping the store also syncs pending
+/// records (`BlobWal::drop`), and the reopen cannot happen while the first
+/// handle is alive (advisory lock). The difference is visible only after a
+/// power loss, which needs an instrument this suite does not have (a file
+/// wrapper recording where `sync_data` is called, or a fault-injecting block
+/// device). The size-triggered `SSTable` roll in `flush_blobs` does not help
+/// either: every blob `put` already runs the same check.
+#[test]
+fn persist_and_flush_db_are_visible_after_reopen_with_manual_sync() {
+    on_big_stack(|| {
+        let hashes = metric_hashes();
+        for via_flush_db in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let want = {
+                let mut sink = AnalyticsSink::<SLOTS, QUEUE>::new(open_manual(dir.path()), 0.01);
+                fill(&mut sink.pipeline, &hashes, 5);
+                let want = snapshot(&sink.pipeline, &hashes);
+                if via_flush_db {
+                    sink.pipeline.flush();
+                    assert_eq!(
+                        flush_metrics_to_db(&sink.pipeline, &sink.db, 1000).unwrap(),
+                        840
+                    );
+                    sink.flush_db().unwrap();
+                } else {
+                    assert_eq!(sink.persist(1000).unwrap(), 840);
+                }
+                drop(sink);
+                want
+            };
+            let db = open_manual(dir.path());
+            assert_eq!(
+                compare(&db, &want, 1000),
+                840,
+                "via_flush_db {via_flush_db}"
+            );
+        }
+    });
+}

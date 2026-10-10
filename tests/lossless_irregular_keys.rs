@@ -182,3 +182,101 @@ fn even_spacing_is_not_cut() {
     assert_eq!(db.stats().total_segments, 1);
     assert_exact(&db, &keys, "even");
 }
+
+/// A single `put` (not a batch) advances the last key: repeating the key
+/// or going below it with another single `put` is refused, and the refused
+/// call writes nothing
+#[test]
+fn single_put_advances_the_last_key() {
+    let db = AliceDB::in_memory(lossless()).unwrap();
+    db.put(10, 1.0).unwrap();
+    let e = db.put(10, 2.0).unwrap_err();
+    assert_eq!(order_error(&e), LosslessKeyOrderError { key: 10, last: 10 });
+    let e = db.put(9, 3.0).unwrap_err();
+    assert_eq!(order_error(&e), LosslessKeyOrderError { key: 9, last: 10 });
+    // neither refused call reached the memtable
+    assert_eq!(db.get(10).unwrap(), Some(1.0));
+    assert_eq!(db.get(9).unwrap(), None);
+    db.put(11, 4.0).unwrap();
+    db.flush().unwrap();
+    assert_eq!(db.scan(i64::MIN, i64::MAX).unwrap(), [(10, 1.0), (11, 4.0)]);
+}
+
+/// The last key is restored from the stored segments on reopen: the next
+/// write must still be above the largest key written before the close.
+/// `close` (and `Drop`) flush the memtable, so a database closed without an
+/// explicit `flush` reopens from segments as well; the WAL replay after a
+/// crash is covered in `tests/crash_reopen_process.rs`
+#[cfg(feature = "fs")]
+#[test]
+fn last_key_is_restored_on_reopen() {
+    const K: i64 = 40;
+    let keys: Vec<i64> = (0..=K).step_by(2).collect();
+    for explicit_flush in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = || StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            ..lossless()
+        };
+        {
+            let db = AliceDB::with_config(config()).unwrap();
+            for (k, v) in data(&keys) {
+                db.put(k, v).unwrap();
+            }
+            if explicit_flush {
+                db.flush().unwrap();
+            }
+            db.close().unwrap();
+        }
+        let what = if explicit_flush {
+            "flushed"
+        } else {
+            "unflushed"
+        };
+        let db = AliceDB::with_config(config()).unwrap();
+        let e = db.put(K, 9.0).unwrap_err();
+        assert_eq!(
+            order_error(&e),
+            LosslessKeyOrderError { key: K, last: K },
+            "{what}"
+        );
+        let e = db.put(K - 5, 9.0).unwrap_err();
+        assert_eq!(
+            order_error(&e),
+            LosslessKeyOrderError {
+                key: K - 5,
+                last: K
+            },
+            "{what}"
+        );
+        db.put(K + 1, 7.5).unwrap();
+        db.flush().unwrap();
+        let mut want = data(&keys);
+        want.push((K + 1, 7.5));
+        assert_eq!(db.scan(i64::MIN, i64::MAX).unwrap(), want, "{what}");
+    }
+}
+
+/// A scan whose start lies between two grid points of a lossless segment
+/// starts at the next grid point: it neither returns the point before the
+/// start nor makes up a point at the start
+#[test]
+fn scan_from_an_off_grid_start_begins_at_the_next_written_key() {
+    let db = AliceDB::in_memory(lossless()).unwrap();
+    let keys: Vec<i64> = (0..20).map(|i| 100 + 7 * i).collect();
+    db.put_batch(&data(&keys)).unwrap();
+    db.flush().unwrap();
+    assert_eq!(db.stats().total_segments, 1, "one evenly spaced segment");
+    let last = *keys.last().unwrap();
+
+    // 101 is not a key: the scan begins at 107
+    assert_eq!(db.scan(101, last).unwrap(), data(&keys)[1..]);
+    // 106 is just below a key
+    assert_eq!(db.scan(106, last).unwrap(), data(&keys)[1..]);
+    // a start on a key includes it
+    assert_eq!(db.scan(107, last).unwrap(), data(&keys)[1..]);
+    // an off-grid start and end inside the segment: 115..=130 holds 121, 128
+    assert_eq!(db.scan(115, 130).unwrap(), data(&keys)[3..5]);
+    // a range between two keys is empty
+    assert_eq!(db.scan(101, 106).unwrap(), []);
+}

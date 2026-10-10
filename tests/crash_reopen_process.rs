@@ -21,7 +21,7 @@
 //! once.
 #![cfg(feature = "fs")]
 
-use alice_db::{AliceDB, FitConfig, StorageConfig};
+use alice_db::{AliceDB, FitConfig, LosslessKeyOrderError, StorageConfig};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -138,6 +138,30 @@ fn crash_then_reopen(encrypted: bool) {
             value(i)
         );
     }
+    // lossless mode continues after the largest replayed key: the last key
+    // is restored after the WAL replay, not only from segments written
+    // before the crash
+    for refused in [N - 1, N - 6] {
+        let e = db.put(refused, 1.0).unwrap_err();
+        let order = e
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<LosslessKeyOrderError>())
+            .copied();
+        assert_eq!(
+            order,
+            Some(LosslessKeyOrderError {
+                key: refused,
+                last: N - 1
+            }),
+            "put({refused}) after replay: {e}"
+        );
+    }
+    db.put(N, 1.5).unwrap();
+    assert_eq!(
+        db.get(N - 1).unwrap().map(f32::to_bits),
+        Some(value(N - 1).to_bits())
+    );
+    assert_eq!(db.get(N).unwrap(), Some(1.5));
     db.close().unwrap();
 }
 

@@ -99,6 +99,9 @@ jobs:
         shell: bash
         env:
           CARGO_TERM_COLOR: never
+          # fuzz_index_lookup opens an on-disk store per input; tmpfs keeps
+          # that from dominating the run
+          TMPDIR: /dev/shm
         run: |
           cd fuzz
           T="${{ matrix.target }}"

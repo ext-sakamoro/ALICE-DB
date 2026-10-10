@@ -96,11 +96,23 @@ fn huge_spans_group_without_overflow() {
         let got = group(&db, interval, Aggregation::Sum)
             .unwrap()
             .into_aggregates();
-        // interval 1: one bucket per key; interval i64::MAX: buckets are
-        // trunc(t / MAX)·MAX = −MAX for MIN, 0 for −1, MAX for MAX
+        // interval 1: one bucket per key; interval i64::MAX: floor buckets
+        // starting at −2·MAX (labelled MIN, see `tests/query_group_by_floor.rs`)
+        // for MIN, −MAX for −1 and MAX for MAX
         let want: Vec<(i64, f64)> = points
             .iter()
-            .map(|&(t, v)| ((t / interval) * interval, f64::from(v)))
+            .map(|&(t, v)| {
+                let label = if interval == 1 {
+                    t
+                } else if t == i64::MIN {
+                    i64::MIN
+                } else if t < 0 {
+                    -i64::MAX
+                } else {
+                    i64::MAX
+                };
+                (label, f64::from(v))
+            })
             .collect();
         assert_eq!(got, want, "points {points:?}, interval {interval}");
     }

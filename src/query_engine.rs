@@ -153,9 +153,21 @@ impl<'a> QueryBuilder<'a> {
 
     /// Group by time interval (for downsampling)
     ///
-    /// Points are grouped into buckets of `interval` keys, each labelled
-    /// `(t / interval) * interval` (Rust integer division, which truncates
-    /// toward zero). `interval` must be positive: [`Self::execute`] refuses
+    /// Points are grouped into floor buckets: key `t` belongs to
+    /// `[k·interval, (k+1)·interval)` with `k = ⌊t / interval⌋` (computed in
+    /// `i128`), so every bucket is `interval` keys wide, around zero too.
+    /// Only buckets holding a point are returned, in key order, each
+    /// labelled `max(bucket_start, i64::MIN)`: the label is the bucket's
+    /// start, except for the lowest bucket when its start lies below
+    /// `i64::MIN` (`i64::MIN` is −2^63, so this happens for every interval
+    /// that does not divide 2^63, e.g. the bucket of `i64::MIN` starts at
+    /// `i64::MIN − 6` for interval 7); that bucket is labelled `i64::MIN`,
+    /// its lowest existing key. Labels are strictly increasing. Until 0.3.0
+    /// the label was `(t / interval) * interval`, which truncates toward
+    /// zero: bucket 0 held `2·interval − 1` keys (−9..=9 for interval 10)
+    /// and negative keys were labelled one bucket too high.
+    ///
+    /// `interval` must be positive: [`Self::execute`] refuses
     /// zero or a negative interval with [`io::ErrorKind::InvalidInput`],
     /// whether or not the range holds any point. Until 0.3.0 such an
     /// interval panicked (division by zero, or a capacity overflow from a
@@ -368,14 +380,25 @@ impl<'a> QueryBuilder<'a> {
             }
         }
 
-        // Estimate result size. `interval > 0` (checked in `execute`), so
-        // the bucket labels cannot overflow; their difference can exceed
-        // `i64::MAX` and is taken in `i128`. Every bucket holds at least one
-        // point, so the count is capped at `points.len()`.
-        let first_bucket = (points[0].0 / interval) * interval;
-        let last_bucket = (points[points.len() - 1].0 / interval) * interval;
-        let span_buckets =
-            (i128::from(last_bucket) - i128::from(first_bucket)) / i128::from(interval) + 1;
+        // Floor bucket start of `t`, in `i128`: `interval > 0` (checked in
+        // `execute`), and the start can lie below `i64::MIN`
+        let interval_wide = i128::from(interval);
+        let bucket_start = |t: i64| i128::from(t).div_euclid(interval_wide) * interval_wide;
+        // The reported label: `max(bucket_start, i64::MIN)`. The start is at
+        // most `t`, so only the lower end needs the clamp; only the lowest
+        // bucket can start below `i64::MIN` (the next one starts above it),
+        // so labels stay distinct
+        let label = |start: i128| {
+            i64::try_from(start.max(i128::from(i64::MIN)))
+                .expect("a bucket start is at most its key, which is an i64")
+        };
+
+        // Number of buckets the points span, from the same floor starts;
+        // every bucket returned holds at least one point, so it is also
+        // capped at `points.len()`
+        let first_bucket = bucket_start(points[0].0);
+        let last_bucket = bucket_start(points[points.len() - 1].0);
+        let span_buckets = (last_bucket - first_bucket) / interval_wide + 1;
         let estimated_buckets = usize::try_from(span_buckets)
             .unwrap_or(usize::MAX)
             .min(points.len());
@@ -386,13 +409,13 @@ impl<'a> QueryBuilder<'a> {
 
         // Single-pass streaming: O(n) time, O(1) space per bucket
         for &(t, v) in &points[1..] {
-            let bucket = (t / interval) * interval;
+            let bucket = bucket_start(t);
 
             if bucket == current_bucket {
                 state.update(v);
             } else {
                 // Emit completed bucket
-                results.push((current_bucket, state.finalize(self.aggregation)));
+                results.push((label(current_bucket), state.finalize(self.aggregation)));
 
                 // Start new bucket
                 current_bucket = bucket;
@@ -401,7 +424,14 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // Emit final bucket
-        results.push((current_bucket, state.finalize(self.aggregation)));
+        results.push((label(current_bucket), state.finalize(self.aggregation)));
+        // The estimate counts every bucket between the first and the last
+        // point, so it bounds the result (it is the allocation size)
+        debug_assert!(
+            results.len() <= estimated_buckets,
+            "{} buckets, estimated {estimated_buckets}",
+            results.len()
+        );
 
         QueryResult::Aggregates(results)
     }
@@ -440,6 +470,9 @@ pub trait QueryInterface {
     /// Returns an error if the storage query fails, and
     /// [`io::ErrorKind::InvalidInput`] if `interval` is zero or negative
     /// (see `QueryBuilder::group_by`).
+    ///
+    /// Buckets are floor buckets `[k·interval, (k+1)·interval)` labelled
+    /// `max(bucket_start, i64::MIN)`, as for `QueryBuilder::group_by`.
     fn downsample(
         &self,
         start: i64,

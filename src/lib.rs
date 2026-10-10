@@ -594,6 +594,9 @@ impl AliceDB {
     /// Returns an error if the underlying storage query fails, and
     /// [`io::ErrorKind::InvalidInput`] if `interval` is zero or negative
     /// (see `QueryBuilder::group_by`).
+    ///
+    /// Buckets are floor buckets `[k·interval, (k+1)·interval)` labelled
+    /// `max(bucket_start, i64::MIN)`, as for `QueryBuilder::group_by`.
     pub fn downsample(
         &self,
         start: i64,

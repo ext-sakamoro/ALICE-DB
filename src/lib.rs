@@ -591,7 +591,9 @@ impl AliceDB {
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage query fails.
+    /// Returns an error if the underlying storage query fails, and
+    /// [`io::ErrorKind::InvalidInput`] if `interval` is zero or negative
+    /// (see `QueryBuilder::group_by`).
     pub fn downsample(
         &self,
         start: i64,

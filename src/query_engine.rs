@@ -152,6 +152,14 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// Group by time interval (for downsampling)
+    ///
+    /// Points are grouped into buckets of `interval` keys, each labelled
+    /// `(t / interval) * interval` (Rust integer division, which truncates
+    /// toward zero). `interval` must be positive: [`Self::execute`] refuses
+    /// zero or a negative interval with [`io::ErrorKind::InvalidInput`],
+    /// whether or not the range holds any point. Until 0.3.0 such an
+    /// interval panicked (division by zero, or a capacity overflow from a
+    /// negative bucket count).
     #[must_use]
     pub const fn group_by(mut self, interval: i64) -> Self {
         self.group_by_interval = Some(interval);
@@ -176,8 +184,19 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage query fails.
+    /// Returns an error if the underlying storage query fails, and
+    /// [`io::ErrorKind::InvalidInput`] if a [`Self::group_by`] interval is
+    /// zero or negative.
     pub fn execute(self) -> io::Result<QueryResult> {
+        if let Some(interval) = self.group_by_interval {
+            if interval <= 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("group_by interval must be positive, got {interval}"),
+                ));
+            }
+        }
+
         let start = self.start_time.unwrap_or(i64::MIN);
         let end = self.end_time.unwrap_or(i64::MAX);
 
@@ -349,10 +368,17 @@ impl<'a> QueryBuilder<'a> {
             }
         }
 
-        // Estimate result size
+        // Estimate result size. `interval > 0` (checked in `execute`), so
+        // the bucket labels cannot overflow; their difference can exceed
+        // `i64::MAX` and is taken in `i128`. Every bucket holds at least one
+        // point, so the count is capped at `points.len()`.
         let first_bucket = (points[0].0 / interval) * interval;
         let last_bucket = (points[points.len() - 1].0 / interval) * interval;
-        let estimated_buckets = ((last_bucket - first_bucket) / interval + 1) as usize;
+        let span_buckets =
+            (i128::from(last_bucket) - i128::from(first_bucket)) / i128::from(interval) + 1;
+        let estimated_buckets = usize::try_from(span_buckets)
+            .unwrap_or(usize::MAX)
+            .min(points.len());
 
         let mut results = Vec::with_capacity(estimated_buckets);
         let mut current_bucket = first_bucket;
@@ -411,7 +437,9 @@ pub trait QueryInterface {
     ///
     /// # Errors
     ///
-    /// Returns an error if the storage query fails.
+    /// Returns an error if the storage query fails, and
+    /// [`io::ErrorKind::InvalidInput`] if `interval` is zero or negative
+    /// (see `QueryBuilder::group_by`).
     fn downsample(
         &self,
         start: i64,

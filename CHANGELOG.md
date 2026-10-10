@@ -12,6 +12,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Added
 
+- `tests/crash_reopen_process.rs`: `AliceDB` を開いた子 process が WAL 有効で 500 点を書き、全 `put` が返ったと報告した後に kill される (Unix は `SIGKILL`、Windows は `TerminateProcess`、`close` も `Drop` も走らない) 親が同じ設定で開き直し、全点を bit 単位で読み戻す (暗号化 WAL も `crypto` feature で同様) 同じ process 内の試験は `mem::forget` でクラッシュを模すため advisory lock が残り、`AliceDB` の層の再オープンを通せなかった 本 file は試験の追加で、製品の挙動は変えていない WAL への書き込みを止める変異で 2 本とも red を確認
 - `alice_db::SEMANTICS_ID`: the identifier of the arithmetic models are
   evaluated with (re-exported from `alice-zip`, equal to
   `alice_det_math::SEMANTICS_ID`), so a caller writing a residual with

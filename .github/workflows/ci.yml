@@ -42,10 +42,10 @@ jobs:
       # same on every OS and in every feature set, so it is named in each step.
       - name: Test (default = file backend)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden -- cargo test
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,crash_reopen_process -- cargo test
       - name: Test (full native feature set)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden -- cargo test --features "$NATIVE_FEATURES"
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,crash_reopen_process -- cargo test --features "$NATIVE_FEATURES"
       - name: Test (no default features = memory backend only)
         shell: bash
         run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden -- cargo test --no-default-features

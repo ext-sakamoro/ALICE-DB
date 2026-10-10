@@ -61,13 +61,111 @@ mod law {
 
     /// Fractional sample position of `timestamp` in a segment of `n` samples
     /// spanning `start..=end` (uniform spacing).
+    ///
+    /// The differences are taken in `i128`: a segment may span more than
+    /// `i64::MAX` (keys of both signs), where an `i64` subtraction panics in
+    /// debug builds and wraps in release. Below 2^63 the result is the same
+    /// value the `i64` form computed.
     #[inline(always)]
     pub(super) fn sample_pos(start: i64, end: i64, n: usize, timestamp: i64) -> f64 {
-        let range = (end - start) as f64;
+        let range = (i128::from(end) - i128::from(start)) as f64;
         if n <= 1 || range <= 0.0 {
             return 0.0;
         }
-        (timestamp - start) as f64 / range * (n - 1) as f64
+        (i128::from(timestamp) - i128::from(start)) as f64 / range * (n - 1) as f64
+    }
+
+    /// The grid points of a segment inside a query, walked by integer index
+    ///
+    /// A segment holds `n` samples on an even grid from `start` to `end`.
+    /// A range read emits the points `t_k = query_start + ⌊k·range/(n−1)⌋`
+    /// for `k = 0, 1, …` while `t_k <= query_end`, so it emits at most `n`
+    /// points and always terminates. Until 0.3.0 it stepped an `f64`
+    /// timestamp by `range/(n−1)`; above 2^53 a step smaller than half an
+    /// ulp left the timestamp unchanged and the loop never ended.
+    ///
+    /// The value at `t_k` is the model at sample position
+    /// `(t_k − start) · (n−1)/range`, computed with the same `f64` operations
+    /// as before whenever the old loop was exact (integer step, keys below
+    /// 2^53), so the bits read back there do not change
+    /// (`tests/determinism_golden.rs`).
+    pub(super) struct RangePlan {
+        /// First timestamp (already clamped to the segment)
+        query_start: i64,
+        /// `query_start − start`, ≥ 0
+        offset: u128,
+        /// `end − start`, ≥ 0
+        range: u128,
+        /// `n − 1`
+        nm1: u128,
+        /// `1 / step` (0 for a single point)
+        scale: f64,
+        /// Number of points emitted
+        pub(super) count: u64,
+    }
+
+    impl RangePlan {
+        /// `query_start..=query_end` must lie inside `start..=end`
+        pub(super) fn new(
+            start: i64,
+            end: i64,
+            n: usize,
+            query_start: i64,
+            query_end: i64,
+        ) -> Self {
+            let range = u128::try_from(i128::from(end) - i128::from(start)).unwrap_or(0);
+            let offset = u128::try_from(i128::from(query_start) - i128::from(start)).unwrap_or(0);
+            let span = u128::try_from(i128::from(query_end) - i128::from(query_start)).unwrap_or(0);
+            let nm1 = n.saturating_sub(1) as u128;
+            let range_f = range as f64;
+            let step = if n > 1 && range_f > 0.0 {
+                range_f / nm1 as f64
+            } else {
+                1.0
+            };
+            let scale = if n <= 1 || step <= 0.0 {
+                0.0
+            } else {
+                1.0 / step
+            };
+            // ⌊span·(n−1)/range⌋ ≤ n−1; span, n−1 < 2^64 so the product fits
+            let count = if n > 1 && range > 0 {
+                (span * nm1 / range) as u64 + 1
+            } else {
+                1
+            };
+            Self {
+                query_start,
+                offset,
+                range,
+                nm1,
+                scale,
+                count,
+            }
+        }
+
+        /// Timestamp of grid point `k` (exact)
+        #[inline(always)]
+        pub(super) fn timestamp(&self, k: u64) -> i64 {
+            if self.nm1 == 0 || self.range == 0 {
+                return self.query_start;
+            }
+            // k·range ≤ (n−1)·range < 2^128; the result is ≤ query_end
+            let d = u128::from(k) * self.range / self.nm1;
+            (i128::from(self.query_start) + d as i128) as i64
+        }
+
+        /// Sample position of grid point `k`
+        #[inline(always)]
+        pub(super) fn pos(&self, k: u64) -> f64 {
+            if self.nm1 == 0 || self.range == 0 {
+                return 0.0;
+            }
+            // (t_k − start) as an exact fraction: (offset·(n−1) + k·range)/(n−1),
+            // ≤ range·(n−1) < 2^128
+            let num = self.offset * self.nm1 + u128::from(k) * self.range;
+            (num as f64 / self.nm1 as f64) * self.scale
+        }
     }
 
     /// `Σ cⱼ·iʲ` — delegates to the law in `alice_core`
@@ -131,29 +229,17 @@ mod law {
             .unwrap_or(0.0)
     }
 
-    /// Fill `results` with `(t, eval(i))` for every uniform sample timestamp in
-    /// `query_start..=query_end` (branch on the model once, outside this loop).
+    /// Fill `results` with `(t, eval(i))` for every grid point of `plan`
+    /// (branch on the model once, outside this loop).
     #[inline(always)]
-    #[allow(clippy::while_float)]
     pub(super) fn fill_range(
         results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        start_time: i64,
-        n: usize,
+        plan: &RangePlan,
+        first: u64,
         eval: impl Fn(f64) -> f32,
     ) {
-        let scale = if n <= 1 || step <= 0.0 {
-            0.0
-        } else {
-            1.0 / step
-        };
-        let mut t = query_start as f64;
-        while t <= query_end as f64 {
-            let i = (t - start_time as f64) * scale;
-            results.push((t as i64, eval(i)));
-            t += step;
+        for k in first..plan.count {
+            results.push((plan.timestamp(k), eval(plan.pos(k))));
         }
     }
 }
@@ -326,108 +412,54 @@ impl DataSegment {
             return Vec::new();
         }
 
-        // Pre-calculate loop parameters
-        let total_range = (self.end_time - self.start_time) as f64;
-        let step = if self.metadata.point_count > 1 && total_range > 0.0 {
-            total_range / (self.metadata.point_count - 1) as f64
-        } else {
-            1.0
-        };
-        let estimated_count = ((query_end - query_start) as f64 / step) as usize + 1;
+        // Integer grid walk: at most `point_count` points (see `law::RangePlan`)
+        let n = self.metadata.point_count;
+        let plan = law::RangePlan::new(self.start_time, self.end_time, n, query_start, query_end);
 
         // Pre-allocate with exact capacity
-        let mut results = Vec::with_capacity(estimated_count.min(self.metadata.point_count));
+        let mut results =
+            Vec::with_capacity(usize::try_from(plan.count).unwrap_or(n).min(n.max(1)));
 
         // Branch on the model ONCE, then run one tight loop over the law
-        let n = self.metadata.point_count;
-        let start_time = self.start_time;
         match &self.model {
             ModelType::Polynomial { coefficients, .. } => {
-                Self::fill_range_polynomial(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    start_time,
-                    n,
-                    coefficients,
-                );
+                Self::fill_range_polynomial(&mut results, &plan, coefficients);
             }
             ModelType::Fourier {
                 coefficients,
                 dc_offset,
                 sample_count,
-            } => law::fill_range(
-                &mut results,
-                query_start,
-                query_end,
-                step,
-                start_time,
-                n,
-                |i| law::fourier_at(coefficients, *dc_offset, *sample_count, i),
-            ),
+            } => law::fill_range(&mut results, &plan, 0, |i| {
+                law::fourier_at(coefficients, *dc_offset, *sample_count, i)
+            }),
             ModelType::SineWave {
                 frequency,
                 amplitude,
                 phase,
                 offset,
-            } => law::fill_range(
-                &mut results,
-                query_start,
-                query_end,
-                step,
-                start_time,
-                n,
-                |i| law::sine_at(*frequency, *amplitude, *phase, *offset, n, i),
-            ),
+            } => law::fill_range(&mut results, &plan, 0, |i| {
+                law::sine_at(*frequency, *amplitude, *phase, *offset, n, i)
+            }),
             ModelType::MultiSine {
                 components,
                 dc_offset,
-            } => law::fill_range(
-                &mut results,
-                query_start,
-                query_end,
-                step,
-                start_time,
-                n,
-                |i| law::multisine_at(components, *dc_offset, n, i),
-            ),
+            } => law::fill_range(&mut results, &plan, 0, |i| {
+                law::multisine_at(components, *dc_offset, n, i)
+            }),
             ModelType::Constant { value } => {
                 let v = *value as f32;
-                law::fill_range(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    start_time,
-                    n,
-                    |_| v,
-                );
+                law::fill_range(&mut results, &plan, 0, |_| v);
             }
             ModelType::Linear {
                 start_value,
                 end_value,
-            } => law::fill_range(
-                &mut results,
-                query_start,
-                query_end,
-                step,
-                start_time,
-                n,
-                |i| law::linear_at(*start_value, *end_value, n, i),
-            ),
+            } => law::fill_range(&mut results, &plan, 0, |i| {
+                law::linear_at(*start_value, *end_value, n, i)
+            }),
             ModelType::PerlinNoise { .. } | ModelType::RawLzma { .. } => {
                 // Non-analytic models: materialise once, then index
                 let all = self.generate_all();
-                law::fill_range(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    start_time,
-                    n,
-                    |i| law::sampled_at(&all, i),
-                );
+                law::fill_range(&mut results, &plan, 0, |i| law::sampled_at(&all, i));
             }
         }
 
@@ -449,41 +481,26 @@ impl DataSegment {
     /// Polynomial range loop: 4 sample positions per `f64x4` Horner step, then
     /// a scalar tail — the same law as [`law::polynomial_at`].
     #[inline]
-    #[allow(clippy::while_float)]
     fn fill_range_polynomial(
         results: &mut Vec<(i64, f32)>,
-        query_start: i64,
-        query_end: i64,
-        step: f64,
-        start_time: i64,
-        n: usize,
+        plan: &law::RangePlan,
         coefficients: &[f64],
     ) {
-        let scale = if n <= 1 || step <= 0.0 {
-            0.0
-        } else {
-            1.0 / step
-        };
-        let start = start_time as f64;
-        let mut t = query_start as f64;
-        let step4 = step * 4.0;
-        while step.mul_add(3.0, t) <= query_end as f64 {
-            let ts = [t, t + step, step.mul_add(2.0, t), step.mul_add(3.0, t)];
+        let mut k = 0u64;
+        while k + 4 <= plan.count {
             let i = f64x4::from([
-                (ts[0] - start) * scale,
-                (ts[1] - start) * scale,
-                (ts[2] - start) * scale,
-                (ts[3] - start) * scale,
+                plan.pos(k),
+                plan.pos(k + 1),
+                plan.pos(k + 2),
+                plan.pos(k + 3),
             ]);
             let v: [f64; 4] = horner_simd(i, coefficients).into();
-            for k in 0..4 {
-                results.push((ts[k] as i64, v[k] as f32));
+            for (j, &value) in (0u64..).zip(v.iter()) {
+                results.push((plan.timestamp(k + j), value as f32));
             }
-            t += step4;
+            k += 4;
         }
-        law::fill_range(results, t as i64, query_end, step, start_time, n, |i| {
-            law::polynomial_at(coefficients, i)
-        });
+        law::fill_range(results, plan, k, |i| law::polynomial_at(coefficients, i));
     }
 
     /// Query a range of values using SIMD acceleration (Phase 3)
@@ -1307,82 +1324,47 @@ impl SegmentView {
             return Vec::new();
         }
 
-        let total_range = (self.archived.end_time - self.archived.start_time) as f64;
-        let point_count = self.archived.metadata.point_count as f64;
-        let step = if point_count > 1.0 && total_range > 0.0 {
-            total_range / (point_count - 1.0)
-        } else {
-            1.0
-        };
-        let estimated_count = ((query_end - query_start) as f64 / step) as usize + 1;
-
-        let mut results = Vec::with_capacity(estimated_count.min(point_count as usize));
+        // Integer grid walk: at most `point_count` points (see `law::RangePlan`)
+        let n = self.archived.metadata.point_count as usize;
+        let plan = law::RangePlan::new(
+            self.archived.start_time,
+            self.archived.end_time,
+            n,
+            query_start,
+            query_end,
+        );
+        let mut results =
+            Vec::with_capacity(usize::try_from(plan.count).unwrap_or(n).min(n.max(1)));
 
         // Branch on the model ONCE, then run one tight loop over the law
-        let n = self.archived.metadata.point_count as usize;
-        let start_time = self.archived.start_time;
         match &self.archived.model {
             ArchivedModelType::Polynomial { coefficients, .. } => {
-                DataSegment::fill_range_polynomial(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    start_time,
-                    n,
-                    coefficients.as_slice(),
-                );
+                DataSegment::fill_range_polynomial(&mut results, &plan, coefficients.as_slice());
             }
             ArchivedModelType::Constant { value } => {
                 let v = *value as f32;
-                law::fill_range(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    start_time,
-                    n,
-                    |_| v,
-                );
+                law::fill_range(&mut results, &plan, 0, |_| v);
             }
             ArchivedModelType::Linear {
                 start_value,
                 end_value,
-            } => law::fill_range(
-                &mut results,
-                query_start,
-                query_end,
-                step,
-                start_time,
-                n,
-                |i| law::linear_at(*start_value, *end_value, n, i),
-            ),
+            } => law::fill_range(&mut results, &plan, 0, |i| {
+                law::linear_at(*start_value, *end_value, n, i)
+            }),
             ArchivedModelType::SineWave {
                 frequency,
                 amplitude,
                 phase,
                 offset,
-            } => law::fill_range(
-                &mut results,
-                query_start,
-                query_end,
-                step,
-                start_time,
-                n,
-                |i| law::sine_at(*frequency, *amplitude, *phase, *offset, n, i),
-            ),
+            } => law::fill_range(&mut results, &plan, 0, |i| {
+                law::sine_at(*frequency, *amplitude, *phase, *offset, n, i)
+            }),
             ArchivedModelType::MultiSine {
                 components,
                 dc_offset,
-            } => law::fill_range(
-                &mut results,
-                query_start,
-                query_end,
-                step,
-                start_time,
-                n,
-                |i| law::multisine_at(components, *dc_offset, n, i),
-            ),
+            } => law::fill_range(&mut results, &plan, 0, |i| {
+                law::multisine_at(components, *dc_offset, n, i)
+            }),
             ArchivedModelType::Fourier {
                 coefficients,
                 dc_offset,
@@ -1394,27 +1376,13 @@ impl SegmentView {
                     .iter()
                     .map(|c| (c.0 as usize, c.1, c.2))
                     .collect();
-                law::fill_range(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    start_time,
-                    n,
-                    |i| law::fourier_at(&coefs, *dc_offset, *sample_count as usize, i),
-                );
+                law::fill_range(&mut results, &plan, 0, |i| {
+                    law::fourier_at(&coefs, *dc_offset, *sample_count as usize, i)
+                });
             }
             ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
                 let all = self.materialise_archived_samples();
-                law::fill_range(
-                    &mut results,
-                    query_start,
-                    query_end,
-                    step,
-                    start_time,
-                    n,
-                    |i| law::sampled_at(&all, i),
-                );
+                law::fill_range(&mut results, &plan, 0, |i| law::sampled_at(&all, i));
             }
         }
 

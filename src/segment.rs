@@ -75,6 +75,29 @@ mod law {
         (i128::from(timestamp) - i128::from(start)) as f64 / range * (n - 1) as f64
     }
 
+    /// First grid point at or after `t` of a segment of `n` samples on the
+    /// even grid `start + ⌊k·range/(n−1)⌋`, or `None` past the last one
+    pub(super) fn grid_ceil(start: i64, end: i64, n: usize, t: i64) -> Option<i64> {
+        if t <= start {
+            return Some(start);
+        }
+        if t > end {
+            return None;
+        }
+        let range = u128::try_from(i128::from(end) - i128::from(start)).unwrap_or(0);
+        let nm1 = n.saturating_sub(1) as u128;
+        if nm1 == 0 || range == 0 {
+            return None;
+        }
+        // smallest k with ⌊k·range/(n−1)⌋ ≥ d is ⌈d·(n−1)/range⌉
+        let d = u128::try_from(i128::from(t) - i128::from(start)).unwrap_or(0);
+        let k = (d * nm1).div_ceil(range);
+        if k > nm1 {
+            return None;
+        }
+        Some((i128::from(start) + (k * range / nm1) as i128) as i64)
+    }
+
     /// The grid points of a segment inside a query, walked by integer index
     ///
     /// A segment holds `n` samples on an even grid from `start` to `end`.
@@ -1263,6 +1286,35 @@ impl SegmentView {
     #[must_use]
     pub const fn contains(&self, timestamp: i64) -> bool {
         timestamp >= self.archived.start_time && timestamp <= self.archived.end_time
+    }
+
+    /// Whether the segment carries a lossless residual
+    #[must_use]
+    pub fn is_lossless(&self) -> bool {
+        self.archived.residual_blob.is_some()
+    }
+
+    /// First point of the segment's even grid at or after `timestamp`, or
+    /// `None` when `timestamp` is past the last point
+    ///
+    /// The grid is `start + ⌊k·range/(n−1)⌋`, `k = 0 ..= n−1`; for a
+    /// lossless segment written by this version those are exactly the keys
+    /// that were written (lossless mode cuts segments where the spacing
+    /// changes).
+    #[must_use]
+    pub fn grid_ceil(&self, timestamp: i64) -> Option<i64> {
+        law::grid_ceil(
+            self.archived.start_time,
+            self.archived.end_time,
+            self.point_count(),
+            timestamp,
+        )
+    }
+
+    /// Whether `timestamp` is a point of the segment's even grid
+    #[must_use]
+    pub fn on_grid(&self, timestamp: i64) -> bool {
+        self.grid_ceil(timestamp) == Some(timestamp)
     }
 
     /// Zero-copy point query

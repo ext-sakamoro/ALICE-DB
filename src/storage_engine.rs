@@ -471,6 +471,51 @@ pub struct StorageEngine {
     flush_sender: Option<crossbeam_channel::Sender<FlushJob>>,
     /// Background flush thread handle
     flush_handle: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Lossless mode: the largest key accepted so far (see
+    /// [`LosslessKeyOrderError`]); also serialises lossless writes
+    lossless_last_key: parking_lot::Mutex<Option<i64>>,
+}
+
+/// A write that lossless mode refuses: keys must be strictly increasing
+///
+/// A segment keeps no per-point keys and reads its points back on the even
+/// grid between its first and last key; lossless mode cuts a new segment
+/// wherever the spacing changes, so increasing keys with any gaps read back
+/// exactly. A key at or below one already written would have to go into a
+/// segment overlapping older ones, where a read of an older key would land
+/// on the newer segment's grid and return a value nobody wrote. Lossless
+/// mode refuses such a write instead of storing it inexactly; nothing of the
+/// refused call is written.
+///
+/// Returned inside an [`io::Error`] of kind
+/// [`io::ErrorKind::InvalidInput`]; recover it with
+/// `err.get_ref().and_then(|e| e.downcast_ref::<LosslessKeyOrderError>())`.
+/// Values that need arbitrary key order (overwrites, out-of-order arrival)
+/// belong in an exact series ([`crate::series`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LosslessKeyOrderError {
+    /// The refused key
+    pub key: i64,
+    /// The largest key written before it
+    pub last: i64,
+}
+
+impl std::fmt::Display for LosslessKeyOrderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "lossless mode needs strictly increasing keys: {} after {}",
+            self.key, self.last
+        )
+    }
+}
+
+impl std::error::Error for LosslessKeyOrderError {}
+
+impl LosslessKeyOrderError {
+    fn into_io(self) -> io::Error {
+        io::Error::new(io::ErrorKind::InvalidInput, self)
+    }
 }
 
 impl StorageEngine {
@@ -492,6 +537,7 @@ impl StorageEngine {
         // already on disk (`seg_<id>.rkyv` would be overwritten)
         engine.reserve_loaded_segment_ids();
         engine.replay_wal()?;
+        engine.init_lossless_last_key();
 
         Ok(engine)
     }
@@ -528,6 +574,7 @@ impl StorageEngine {
         let engine = Self::build(config, Store::Memory(parking_lot::Mutex::new(files)))?;
         engine.load_index()?;
         engine.reserve_loaded_segment_ids();
+        engine.init_lossless_last_key();
         Ok(engine)
     }
 
@@ -577,7 +624,14 @@ impl StorageEngine {
             current_offset: RwLock::new(0),
             flush_sender,
             flush_handle,
+            lossless_last_key: parking_lot::Mutex::new(None),
         })
+    }
+
+    /// Lossless mode continues after the largest key already stored
+    fn init_lossless_last_key(&self) {
+        let last = self.shared.index.read().values().map(|e| e.end_time).max();
+        *self.lossless_last_key.lock() = last;
     }
 
     /// Whether this engine keeps its data in process memory
@@ -834,6 +888,24 @@ impl StorageEngine {
     ///
     /// Returns an error if the WAL write or segment persistence fails.
     pub fn put(&self, timestamp: i64, value: f32) -> io::Result<()> {
+        // Lossless: refuse a key at or below the last one before writing
+        // anything; the guard is held until the point is in the memtable
+        let mut lossless = if self.config.fit_config.lossless {
+            let guard = self.lossless_last_key.lock();
+            if let Some(last) = *guard {
+                if timestamp <= last {
+                    return Err(LosslessKeyOrderError {
+                        key: timestamp,
+                        last,
+                    }
+                    .into_io());
+                }
+            }
+            Some(guard)
+        } else {
+            None
+        };
+
         // Write to WAL first for durability (directory backend only)
         #[cfg(feature = "fs")]
         if self.config.enable_wal {
@@ -841,7 +913,12 @@ impl StorageEngine {
         }
 
         // Insert into MemTable
-        if let Some(segment) = self.memtable.put(timestamp, value) {
+        let sealed = self.memtable.put(timestamp, value);
+        if let Some(guard) = lossless.as_mut() {
+            **guard = Some(timestamp);
+        }
+        drop(lossless);
+        if let Some(segment) = sealed {
             if let Some(ref sender) = self.flush_sender {
                 self.shared
                     .in_flight
@@ -861,6 +938,24 @@ impl StorageEngine {
     ///
     /// Returns an error if the WAL write or segment persistence fails.
     pub fn put_batch(&self, data: &[(i64, f32)]) -> io::Result<()> {
+        // Lossless: check the whole batch before writing any of it; the
+        // guard is held until the batch is in the memtable
+        let mut lossless = if self.config.fit_config.lossless {
+            let guard = self.lossless_last_key.lock();
+            let mut last = *guard;
+            for &(t, _) in data {
+                if let Some(l) = last {
+                    if t <= l {
+                        return Err(LosslessKeyOrderError { key: t, last: l }.into_io());
+                    }
+                }
+                last = Some(t);
+            }
+            Some((guard, last))
+        } else {
+            None
+        };
+
         // Write to WAL first (directory backend only)
         #[cfg(feature = "fs")]
         if self.config.enable_wal {
@@ -871,6 +966,10 @@ impl StorageEngine {
 
         // Insert into MemTable
         let segments = self.memtable.put_batch(data);
+        if let Some((guard, last)) = lossless.as_mut() {
+            **guard = *last;
+        }
+        drop(lossless);
         for segment in segments {
             if let Some(ref sender) = self.flush_sender {
                 self.shared
@@ -1281,25 +1380,40 @@ impl StorageEngine {
 
     /// Query a single point (Zero-Copy via `SegmentView`)
     ///
+    /// The newest write wins: the memtable first (latest write of the key),
+    /// then the segments covering `timestamp` from the newest (highest id)
+    /// down. Until 0.3.0 the memtable was skipped, so a value read back
+    /// `None` until it was flushed, and among overlapping segments the first
+    /// one the index returned answered.
+    ///
     /// # Errors
     ///
     /// Returns an error if segment loading fails.
     pub fn query_point(&self, timestamp: i64) -> io::Result<Option<f32>> {
-        // Check MemTable first (most recent data)
-        // Note: MemTable doesn't support point queries directly,
-        // so we check segments
-
-        let entries = self.find_segments(timestamp, timestamp);
-        if entries.is_empty() {
-            return Ok(None);
+        if let Some(v) = self.memtable.get(timestamp) {
+            return Ok(Some(v));
         }
 
-        // Load segment as SegmentView and query (Zero-Copy)
-        let view = self.load_segment(&entries[0])?;
-        Ok(view.query_point(timestamp))
+        let mut entries = self.find_segments(timestamp, timestamp);
+        entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.id));
+        for entry in &entries {
+            // Load segment as SegmentView and query (Zero-Copy)
+            let view = self.load_segment(entry)?;
+            // A lossless segment holds exactly its grid points; a key between
+            // them was not written there (its residual belongs to a neighbour)
+            if view.is_lossless() && !view.on_grid(timestamp) {
+                continue;
+            }
+            return Ok(view.query_point(timestamp));
+        }
+        Ok(None)
     }
 
     /// Query a time range (Zero-Copy via `SegmentView`)
+    ///
+    /// Returns the buffered (memtable) points and the segments' points in
+    /// the range, one per key; where several hold the same key the newest
+    /// wins, in the same order as [`Self::query_point`].
     ///
     /// # Performance: Zero-Copy Path
     ///
@@ -1310,19 +1424,31 @@ impl StorageEngine {
     ///
     /// Returns an error if segment loading fails.
     pub fn query_range(&self, start: i64, end: i64) -> io::Result<Vec<(i64, f32)>> {
-        let entries = self.find_segments(start, end);
+        let mut entries = self.find_segments(start, end);
+        entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.id));
 
-        let mut results = Vec::new();
+        let mut results = self.memtable.range(start, end);
         for entry in entries {
             let view = self.load_segment(&entry)?;
-            let segment_results = view.query_range(start, end);
+            // A lossless segment returns its grid points only: start the walk
+            // on the first one inside the query
+            let from = if view.is_lossless() {
+                match view.grid_ceil(start) {
+                    Some(t) if t <= end => t,
+                    _ => continue,
+                }
+            } else {
+                start
+            };
+            let segment_results = view.query_range(from, end);
             results.extend(segment_results);
         }
 
-        // Sort by timestamp
+        // Sort by timestamp; the sort is stable, so for equal keys the
+        // memtable comes first, then segments newest first
         results.sort_by_key(|&(t, _)| t);
 
-        // Remove duplicates (keep first occurrence)
+        // Remove duplicates (keep first occurrence = newest)
         results.dedup_by_key(|&mut (t, _)| t);
 
         Ok(results)

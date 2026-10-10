@@ -17,23 +17,25 @@
 //! computed exactly from its index (`start + ⌊k·range/(n−1)⌋` in 128-bit
 //! integers), so a range read returns at most `point_count` points.
 //!
-//! What a range read returns (pinned below): the grid points inside the
-//! query, starting at the query's first key. When the stored keys are evenly
-//! spaced and the query starts on one of them, those are exactly the stored
-//! keys, and a lossless segment returns the stored values bit for bit. Keys
-//! with gaps are *not* reproduced: the segment does not know them, so the
-//! grid points between the ends are returned instead (pinned in
-//! `uneven_keys_return_the_grid_not_the_stored_keys`). Returning only the
-//! stored keys for uneven spacing needs per-point timestamps in the segment
-//! format (`tests/analytic_oracle.rs`, ignored
+//! What a range read of one segment returns (pinned below): the grid points
+//! inside the query, starting at the query's first key. When the stored
+//! keys are evenly spaced and the query starts on one of them, those are
+//! exactly the stored keys, and a lossless segment returns the stored values
+//! bit for bit. A single segment does not reproduce keys with gaps: it does
+//! not know them, so the grid points between the ends are returned instead
+//! (pinned in `uneven_keys_return_the_grid_not_the_stored_keys`). `AliceDB`
+//! in lossless mode never builds such a segment: it cuts a new one where
+//! the spacing changes (`tests/lossless_irregular_keys.rs`). Keeping uneven
+//! keys inside one segment needs per-point timestamps in the segment format
+//! (`tests/analytic_oracle.rs`, ignored
 //! `lossless_mode_is_exact_for_irregular_timestamps_too`).
 //!
 //! Each scan runs on a separate thread under a deadline; a scan that does not
 //! return in time ends the test process with a failure, so a regression to a
 //! non-terminating loop turns CI red instead of hanging it.
 
-use alice_db::segment::SegmentView;
-use alice_db::{AliceDB, DataSegment, FitConfig, MemTable, StorageConfig};
+use alice_db::segment::{compress_residual_xor, SegmentView};
+use alice_db::{AliceDB, DataSegment, FitConfig, MemTable, StorageConfig, SEMANTICS_ID};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -77,16 +79,28 @@ fn value(i: usize) -> f32 {
     ((i * i * 7 + i * 13) % 101) as f32 * 0.37 - 11.0
 }
 
-/// One lossless segment holding `keys` (fitted like a flush would)
+/// One lossless segment holding all of `keys`, whatever their spacing
+///
+/// Built the way a flush builds a lossless segment (fit, then the XOR
+/// residual against the point law), but without the memtable's cut at
+/// spacing changes, so the grid arithmetic of a single segment is what is
+/// tested here. `AliceDB` in lossless mode cuts segments where the spacing
+/// changes (`tests/lossless_irregular_keys.rs`).
 fn segment(keys: &[i64]) -> DataSegment {
     let data: Vec<(i64, f32)> = keys
         .iter()
         .enumerate()
         .map(|(i, &k)| (k, value(i)))
         .collect();
-    let memtable = MemTable::with_config(data.len() + 1, lossless());
+    let memtable = MemTable::with_config(data.len() + 1, FitConfig::default());
     assert!(memtable.put_batch(&data).is_empty());
-    memtable.force_flush().expect("one segment")
+    let seg = memtable.force_flush().expect("one segment");
+    let mut residual = Vec::with_capacity(data.len() * 4);
+    for &(t, v) in &data {
+        let model = seg.query_point(t).expect("inside the segment");
+        residual.extend_from_slice(&(v.to_bits() ^ model.to_bits()).to_le_bytes());
+    }
+    seg.with_residual(compress_residual_xor(&residual, &SEMANTICS_ID))
 }
 
 /// Range read on the in-memory segment and on its zero-copy view

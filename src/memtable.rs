@@ -111,9 +111,22 @@ impl MemTable {
     ///
     /// Returns Some(DataSegment) if flush was triggered, None otherwise.
     /// Insert is O(1) amortized (just `Vec::push`).
+    ///
+    /// In lossless mode a key that does not continue the buffer's even
+    /// spacing seals the buffer as a segment first (see
+    /// [`Self::breaks_spacing`]), so every lossless segment holds evenly
+    /// spaced keys and reads them back exactly.
     #[inline]
     pub fn put(&self, timestamp: i64, value: f32) -> Option<DataSegment> {
         let mut buffer = self.buffer.lock();
+        if self.config.lossless && Self::breaks_spacing(&buffer, timestamp) {
+            // The buffer is non-empty, so `capacity >= 2` and the push below
+            // cannot fill it again: at most one segment per call.
+            let sealed = std::mem::replace(&mut *buffer, Vec::with_capacity(self.capacity));
+            buffer.push((timestamp, value));
+            drop(buffer);
+            return Some(self.flush_internal(sealed));
+        }
         buffer.push((timestamp, value));
 
         if buffer.len() >= self.capacity {
@@ -128,16 +141,52 @@ impl MemTable {
         }
     }
 
+    /// Whether appending `timestamp` would break the even spacing of
+    /// `buffer`
+    ///
+    /// A segment keeps `start_time`, `end_time` and `point_count` but no
+    /// per-point keys, and reads its points back on the even grid between
+    /// the two ends. Keys that are not on that grid (gaps, out of order,
+    /// repeated) would read back at the wrong key or with another key's
+    /// value. Lossless mode therefore cuts a segment wherever the spacing
+    /// changes: the keys of each segment are `start + k·step` for one
+    /// positive integer `step`.
+    #[inline]
+    #[must_use]
+    pub fn breaks_spacing(buffer: &[(i64, f32)], timestamp: i64) -> bool {
+        let Some(&(last, _)) = buffer.last() else {
+            return false;
+        };
+        let step = i128::from(timestamp) - i128::from(last);
+        if step <= 0 {
+            return true;
+        }
+        match buffer.first() {
+            Some(&(first, _)) if buffer.len() >= 2 => {
+                i128::from(buffer[1].0) - i128::from(first) != step
+            }
+            _ => false,
+        }
+    }
+
     /// Insert multiple values at once (batch insert)
     ///
     /// More efficient than individual puts for bulk loading.
     /// Returns Vec of segments if multiple flushes were triggered.
+    /// Lossless mode cuts segments where the spacing changes, like
+    /// [`Self::put`].
     #[inline]
     pub fn put_batch(&self, data: &[(i64, f32)]) -> Vec<DataSegment> {
         let mut segments = Vec::new();
         let mut buffer = self.buffer.lock();
 
         for &(timestamp, value) in data {
+            if self.config.lossless && Self::breaks_spacing(&buffer, timestamp) {
+                let sealed = std::mem::replace(&mut *buffer, Vec::with_capacity(self.capacity));
+                drop(buffer);
+                segments.push(self.flush_internal(sealed));
+                buffer = self.buffer.lock();
+            }
             buffer.push((timestamp, value));
 
             if buffer.len() >= self.capacity {
@@ -153,6 +202,35 @@ impl MemTable {
         }
 
         segments
+    }
+
+    /// Latest value buffered for `timestamp`, if any (newest write wins)
+    #[must_use]
+    pub fn get(&self, timestamp: i64) -> Option<f32> {
+        self.buffer
+            .lock()
+            .iter()
+            .rev()
+            .find(|&&(t, _)| t == timestamp)
+            .map(|&(_, v)| v)
+    }
+
+    /// Every buffered point with `start <= t <= end`, sorted by key; for a
+    /// repeated key only its latest write
+    #[must_use]
+    pub fn range(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
+        let buffer = self.buffer.lock();
+        let mut out: Vec<(usize, i64, f32)> = buffer
+            .iter()
+            .enumerate()
+            .filter(|(_, &(t, _))| t >= start && t <= end)
+            .map(|(i, &(t, v))| (i, t, v))
+            .collect();
+        drop(buffer);
+        // newest first within a key, then keep the first of each key
+        out.sort_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)));
+        out.dedup_by_key(|p| p.1);
+        out.into_iter().map(|(_, t, v)| (t, v)).collect()
     }
 
     /// Force flush current buffer regardless of capacity

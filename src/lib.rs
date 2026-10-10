@@ -267,7 +267,7 @@ pub use replication::{
 pub use segment::DataSegment;
 pub use seqlock::{OptimisticError, OptimisticLock, OptimisticTxn, SeqLock, Version};
 pub use series::{Series, SeriesValue};
-pub use storage_engine::{StorageConfig, StorageEngine, StorageStats};
+pub use storage_engine::{LosslessKeyOrderError, StorageConfig, StorageEngine, StorageStats};
 pub use transaction::{LockManager, LockMode, MvccStore, TxnError, TxnId, TxnStatus};
 
 use std::io;

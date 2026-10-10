@@ -316,7 +316,7 @@ fn lossless_mode_returns_every_put_value_bit_exactly_through_both_read_paths() {
 }
 
 #[test]
-#[ignore = "DataSegment は timestamp を保持せず uniform spacing を仮定する (residual は (t−t₀)/range·(n−1) の丸めで index 化、gap のある系列では別点の residual が当たる、scan は存在しない timestamp を返す) — 2026-09-17 記録、segment に timestamp (delta) を持たせる format 変更後に ignore を外す"]
+#[ignore = "DataSegment は timestamp を保持せず uniform spacing を仮定する 0.3.0 から lossless mode は間隔の変わる所で segment を切るので本 test は通る (gap のある系列は小さい segment に分かれ圧縮が効かない、正確さは tests/lossless_irregular_keys.rs が固定) — segment に timestamp (delta) を持たせ 1 segment のまま正確にする format 変更の oracle として残し、その変更後に ignore を外す"]
 fn lossless_mode_is_exact_for_irregular_timestamps_too() {
     // timestamps with gaps (sensor drop-outs): the residual must be attached
     // to the point that was stored, not to a uniform re-sampling of the range

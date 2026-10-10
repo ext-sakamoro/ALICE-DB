@@ -1,7 +1,7 @@
 [package]
 name = "alice-db"
 version = "0.3.0"
-# alice-zip 0.8 は rust-version 1.87、CI の msrv job が 1.87 で実際に compile する
+# alice-zip 0.9 は rust-version 1.87、CI の msrv job が 1.87 で実際に compile する
 rust-version = "1.87"
 edition = "2021"
 license = "AGPL-3.0-or-later OR LicenseRef-Commercial"
@@ -23,7 +23,7 @@ alice_core = { package = "alice-zip", version = "0.9" }
 # Every transcendental this crate evaluates itself (bloom filter sizing, model
 # selection error) goes through `alice-det-math`, whose kernels are built from
 # IEEE 754 basic operations only and so return the same bits on every target.
-# The same major as alice-zip 0.8 uses, so `alice_det_math::SEMANTICS_ID` and
+# The same major as alice-zip 0.9 uses, so `alice_det_math::SEMANTICS_ID` and
 # `alice_core::law::SEMANTICS_ID` name the same arithmetic (pinned in
 # tests/determinism_golden.rs). This crate always builds with `std`.
 alice-det-math = { version = "0.4", default-features = false, features = ["std"] }

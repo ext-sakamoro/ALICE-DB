@@ -50,9 +50,9 @@ dependencies = [
 
 [[package]]
 name = "alice-crypto"
-version = "0.3.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1781a2586100a4cb728d8168eb3925ed20f6d3c8b9c5df8067f6d0512da7b24a"
+checksum = "4aab06bc5e8d31374c8b92ad47d78f0b3ce4bb8ab48a99d058ba219e6533769c"
 dependencies = [
  "blake3",
  "chacha20",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "alice-db"
-version = "0.3.0-beta.2"
+version = "0.3.0"
 dependencies = [
  "alice-analytics",
  "alice-crypto",

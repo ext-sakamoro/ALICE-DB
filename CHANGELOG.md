@@ -4,8 +4,11 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-11
+
 ### Fixed
 
+- `scripts/docs_lint.py` が空の `[Unreleased]` (release を切った直後の状態) を「比較 0 件」として失敗にしていた そのため release のたびに `[Unreleased]` へ中身の無い行を置く必要があった 空の `[Unreleased]` は `[Unreleased]` が無い時と同じく比較対象なしとして通し、本文があるのに category の見出しが無い時は従来どおり失敗にする
 - Fuzz の workflow が crash を見つけても成功していた (run の step が `continue-on-error`) crash で job を失敗させ、各 target が 1 件以上の入力を実行したことを確かめ (0 件は失敗)、target ごとの実行数と coverage を job summary に出す crash の入力は失敗時に artifact として残す
 - Fuzz の 3 target (`fuzz_query_parse` / `fuzz_serialize_roundtrip` / `fuzz_index_lookup`) は crate を呼ばない scaffold で、実行数は出ても何も試していなかった 公開 API を呼ぶ形にした: `from_bytes` に任意の byte 列と `to_bytes` → `from_bytes` の往復 / blob の put / get / delete / prefix scan を `BTreeMap` と突合 / query builder に任意の範囲・集計・group by・limit・offset (手元 90 秒で coverage 3939 / 1895 / 2159、crash 無し) 各 target に coverage の下限を置き (`fuzz/coverage-floor.txt`、`scripts/fuzz_reach.py`、下限の無い target と空の下限表は失敗)、crate を呼ばない target や checksum で止まる target が通らないようにした `fuzz/regressions/<target>` の入力を毎回再生する
 - `fuzz_index_lookup` を 1 byte = 1 操作の program にした (上位 3 bit が操作、下位 3 bit が 1〜2 byte の固定の key か生の key、put の値は位置ごとに異なる) 構造化した入力では「同じ key を書いて flush、もう一度書いて flush」に届かず、注入した 4 種の欠陥 (get が古い SSTable を先に読む / scan の優先順位の反転 / compaction で古い値が勝つ / 特定の key で get が Err) を空の corpus から 60 秒で 1 つも見つけられなかった 書き換え後は手元 (負荷の高い機械) の 3 回ずつで 3/3 / 3/3 / 3/3 / 2/3 flush・compaction・開き直しの後は触った全 key を get で読み、全体を scan する その列を表す入力 (2 回の flush をまたぐ同じ key、削除して flush した key の復活) と見つかった crash を `fuzz/regressions/fuzz_index_lookup/` に置く 決定的な試験 `tests/blob_merge_semantics.rs` (6 列: 2 つの SSTable で新しい値が勝つ / 削除の flush 後に復活しない / memtable が 3 つの SSTable を隠す / prefix scan で key ごとに解決 / flush 前の削除が compaction と開き直しを越えて残る / prefix と等しい key がその prefix scan に入る) を足した (fuzz は代わりにならない) CI の fuzz の一時 directory を tmpfs (`/dev/shm`) にする
@@ -35,7 +38,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 
-- 依存を `alice-zip` 0.7 → 0.8、`alice-crypto` 0.1 → 0.3 に上げた `alice-crypto` は path + version (`../ALICE-Crypto`, `"0.1"`) から crates.io の公開版への依存に替えた (隣の checkout は既に 0.3.0 で、要求 `"0.1"` を満たさず build できなかった) 本 crate が使う `seal` / `open` / `derive_key` / `hash` / `Key` / `CipherError` に変更は無い 保存済みの記録に関わる値は変わらない: `tests/determinism_golden.rs` の `SEMANTICS_ID`・model 選択・`law_id` の digest は 0.8 でも同じ値で通る
+- 依存を `alice-zip` 0.7 → 0.8、`alice-crypto` 0.1 → 0.4 に上げた `alice-crypto` は path + version (`../ALICE-Crypto`, `"0.1"`) から crates.io の公開版への依存に替えた (隣の checkout は既に 0.3.0 で、要求 `"0.1"` を満たさず build できなかった) 本 crate が使う `seal` / `open` / `derive_key` / `hash` / `Key` / `CipherError` に変更は無い (0.3.0 と 0.4.0 の公開版で `stream.rs` / `hash.rs` / `kdf.rs` と依存は同一、0.4.1 は crate-type から `cdylib` を外しただけなので、暗号化した WAL と record の byte 列は変わらない) 公開済の 0.3.0-beta.2 は `alice-zip` ^0.7 を要求していたため、他の ALICE crate と組むと `alice-zip` が 0.7 と 0.8 の 2 版 link されていた 保存済みの記録に関わる値は変わらない: `tests/determinism_golden.rs` の `SEMANTICS_ID`・model 選択・`law_id` の digest は 0.8 でも同じ値で通る
 - CI と `scripts/preflight.sh` の `NATIVE_FEATURES` に `analytics` と `crypto` を加えた それまで CI は `alice-crypto` を空の stub crate に置き換えており、`analytics` も対象外だったので、どちらの bridge も CI で compile されていなかった stub を作る `.github/actions/alice-stubs` は削除、`cargo hack` の除外は `python` だけにした `analytics_bridge` の clippy pedantic の指摘 (`# Errors` 節 5 件、test 3 件) を直した
 - `alice-det-math` 0.4 is a direct dependency (the version `alice-zip` 0.7
   uses). Bloom filter sizing takes its logarithm from `alice_det_math::ln64`

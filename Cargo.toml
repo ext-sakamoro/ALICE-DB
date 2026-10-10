@@ -1,6 +1,6 @@
 [package]
 name = "alice-db"
-version = "0.3.0-beta.2"
+version = "0.3.0"
 # alice-zip 0.8 は rust-version 1.87、CI の msrv job が 1.87 で実際に compile する
 rust-version = "1.87"
 edition = "2021"
@@ -59,7 +59,7 @@ parking_lot = "0.12"
 alice-analytics = { version = "0.3", optional = true }
 
 # ALICE-Crypto bridge (optional)
-alice-crypto = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+alice-crypto = { version = "0.4", optional = true, default-features = false, features = ["std"] }
 
 # Advisory file locking (cross-platform, `fs` feature only)
 fs2 = { version = "0.4", optional = true }

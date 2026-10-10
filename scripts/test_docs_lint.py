@@ -330,9 +330,16 @@ class Changelog(unittest.TestCase):
         self.assertEqual(errors(), [])
 
     def test_unreleased_without_categories_compares_nothing(self):
-        cl = CHANGELOG.split("### Added")[0] + "## [1.4.0] - 2026-09-17\n"
+        # entries under [Unreleased] with no `### <category>` heading
+        cl = CHANGELOG.split("### Added")[0] + "- a loose entry\n\n## [1.4.0] - 2026-09-17\n"
         e = errors({"CHANGELOG.md": cl})
         self.assertTrue(any("compared nothing" in x and "categories" in x for x in e), e)
+
+    def test_an_empty_unreleased_right_after_a_release_passes(self):
+        # the state after cutting a release: the heading stays, with nothing under it
+        cl = CHANGELOG.split("### Added")[0] + "## [1.5.0] - 2026-10-11\n\n### Added\n\n- x\n\n" \
+            + "## [1.4.0]" + CHANGELOG.split("## [1.4.0]")[1]
+        self.assertEqual(errors({"CHANGELOG.md": cl}), [])
 
 
 if __name__ == "__main__":

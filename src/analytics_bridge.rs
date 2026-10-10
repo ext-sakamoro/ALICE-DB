@@ -16,22 +16,47 @@
 //! Bridge between ALICE-Analytics streaming aggregation and ALICE-DB persistent storage.
 //!
 //! Flushes aggregated metrics from [`MetricPipeline`] slots into [`AliceDB`]
-//! as time-series data for long-term storage and querying.
+//! and reads them back bit for bit.
 //!
 //! # Architecture
 //!
 //! ```text
 //! MetricPipeline (HLL++, DDSketch streaming)
 //!         ↓ flush_metrics_to_db
-//! AliceDB (Model-Based LSM-Tree persistent storage)
+//! AliceDB blob key-value store (exact: every value reads back bit for bit)
+//!         ↑ read_metric / scan_metric
 //! ```
+//!
+//! # Where the values go
+//!
+//! Each value is one record of the blob key-value store
+//! ([`AliceDB::put_blob`]), the same exact path `law_store` uses. Until 0.3.0
+//! the bridge wrote into the model-based time-series store
+//! ([`AliceDB::put_batch`]); that store keeps a fitted model per segment and
+//! assumes evenly spaced keys, while metric keys leave gaps of up to 2^44
+//! between metrics, so `get` / `scan` returned values of other keys (840
+//! keys written, 0 read back exactly). Values written that way by
+//! 0.3.0-beta.x stay in the time-series store and are not migrated; they can
+//! still be read approximately with [`AliceDB::get`] / [`AliceDB::scan`] at
+//! [`metric_key`], with the inaccuracy described above.
 //!
 //! # Storage Key Schema
 //!
-//! Each metric slot produces up to 6 time-series entries, keyed by:
+//! Each metric slot produces up to 6 records. The metric key packs the
+//! metric identity, the timestamp and the variant:
 //! ```text
-//! key = (name_hash % 0xFFFFF) << 44 | (timestamp & 0xFFFFFFFFFF) << 4 | variant
+//! metric_key = (name_hash & 0xFFFFF) << 44 | (timestamp & 0xFF_FFFF_FFFF) << 4 | variant
 //! ```
+//! and the blob key is [`METRIC_KEY_PREFIX`] followed by `metric_key` as a
+//! `u64` in big-endian byte order ([`metric_blob_key`]), so a prefix scan
+//! returns one metric's records ordered by `(timestamp, variant)`. The value
+//! is the `f32` bit pattern in little-endian byte order (4 bytes).
+//!
+//! Only the low 20 bits of the name hash and the low 40 bits of the timestamp
+//! take part: two names whose hashes agree in the low 20 bits share their
+//! records, and timestamps that agree in the low 40 bits address the same
+//! record. Readers apply the same masks, so reading with the arguments used
+//! for writing finds the record.
 //!
 //! | Variant | Value | Description |
 //! |---------|-------|-------------|
@@ -49,6 +74,22 @@ use std::io;
 /// Number of variants stored per metric (counter, gauge, cardinality, p50, p90, p99).
 pub const VARIANTS_PER_METRIC: u8 = 6;
 
+/// Blob key prefix reserved for metric records.
+///
+/// Disjoint from [`crate::law_store::LAW_KEY_PREFIX`] (`"\0alice-law\0"`):
+/// the two differ at their eighth byte, so neither is a prefix of the other
+/// and a prefix scan of one never returns records of the other.
+pub const METRIC_KEY_PREFIX: &[u8] = b"\0alice-metric\0";
+
+/// Length of a metric blob key: [`METRIC_KEY_PREFIX`] plus the 8-byte key.
+pub const METRIC_BLOB_KEY_LEN: usize = METRIC_KEY_PREFIX.len() + 8;
+
+/// Mask of the name hash bits that take part in [`metric_key`].
+const NAME_HASH_MASK: u64 = 0xF_FFFF;
+
+/// Mask of the timestamp bits that take part in [`metric_key`].
+const TIMESTAMP_MASK: i64 = 0xFF_FFFF_FFFF;
+
 /// Compute a composite storage key for a metric variant.
 ///
 /// Packs metric identity (20 bits), timestamp (40 bits), and variant (4 bits)
@@ -60,15 +101,112 @@ pub const VARIANTS_PER_METRIC: u8 = 6;
 #[inline]
 #[must_use]
 pub const fn metric_key(name_hash: u64, timestamp: i64, variant: u8) -> i64 {
-    let nh = (name_hash & 0xFFFFF) as i64;
-    let ts = timestamp & 0xFF_FFFF_FFFF;
+    let nh = (name_hash & NAME_HASH_MASK) as i64;
+    let ts = timestamp & TIMESTAMP_MASK;
     (nh << 44) | (ts << 4) | (variant as i64)
+}
+
+/// Blob key of one metric record: [`METRIC_KEY_PREFIX`] followed by
+/// [`metric_key`] as a `u64` in big-endian byte order.
+///
+/// Big-endian keeps the byte order of the keys equal to the numeric order of
+/// `metric_key as u64`, so a prefix scan returns a metric's records ordered
+/// by `(timestamp, variant)`.
+#[must_use]
+pub fn metric_blob_key(name_hash: u64, timestamp: i64, variant: u8) -> [u8; METRIC_BLOB_KEY_LEN] {
+    let mut key = [0u8; METRIC_BLOB_KEY_LEN];
+    key[..METRIC_KEY_PREFIX.len()].copy_from_slice(METRIC_KEY_PREFIX);
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the key is a bit pattern; the top bit belongs to the name hash"
+    )]
+    let bits = metric_key(name_hash, timestamp, variant) as u64;
+    key[METRIC_KEY_PREFIX.len()..].copy_from_slice(&bits.to_be_bytes());
+    key
+}
+
+/// Metric name hash as `MetricPipeline` uses it (`FnvHasher` over the UTF-8
+/// bytes of the name).
+#[must_use]
+pub fn metric_name_hash(name: &str) -> u64 {
+    alice_analytics::sketch::FnvHasher::hash_bytes(name.as_bytes())
+}
+
+/// One stored metric value, as returned by [`scan_metric`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MetricPoint {
+    /// Timestamp of the flush cycle (the low 40 bits that the key keeps)
+    pub timestamp: i64,
+    /// Variant (`0` counter … `5` p99, see the module docs)
+    pub variant: u8,
+    /// The value exactly as written
+    pub value: f32,
+}
+
+/// Encode a metric value: the `f32` bit pattern, little-endian.
+#[inline]
+const fn encode_value(value: f32) -> [u8; 4] {
+    value.to_bits().to_le_bytes()
+}
+
+/// Decode a stored metric value.
+fn decode_value(bytes: &[u8]) -> io::Result<f32> {
+    let raw: [u8; 4] = bytes.try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("metric record holds {} bytes, expected 4", bytes.len()),
+        )
+    })?;
+    Ok(f32::from_bits(u32::from_le_bytes(raw)))
+}
+
+/// Read one metric value exactly as [`flush_metrics_to_db`] wrote it.
+///
+/// Returns `Ok(None)` when no record exists for `(name_hash, timestamp,
+/// variant)` (for example the quantile variants of a metric without
+/// histogram observations).
+///
+/// # Errors
+///
+/// Returns the error from [`AliceDB::get_blob`], or `InvalidData` when the
+/// stored record is not 4 bytes long.
+pub fn read_metric(
+    db: &AliceDB,
+    name_hash: u64,
+    timestamp: i64,
+    variant: u8,
+) -> io::Result<Option<f32>> {
+    db.get(metric_key(name_hash, timestamp, variant))
+}
+
+/// Every stored value of one metric, ordered by `(timestamp, variant)`.
+///
+/// # Errors
+///
+/// Returns the error from [`AliceDB::scan_blob_prefix`], or `InvalidData`
+/// when a stored record is not 4 bytes long.
+pub fn scan_metric(db: &AliceDB, name_hash: u64) -> io::Result<Vec<MetricPoint>> {
+    let lo = metric_key(name_hash, 0, 0);
+    let hi = lo | ((TIMESTAMP_MASK << 4) | 0xF);
+    Ok(db
+        .scan(lo, hi)?
+        .into_iter()
+        .map(|(k, value)| MetricPoint {
+            timestamp: (k >> 4) & TIMESTAMP_MASK,
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            variant: (k & 0xF) as u8,
+            value,
+        })
+        .collect())
 }
 
 /// Flush all non-empty metric slots from a pipeline into the database.
 ///
-/// Each slot's counter, gauge, cardinality, and quantiles are stored
-/// as separate time-series entries keyed by `metric_key(name_hash, timestamp, variant)`.
+/// Each slot's counter, gauge, cardinality, and quantiles are stored as
+/// separate records of the blob key-value store under
+/// [`metric_blob_key`]`(name_hash, timestamp, variant)`, so every value reads
+/// back bit for bit with [`read_metric`] / [`scan_metric`]. Writing the same
+/// `(name_hash, timestamp, variant)` again overwrites the record.
 ///
 /// # Arguments
 ///
@@ -80,29 +218,22 @@ pub const fn metric_key(name_hash: u64, timestamp: i64, variant: u8) -> i64 {
 ///
 /// # Errors
 ///
-/// Returns the error from [`AliceDB::put_batch`] when the batch cannot be written.
+/// Returns the error from [`AliceDB::put_blob`] when a record cannot be
+/// written; records written before the failing one stay written.
 pub fn flush_metrics_to_db<const SLOTS: usize, const QUEUE_SIZE: usize>(
     pipeline: &MetricPipeline<SLOTS, QUEUE_SIZE>,
     db: &AliceDB,
     timestamp: i64,
 ) -> io::Result<usize> {
     let mut batch = Vec::with_capacity(SLOTS * VARIANTS_PER_METRIC as usize);
-
     for slot in pipeline.iter_slots() {
         if slot.event_count == 0 {
             continue;
         }
-
         let nh = slot.name_hash;
-
-        // Counter
         batch.push((metric_key(nh, timestamp, 0), slot.counter as f32));
-        // Gauge
         batch.push((metric_key(nh, timestamp, 1), slot.gauge as f32));
-        // Cardinality (HLL)
         batch.push((metric_key(nh, timestamp, 2), slot.hll.cardinality() as f32));
-
-        // Quantiles (DDSketch) — only if observations exist
         if slot.ddsketch.count() > 0 {
             batch.push((
                 metric_key(nh, timestamp, 3),
@@ -118,7 +249,6 @@ pub fn flush_metrics_to_db<const SLOTS: usize, const QUEUE_SIZE: usize>(
             ));
         }
     }
-
     let count = batch.len();
     if !batch.is_empty() {
         db.put_batch(&batch)?;
@@ -183,18 +313,43 @@ impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZ
     /// Persist all current metric slots to the database.
     ///
     /// Flushes the pipeline's internal queue first, then writes all non-empty
-    /// slots to the database using the given timestamp.
+    /// slots to the database using the given timestamp, and syncs the blob
+    /// WAL ([`AliceDB::flush_blobs`]). When this returns `Ok`, every value is
+    /// readable with [`Self::read`] / [`Self::scan`] and, on a file-backed
+    /// database, survives a crash and reopen whatever the blob
+    /// [`crate::blob_wal::SyncPolicy`].
     ///
     /// Returns the number of entries written.
     ///
     /// # Errors
     ///
-    /// Returns the error from [`flush_metrics_to_db`]; the flush count is not advanced.
+    /// Returns the error from [`flush_metrics_to_db`] or
+    /// [`AliceDB::flush_blobs`]; the flush count is not advanced.
     pub fn persist(&mut self, timestamp: i64) -> io::Result<usize> {
         self.pipeline.flush();
         let count = flush_metrics_to_db(&self.pipeline, &self.db, timestamp)?;
+        self.db.flush_blobs()?;
         self.flush_count += 1;
         Ok(count)
+    }
+
+    /// Read one persisted value (see [`read_metric`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`read_metric`].
+    pub fn read(&self, name_hash: u64, timestamp: i64, variant: u8) -> io::Result<Option<f32>> {
+        read_metric(&self.db, name_hash, timestamp, variant)
+    }
+
+    /// Every persisted value of one metric, ordered by `(timestamp, variant)`
+    /// (see [`scan_metric`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`scan_metric`].
+    pub fn scan(&self, name_hash: u64) -> io::Result<Vec<MetricPoint>> {
+        scan_metric(&self.db, name_hash)
     }
 
     /// Persist and then reset all metric slots for the next aggregation window.
@@ -210,12 +365,15 @@ impl<const SLOTS: usize, const QUEUE_SIZE: usize> AnalyticsSink<SLOTS, QUEUE_SIZ
         Ok(count)
     }
 
-    /// Force flush the database to disk.
+    /// Force flush the database to disk: the blob WAL that holds the metrics
+    /// ([`AliceDB::flush_blobs`]) and the time-series store
+    /// ([`AliceDB::flush`]).
     ///
     /// # Errors
     ///
-    /// Returns the error from [`AliceDB::flush`].
+    /// Returns the error from [`AliceDB::flush_blobs`] or [`AliceDB::flush`].
     pub fn flush_db(&self) -> io::Result<()> {
+        self.db.flush_blobs()?;
         self.db.flush()
     }
 

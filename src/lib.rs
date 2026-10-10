@@ -246,7 +246,10 @@ pub mod ffi;
 /// `alice-det-math` like every other transcendental here.
 pub use alice_core::law::SEMANTICS_ID;
 #[cfg(feature = "analytics")]
-pub use analytics_bridge::{flush_metrics_to_db, metric_key, AnalyticsSink, VARIANTS_PER_METRIC};
+pub use analytics_bridge::{
+    flush_metrics_to_db, metric_blob_key, metric_key, metric_name_hash, read_metric, scan_metric,
+    AnalyticsSink, MetricPoint, METRIC_KEY_PREFIX, VARIANTS_PER_METRIC,
+};
 pub use checksum::{
     Checksum, ChecksumAlgorithm, ChecksummedHeader, ChecksummedReader, ChecksummedWriter,
 };

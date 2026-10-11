@@ -4,6 +4,10 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- CI (`fuzz.yml` / `security-audit.yml`): `on.push` から `paths` を外し、`changes` job (`scripts/changed_paths.py decide`) が実行の要否を決める GitHub の `paths` は branch を作る push では repo に新しい commit だけを比べるので、既に別の ref にある SHA で `ci/**` branch を作ると差分が空になり fuzz と security の job が走らなかった 新しい branch と force push は `merge-base(origin/main)..after`、それ以外の push は `before..after` (main も同じ)、pull request は `base...head` で比べ、schedule と手動実行は常に走る git の失敗・merge-base が無い・`before` に届かない・新しい branch で差分が空のときは走らせる (理由を log と job summary に出す) pattern は `.github/paths/fuzz.txt` と `.github/paths/security-audit.txt` に置き、`pull_request` の `paths` と一致することを `changed_paths.py sync` が検査する 最後の `Gate` job は run=true なら対象の job の成功を、run=false ならその skip を求める (`security-audit.yml` の informational な coverage / semver-checks は `Gate` の対象外で、run=false の時は skip する) `Gate` は required status check にしない (`pull_request` には `paths` が残るので、対象の path に触れない pull request では run が無い) 判定器の試験 `scripts/test_changed_paths.py` と `sync` は docs-lint job (3 OS) と `scripts/preflight.sh` で走る `scripts/changed_paths.py` と `scripts/test_changed_paths.py` は ALICE-LOL と同一
+
 ## [0.3.0] - 2026-10-11
 
 ### Fixed

@@ -10,15 +10,11 @@ name: Security & Hygiene
 
 on:
   push:
+    # no paths here: a branch created at a SHA another ref already has gets an empty
+    # diff from GitHub's filter and the run is skipped; the changes job below compares
+    # with merge-base(origin/main) instead (patterns: .github/paths/security-audit.txt)
     # ci/**: the same checks on a branch before it is fast-forwarded to main
     branches: [main, 'ci/**']
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'src/**'
-      - 'deny.toml'
-      - '.github/workflows/security-audit.yml'
-      - 'scripts/stub_guard.sh'
   pull_request:
     branches: [main]
     paths:
@@ -28,6 +24,7 @@ on:
       - 'deny.toml'
       - '.github/workflows/security-audit.yml'
       - 'scripts/stub_guard.sh'
+      - '.github/paths/security-audit.txt'
   schedule:
     # every Monday 09:00 UTC
     - cron: '0 9 * * 1'
@@ -43,7 +40,38 @@ env:
   CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
+  # which files changed: a new or force-pushed branch is compared with merge-base(origin/main),
+  # another push with before..after, a pull request with base...head; schedule and manual
+  # runs always run; any error runs (fail-closed) — scripts/changed_paths.py
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - name: decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after || github.sha }}
+          CREATED: ${{ github.event.created }}
+          FORCED: ${{ github.event.forced }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 scripts/changed_paths.py decide --event "$EVENT"
+          --before "$BEFORE" --after "$AFTER" --created "$CREATED" --forced "$FORCED"
+          --base "$PR_BASE" --head "$PR_HEAD"
+          --patterns-file .github/paths/security-audit.txt
+
   audit:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: cargo audit (RustSec advisories)
     runs-on: ubuntu-latest
     steps:
@@ -72,6 +100,8 @@ jobs:
             --ignore RUSTSEC-2024-0320
 
   deny:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: cargo-deny (licenses + advisories + bans + sources)
     runs-on: ubuntu-latest
     steps:
@@ -85,6 +115,8 @@ jobs:
         run: cargo deny --all-features check all
 
   unused-deps:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: cargo-machete (unused dependencies)
     runs-on: ubuntu-latest
     steps:
@@ -97,6 +129,8 @@ jobs:
         run: cargo machete
 
   stub-guard:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: Stub / dbg guard (grep)
     runs-on: ubuntu-latest
     steps:
@@ -105,6 +139,8 @@ jobs:
         run: scripts/stub_guard.sh
 
   package-integrity:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: Package integrity (publish される .crate が build できるか)
     runs-on: ubuntu-latest
     steps:
@@ -137,6 +173,8 @@ jobs:
           cargo check --all-features
 
   coverage:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: Coverage (cargo-llvm-cov、informational)
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -162,6 +200,8 @@ jobs:
           retention-days: 30
 
   semver-checks:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: cargo-semver-checks (API compat、informational)
     runs-on: ubuntu-latest
     # informational only (計画的 API 変更を block しない)
@@ -203,3 +243,22 @@ jobs:
             echo "::error::cargo-semver-checks compared nothing (see the comment above this step)"
             exit 1
           fi
+
+  # one result for the workflow: run=true needs every blocking job above to succeed,
+  # run=false needs them skipped (a skipped, cancelled or failed job after run=true is red)
+  # coverage and semver-checks are informational (continue-on-error) and are left out, so
+  # their failure stays non-blocking; they still run only when changes says run=true
+  # not a required status check: pull_request keeps its paths, so a pull request that
+  # touches none of them has no run and a required check would stay pending
+  gate:
+    name: Gate
+    if: always()
+    needs: [changes, audit, deny, unused-deps, stub-guard, package-integrity]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: gate
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/changed_paths.py gate --needs-json "$NEEDS"

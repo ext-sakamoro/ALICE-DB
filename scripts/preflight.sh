@@ -50,6 +50,10 @@ python3 scripts/test_docs_lint.py
 python3 scripts/docs_lint.py --check
 python3 scripts/test_fuzz_reach.py
 
+step "ci.yml / docs-lint: changed_paths tests + sync (fuzz.yml / security-audit.yml trigger and pattern files)"
+python3 scripts/test_changed_paths.py
+python3 scripts/changed_paths.py sync
+
 step "security-audit.yml / stub-guard"
 scripts/stub_guard.sh
 

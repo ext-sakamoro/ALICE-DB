@@ -103,6 +103,7 @@ fn old_lossless_segments_still_read_back_exactly() {
         for (i, &want) in originals.iter().enumerate() {
             let got = segment
                 .query_point(i as i64)
+                .expect("residual of this arithmetic")
                 .unwrap_or_else(|| panic!("{name} i={i}: query_point が None"));
             if got.to_bits() != want {
                 wrong.push(format!(
@@ -116,7 +117,9 @@ fn old_lossless_segments_still_read_back_exactly() {
 
         // query_range 経路も同じ復元を返す (残差の index 付けが経路で違わないこと)
         let end = (originals.len() - 1) as i64;
-        let range = segment.query_range(0, end);
+        let range = segment
+            .query_range(0, end)
+            .expect("residual of this arithmetic");
         assert_eq!(range.len(), originals.len(), "{name}: query_range の件数");
         for (i, (_, got)) in range.iter().enumerate() {
             if got.to_bits() != originals[i] {
@@ -172,6 +175,7 @@ fn the_fixture_really_carries_the_old_law_values() {
         for (i, &old) in model_bits.iter().enumerate() {
             let now = bare
                 .query_point(i as i64)
+                .expect("residual of this arithmetic")
                 .unwrap_or_else(|| panic!("{name} i={i}"))
                 .to_bits();
             total += 1;
@@ -212,14 +216,20 @@ fn a_freshly_written_residual_names_the_arithmetic_it_was_measured_against() {
     // 法則からわずかに外れた原信号 (残差が非零になる)
     let originals: Vec<f32> = (0..n)
         .map(|i| {
-            let v = bare.query_point(i as i64).expect("in range");
+            let v = bare
+                .query_point(i as i64)
+                .expect("residual of this arithmetic")
+                .expect("in range");
             f32::from_bits(v.to_bits() ^ 0x3)
         })
         .collect();
 
     let mut raw = Vec::with_capacity(n * 4);
     for (i, &original) in originals.iter().enumerate() {
-        let model_value = bare.query_point(i as i64).expect("in range");
+        let model_value = bare
+            .query_point(i as i64)
+            .expect("residual of this arithmetic")
+            .expect("in range");
         raw.extend_from_slice(&(original.to_bits() ^ model_value.to_bits()).to_le_bytes());
     }
     let blob = alice_db::segment::compress_residual_xor(&raw, &alice_core::law::SEMANTICS_ID);
@@ -232,7 +242,10 @@ fn a_freshly_written_residual_names_the_arithmetic_it_was_measured_against() {
 
     let segment = DataSegment::new(1, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
     for (i, &want) in originals.iter().enumerate() {
-        let got = segment.query_point(i as i64).expect("in range");
+        let got = segment
+            .query_point(i as i64)
+            .expect("residual of this arithmetic")
+            .expect("in range");
         assert_eq!(
             got.to_bits(),
             want.to_bits(),
@@ -258,12 +271,15 @@ fn residuals_written_before_the_identifier_report_themselves_as_unpinned() {
     assert!(checked >= 3, "確認 {checked} 件 — fixture が読めていない");
 }
 
-/// ⚠️ 識別子が違う残差は **適用せず model 値を返す** (原信号でも model でもない値を返さない)
+/// ⚠️ 識別子が違う残差は **適用もせず、model 値も黙って返さず、型付きの error で断る**
 ///
-/// これが C+ の要点 識別子を持たせる目的は「将来 det-math が変わった時に、
-/// 黙って誤値を返すのでなく検出できること」なので、不一致時の振る舞いを pin する
+/// 識別子を持たせる目的は「det-math が変わった時に、黙って誤値を返すのでなく検出できる
+/// こと」 適用すれば原信号でも model でもない値になり、model だけを返せば原信号でない値を
+/// 原信号の顔で返すことになる ⇒ 既定の読み出しは `ResidualMismatch` (どの segment の
+/// どの key 範囲か) を返し、model は `*_model_only` で明示した時だけ読める
 #[test]
-fn a_residual_from_different_arithmetic_is_skipped_not_applied() {
+fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
+    use alice_db::segment::{ResidualMismatch, ResidualStatus};
     let n = 9_usize;
     let model = alice_db::model::ModelType::SineWave {
         frequency: 3.0,
@@ -288,43 +304,83 @@ fn a_residual_from_different_arithmetic_is_skipped_not_applied() {
         "識別子が違うのに適用可と判定された"
     );
 
-    let segment = DataSegment::new(1, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
+    let segment = DataSegment::new(7, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
+    assert_eq!(
+        segment.residual_status(),
+        ResidualStatus::Mismatch {
+            stored: other,
+            running: alice_core::law::SEMANTICS_ID
+        }
+    );
+    let check = |err: ResidualMismatch, what: &str| {
+        assert_eq!(err.segment_id, 7, "{what}: segment id");
+        assert_eq!(
+            (err.start_time, err.end_time),
+            (0, (n - 1) as i64),
+            "{what}: key range"
+        );
+        assert_eq!(err.stored, other, "{what}: stored");
+        assert_eq!(
+            err.running,
+            alice_core::law::SEMANTICS_ID,
+            "{what}: running"
+        );
+        assert_eq!(
+            err.series, None,
+            "{what}: a segment read on its own names no store"
+        );
+    };
     let mut compared = 0_usize;
     for i in 0..n {
-        let want = bare.query_point(i as i64).expect("in range");
-        let got = segment.query_point(i as i64).expect("in range");
+        check(
+            segment.query_point(i as i64).expect_err("refused"),
+            "query_point",
+        );
+        let want = bare
+            .query_point(i as i64)
+            .expect("no residual")
+            .expect("in range");
+        let got = segment.query_point_model_only(i as i64).expect("in range");
         assert_eq!(
             got.to_bits(),
             want.to_bits(),
-            "i={i}: 識別子不一致の残差が適用されている (model 値 {want} を期待、{got} が返った)"
+            "i={i}: model-only は model 値"
         );
-        // 残差を適用していたら別の値になることを確かめる (= この test は空振りでない)
-        let would_be = f32::from_bits(want.to_bits() ^ 0x3);
+        // 残差を適用していたら別の値になる (= 断ったことに意味がある)
         assert_ne!(
-            would_be.to_bits(),
-            want.to_bits(),
-            "i={i}: 残差 0x3 が恒等 — fixture が空振り"
+            f32::from_bits(want.to_bits() ^ 0x3).to_bits(),
+            want.to_bits()
         );
         compared += 1;
     }
     assert_eq!(compared, n);
-
-    // query_range 側も同じ (経路で振る舞いが違わない)
-    let range = segment.query_range(0, (n - 1) as i64);
-    assert_eq!(range.len(), n);
-    for (i, (_, got)) in range.iter().enumerate() {
-        let want = bare.query_point(i as i64).expect("in range");
-        assert_eq!(got.to_bits(), want.to_bits(), "i={i} (range)");
+    // 範囲外は error でなく None (断るのは値を返す時だけ)
+    assert_eq!(segment.query_point(n as i64 + 5), Ok(None));
+    // query_range も同じ (経路で振る舞いが違わない、部分的な結果を返さない)
+    check(
+        segment.query_range(0, (n - 1) as i64).expect_err("refused"),
+        "query_range",
+    );
+    check(
+        segment.query_range(2, 3).expect_err("refused"),
+        "query_range part",
+    );
+    let model_range = segment.query_range_model_only(0, (n - 1) as i64);
+    assert_eq!(model_range.len(), n);
+    for (i, (_, got)) in model_range.iter().enumerate() {
+        let want = bare.query_point_model_only(i as i64).expect("in range");
+        assert_eq!(got.to_bits(), want.to_bits(), "i={i} (model-only range)");
     }
 }
 
 /// ⚠️ zero-copy (mmap / rkyv) 経路も同じ照合をする
 ///
-/// `SegmentView` は `DataSegment` とは別の読み出し実装なので、識別子の照合を片方にだけ
-/// 入れると「どちらの API で読んだか」で値が変わる 2026-10-08 の破壊試験では、
-/// zero-copy 側の照合を外す変異がこの test 無しでは 1 件も red にならなかった
+/// `SegmentView` は `DataSegment` とは別の読み出し実装なので、照合を片方にだけ入れると
+/// 「どちらの API で読んだか」で結果が変わる 2026-10-08 の破壊試験では、zero-copy 側の
+/// 照合を外す変異がこの test 無しでは 1 件も red にならなかった
 #[test]
 fn the_zero_copy_path_checks_the_identifier_too() {
+    use alice_db::segment::ResidualStatus;
     let n = 9_usize;
     let model = alice_db::model::ModelType::SineWave {
         frequency: 3.0,
@@ -342,34 +398,42 @@ fn the_zero_copy_path_checks_the_identifier_too() {
     other[0] ^= 0x01;
     let blob = alice_db::segment::compress_residual_xor(&raw, &other);
 
-    let segment = DataSegment::new(1, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
-    let bytes = segment.to_rkyv_bytes().expect("rkyv serialise");
-    let view = alice_db::segment::SegmentView::from_vec(bytes).expect("rkyv view");
+    let segment = DataSegment::new(7, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
+    let view = alice_db::segment::SegmentView::from_vec(segment.to_rkyv_bytes().expect("rkyv"))
+        .expect("rkyv view");
+    assert_eq!(
+        view.residual_status(),
+        ResidualStatus::Mismatch {
+            stored: other,
+            running: alice_core::law::SEMANTICS_ID
+        }
+    );
 
     let mut compared = 0_usize;
     for i in 0..n {
-        let want = bare.query_point(i as i64).expect("in range");
-        let got = view
+        let err = view
             .query_point(i as i64)
-            .unwrap_or_else(|| panic!("i={i}: zero-copy の query_point が None"));
+            .expect_err("zero-copy 側でも断る");
+        assert_eq!((err.segment_id, err.stored), (7, other), "i={i}");
+        let want = bare.query_point_model_only(i as i64).expect("in range");
+        let got = view.query_point_model_only(i as i64).expect("in range");
         assert_eq!(
             got.to_bits(),
             want.to_bits(),
-            "i={i}: zero-copy 側で識別子不一致の残差が適用されている"
+            "i={i}: zero-copy の model-only"
         );
         compared += 1;
     }
-    let range = view.query_range(0, (n - 1) as i64);
-    assert_eq!(range.len(), n, "zero-copy の query_range の件数");
-    for (i, (_, got)) in range.iter().enumerate() {
-        let want = bare.query_point(i as i64).expect("in range");
-        assert_eq!(got.to_bits(), want.to_bits(), "i={i} (zero-copy range)");
-        compared += 1;
-    }
-    assert_eq!(compared, n * 2);
+    let err = view
+        .query_range(0, (n - 1) as i64)
+        .expect_err("zero-copy の query_range も断る");
+    assert_eq!(err.stored, other);
+    assert_eq!(view.query_range_model_only(0, (n - 1) as i64).len(), n);
+    compared += 1;
+    assert_eq!(compared, n + 1);
 
     // 識別子が一致する残差なら zero-copy 側でも適用される (上の assert が
-    // 「残差を一切適用しない」で通る空振りでないことを示す)
+    // 「残差を一切適用しない」「常に断る」で通る空振りでないことを示す)
     let good = alice_db::segment::compress_residual_xor(&raw, &alice_core::law::SEMANTICS_ID);
     let ok_segment =
         DataSegment::new(1, 0, (n - 1) as i64, bare.model.clone(), n, n * 4).with_residual(good);
@@ -377,10 +441,14 @@ fn the_zero_copy_path_checks_the_identifier_too() {
         ok_segment.to_rkyv_bytes().expect("rkyv serialise"),
     )
     .expect("rkyv view");
+    assert_eq!(ok_view.residual_status(), ResidualStatus::Exact);
     for i in 0..n {
-        let model_value = bare.query_point(i as i64).expect("in range");
+        let model_value = bare.query_point_model_only(i as i64).expect("in range");
         let want = f32::from_bits(model_value.to_bits() ^ 0x3);
-        let got = ok_view.query_point(i as i64).expect("in range");
+        let got = ok_view
+            .query_point(i as i64)
+            .expect("same arithmetic")
+            .expect("in range");
         assert_eq!(
             got.to_bits(),
             want.to_bits(),

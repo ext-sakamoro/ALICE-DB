@@ -289,7 +289,7 @@ fn semantics_id_is_the_recorded_value() {
     );
     assert_eq!(
         hex(&alice_db::SEMANTICS_ID),
-        "d2209b30f6f1f45baa1b638bcdfee34ac64773b2e63b9c083b2e77afc691398e",
+        "135c407d4249c1c200e4d1be79a12e848ce5c355fc3a918da965849e697ef000",
         "the numeric semantics changed: every residual pinned under the old \
          value is no longer applied on read"
     );
@@ -344,14 +344,16 @@ fn query_point_and_query_range_are_the_recorded_bits() {
             // every stored timestamp, and the ones between them
             let end = data.last().expect("not empty").0;
             for t in (0..=end).step_by(5) {
-                match segment.query_point(t) {
+                match segment.query_point(t).expect("residual of this arithmetic") {
                     Some(v) => bits.f32(v),
                     None => bits.u64(u64::MAX),
                 }
                 values += 1;
             }
             for (start, stop) in [(0, end), (end / 3, end / 2), (end / 2, end / 2)] {
-                let range = segment.query_range(start, stop);
+                let range = segment
+                    .query_range(start, stop)
+                    .expect("residual of this arithmetic");
                 bits.len(range.len());
                 for (t, v) in range {
                     bits.i64(t);
@@ -471,6 +473,9 @@ fn law_id_and_evaluation_are_the_recorded_bits() {
         "law_id and evaluate",
         bits,
         3 * (32 + 41 * 8),
-        "94bf9625675624f07452e43ba434cf7f7584b5abab968ba88a06c46dd6487481",
+        // re-recorded for alice-det-math 0.5: with the 0.4 identifier
+        // (d2209b30…) in place of `alice_db::SEMANTICS_ID` the same scenario
+        // still hashes to the previous 94bf9625…, so only the identifier moved
+        "f18a2a53ad6a8bdeb4feb7f80a6c12b814f26c49b69d6e461568efcf8fdc650e",
     );
 }

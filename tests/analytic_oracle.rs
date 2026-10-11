@@ -109,7 +109,10 @@ fn polynomial_linear_constant_models_evaluate_to_their_closed_forms() {
             .enumerate()
             .map(|(j, c)| c * i.powi(j as i32))
             .sum();
-        let got = seg.query_point(t).unwrap() as f64;
+        let got = seg
+            .query_point(t)
+            .expect("residual of this arithmetic")
+            .unwrap() as f64;
         assert!(
             (got - expected).abs() < 1e-3 * expected.abs().max(1.0),
             "poly t={t}: {got} vs {expected}"
@@ -127,13 +130,29 @@ fn polynomial_linear_constant_models_evaluate_to_their_closed_forms() {
     for t in 0..=400 {
         let expected = -4.0 + (t as f64 / 400.0) * 16.0;
         assert!(
-            (lin.query_point(t).unwrap() as f64 - expected).abs() < 1e-5,
+            (lin.query_point(t)
+                .expect("residual of this arithmetic")
+                .unwrap() as f64
+                - expected)
+                .abs()
+                < 1e-5,
             "lin t={t}"
         );
     }
-    assert!(lin.query_point(-1).is_none() && lin.query_point(401).is_none());
+    assert!(
+        lin.query_point(-1)
+            .expect("residual of this arithmetic")
+            .is_none()
+            && lin
+                .query_point(401)
+                .expect("residual of this arithmetic")
+                .is_none()
+    );
     let c = segment(ModelType::Constant { value: 2.5 }, 5, 5, 1);
-    assert_eq!(c.query_point(5), Some(2.5));
+    assert_eq!(
+        c.query_point(5).expect("residual of this arithmetic"),
+        Some(2.5)
+    );
 }
 
 #[test]
@@ -154,7 +173,10 @@ fn sine_and_fourier_models_evaluate_to_their_closed_forms() {
         let i = i_of(&seg, t, 1000);
         let expected = o as f64
             + a as f64 * (2.0 * std::f64::consts::PI * f as f64 * i / 1000.0 + phi as f64).sin();
-        let got = seg.query_point(t).unwrap() as f64;
+        let got = seg
+            .query_point(t)
+            .expect("residual of this arithmetic")
+            .unwrap() as f64;
         assert!(
             (got - expected).abs() < 1e-4,
             "sine t={t}: {got} vs {expected}"
@@ -181,7 +203,10 @@ fn sine_and_fourier_models_evaluate_to_their_closed_forms() {
             expected += w * m as f64 / 1000.0
                 * (2.0 * std::f64::consts::PI * k as f64 * i / 1000.0 + p as f64).cos();
         }
-        let got = seg.query_point(t).unwrap() as f64;
+        let got = seg
+            .query_point(t)
+            .expect("residual of this arithmetic")
+            .unwrap() as f64;
         assert!(
             (got - expected).abs() < 1e-5,
             "fourier t={t}: {got} vs {expected}"
@@ -201,21 +226,38 @@ fn query_range_is_query_point_sampled_uniformly_over_the_segment() {
         1099,
         1000,
     );
-    let all = seg.query_range(100, 1099);
+    let all = seg
+        .query_range(100, 1099)
+        .expect("residual of this arithmetic");
     assert_eq!(all.len(), 1000, "full range returns point_count samples");
     for (i, (t, v)) in all.iter().enumerate() {
         assert_eq!(*t, 100 + i as i64);
-        assert_eq!(v.to_bits(), seg.query_point(*t).unwrap().to_bits(), "t={t}");
+        assert_eq!(
+            v.to_bits(),
+            seg.query_point(*t)
+                .expect("residual of this arithmetic")
+                .unwrap()
+                .to_bits(),
+            "t={t}"
+        );
     }
-    let part = seg.query_range(300, 310);
+    let part = seg
+        .query_range(300, 310)
+        .expect("residual of this arithmetic");
     assert_eq!(part.len(), 11);
     assert!(part.iter().all(|(t, _)| (300..=310).contains(t)));
-    assert!(seg.query_range(2000, 3000).is_empty());
+    assert!(seg
+        .query_range(2000, 3000)
+        .expect("residual of this arithmetic")
+        .is_empty());
     // generate_all is the same law in bulk
     let bulk = seg.generate_all();
     assert_eq!(bulk.len(), 1000);
     for (i, v) in bulk.iter().enumerate() {
-        let expected = seg.query_point(100 + i as i64).unwrap();
+        let expected = seg
+            .query_point(100 + i as i64)
+            .expect("residual of this arithmetic")
+            .unwrap();
         assert!((v - expected).abs() < 1e-5, "generate_all[{i}]");
     }
 }
@@ -250,7 +292,10 @@ fn residual_blob_and_raw_lzma_round_trip_bit_exactly() {
     );
     for (i, v) in raw.iter().enumerate() {
         assert_eq!(
-            seg.query_point(i as i64).unwrap().to_bits(),
+            seg.query_point(i as i64)
+                .expect("residual of this arithmetic")
+                .unwrap()
+                .to_bits(),
             v.to_bits(),
             "raw idx {i}"
         );

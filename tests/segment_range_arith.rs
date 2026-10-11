@@ -100,7 +100,7 @@ fn segment(keys: &[i64]) -> DataSegment {
     let seg = memtable.force_flush().expect("one segment");
     let mut residual = Vec::with_capacity(data.len() * 4);
     for &(t, v) in &data {
-        let model = seg.query_point(t).expect("inside the segment");
+        let model = seg.query_point_model_only(t).expect("inside the segment");
         residual.extend_from_slice(&(v.to_bits() ^ model.to_bits()).to_le_bytes());
     }
     seg.with_residual(compress_residual_xor(&residual, &SEMANTICS_ID))
@@ -112,7 +112,12 @@ fn both_paths(keys: &[i64], start: i64, end: i64) -> [Vec<(i64, f32)>; 2] {
     within_deadline("query_range", move || {
         let seg = segment(&keys);
         let view = SegmentView::from_vec(seg.to_rkyv_bytes().unwrap()).unwrap();
-        [seg.query_range(start, end), view.query_range(start, end)]
+        [
+            seg.query_range(start, end)
+                .expect("residual of this arithmetic"),
+            view.query_range(start, end)
+                .expect("residual of this arithmetic"),
+        ]
     })
 }
 
@@ -173,7 +178,9 @@ fn keys_spanning_both_signs_do_not_overflow() {
     });
     for (i, &k) in keys.iter().enumerate() {
         assert_eq!(
-            seg.query_point(k).map(f32::to_bits),
+            seg.query_point(k)
+                .expect("residual of this arithmetic")
+                .map(f32::to_bits),
             Some(value(i).to_bits())
         );
     }
@@ -275,12 +282,16 @@ fn degenerate_segment_returns_one_point() {
             );
             let view = SegmentView::from_vec(seg.to_rkyv_bytes().unwrap()).unwrap();
             [
-                seg.query_range(0, 10),
-                view.query_range(0, 10),
-                seg.query_range(i64::MIN, i64::MAX),
-                view.query_range(i64::MIN, i64::MAX),
-                seg.query_range(3, 10),
-                view.query_range(3, 10),
+                seg.query_range(0, 10).expect("residual of this arithmetic"),
+                view.query_range(0, 10)
+                    .expect("residual of this arithmetic"),
+                seg.query_range(i64::MIN, i64::MAX)
+                    .expect("residual of this arithmetic"),
+                view.query_range(i64::MIN, i64::MAX)
+                    .expect("residual of this arithmetic"),
+                seg.query_range(3, 10).expect("residual of this arithmetic"),
+                view.query_range(3, 10)
+                    .expect("residual of this arithmetic"),
             ]
         });
         for (i, got) in reads.iter().enumerate() {

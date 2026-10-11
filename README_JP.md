@@ -22,8 +22,15 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
   閾値を下回れば採用する (例えば単一 sine は相対 MSE < 0.1) 厳密なビットで読み戻すには
   `FitConfig` の `lossless: true` で XOR 残差を保存する 残差は `原信号 ^ モデル` なので、
   読む側が同じ算術で法則を評価した時だけ原信号に戻る したがって blob はその算術の識別子を
-  持ち、別の算術を名乗る残差は適用せずに飛ばす (`segment::residual_semantics` が報告する)
-  0.3.0 より前に書かれた残差は識別子を持たず、書いた機械では厳密だがそれを他の場所で
+  持つ 別の算術を名乗る残差に当たった読み出しは値を返さず、`ResidualMismatch` (segment、
+  その key 範囲、store、両方の識別子) を持つ `InvalidData` の error で失敗する 残差を適用すると
+  原信号でも model でもない値になり、model だけでは原信号でないため
+  `StorageConfig::residual_policy = ResidualPolicy::ModelOnly` (segment では
+  `query_point_model_only` / `query_range_model_only`) で model の近似を明示して読める
+  `residual_status()` は読まずにどの場合かを報告する **別の算術で書いた store の厳密な値を
+  取り戻すにはその算術が要る** alice-db 0.3 (alice-det-math 0.4) が書いた store は
+  alice-db 0.3 で厳密に読めるので、そこで読んで本版で書き直す 本版だけでは model の値しか得られない
+  0.3.0 より前に書かれた残差は識別子を持たず、適用される 書いた機械では厳密だがそれを他の場所で
   確かめる手段が無い
   任意の key で厳密に読み戻す必要がある値は [exact series](#exact-series) に置く
 - **モデル保存での不規則なタイムスタンプ** セグメントは点ごとのタイムスタンプを持たず、

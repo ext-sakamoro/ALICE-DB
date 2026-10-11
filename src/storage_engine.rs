@@ -397,6 +397,32 @@ pub struct StorageConfig {
     /// Encryption key for at-rest encryption (requires "crypto" feature)
     #[cfg(feature = "crypto")]
     pub encryption_key: Option<alice_crypto::Key>,
+    /// What a read does with a residual pinned to another arithmetic (see
+    /// [`ResidualPolicy`]); refuses by default
+    pub residual_policy: ResidualPolicy,
+}
+
+/// What a read does with a lossless residual measured against a different
+/// arithmetic than the one this build computes with
+///
+/// Such a residual cannot reconstruct the stored values here: applying it can
+/// give a value that is neither the original nor the model, and the model
+/// alone is not the original. The exact values come back only with the
+/// arithmetic the residual names (for a store written with
+/// `alice-det-math` 0.4, read it with `alice-db` 0.3 and write the values
+/// again).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResidualPolicy {
+    /// The read fails with an `InvalidData` [`io::Error`] whose inner error is
+    /// a [`crate::segment::ResidualMismatch`] naming the segment, its key
+    /// range and the store; a range read fails as a whole rather than
+    /// returning fewer or partly corrected points
+    #[default]
+    Refuse,
+    /// The read returns the model's approximation for that segment's keys,
+    /// knowingly: what was stored is not reconstructed
+    ModelOnly,
 }
 
 impl Default for StorageConfig {
@@ -412,6 +438,7 @@ impl Default for StorageConfig {
             enable_background_flush: false,
             #[cfg(feature = "crypto")]
             encryption_key: None,
+            residual_policy: ResidualPolicy::Refuse,
         }
     }
 }
@@ -426,7 +453,8 @@ impl std::fmt::Debug for StorageConfig {
             .field("sync_writes", &self.sync_writes)
             .field("compaction_threshold", &self.compaction_threshold)
             .field("use_mmap", &self.use_mmap)
-            .field("enable_background_flush", &self.enable_background_flush);
+            .field("enable_background_flush", &self.enable_background_flush)
+            .field("residual_policy", &self.residual_policy);
         #[cfg(feature = "crypto")]
         s.field(
             "encryption_key",
@@ -1404,9 +1432,21 @@ impl StorageEngine {
             if view.is_lossless() && !view.on_grid(timestamp) {
                 continue;
             }
-            return Ok(view.query_point(timestamp));
+            return match self.config.residual_policy {
+                ResidualPolicy::ModelOnly => Ok(view.query_point_model_only(timestamp)),
+                ResidualPolicy::Refuse => view
+                    .query_point(timestamp)
+                    .map_err(|m| self.residual_error(m)),
+            };
         }
         Ok(None)
+    }
+
+    /// The `io::Error` a refused residual becomes: `InvalidData`, carrying the
+    /// [`crate::segment::ResidualMismatch`] with this store's directory
+    fn residual_error(&self, mut mismatch: crate::segment::ResidualMismatch) -> io::Error {
+        mismatch.series = Some(self.config.data_dir.clone());
+        io::Error::new(io::ErrorKind::InvalidData, mismatch)
     }
 
     /// Query a time range (Zero-Copy via `SegmentView`)
@@ -1427,7 +1467,16 @@ impl StorageEngine {
         let mut entries = self.find_segments(start, end);
         entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.id));
 
-        let mut results = self.memtable.range(start, end);
+        // Each point carries the refused residual of its segment, if any: a
+        // segment whose points are all superseded by newer writes does not
+        // fail the read, one that still answers a key does
+        let mut refused: Vec<crate::segment::ResidualMismatch> = Vec::new();
+        let mut results: Vec<(i64, f32, Option<usize>)> = self
+            .memtable
+            .range(start, end)
+            .into_iter()
+            .map(|(t, v)| (t, v, None))
+            .collect();
         for entry in entries {
             let view = self.load_segment(&entry)?;
             // A lossless segment returns its grid points only: start the walk
@@ -1440,18 +1489,34 @@ impl StorageEngine {
             } else {
                 start
             };
-            let segment_results = view.query_range(from, end);
-            results.extend(segment_results);
+            let (segment_results, tag) = match self.config.residual_policy {
+                ResidualPolicy::ModelOnly => (view.query_range_model_only(from, end), None),
+                ResidualPolicy::Refuse => match view.query_range(from, end) {
+                    Ok(points) => (points, None),
+                    Err(mismatch) => {
+                        refused.push(mismatch);
+                        (
+                            view.query_range_model_only(from, end),
+                            Some(refused.len() - 1),
+                        )
+                    }
+                },
+            };
+            results.extend(segment_results.into_iter().map(|(t, v)| (t, v, tag)));
         }
 
         // Sort by timestamp; the sort is stable, so for equal keys the
         // memtable comes first, then segments newest first
-        results.sort_by_key(|&(t, _)| t);
+        results.sort_by_key(|&(t, _, _)| t);
 
         // Remove duplicates (keep first occurrence = newest)
-        results.dedup_by_key(|&mut (t, _)| t);
+        results.dedup_by_key(|&mut (t, _, _)| t);
 
-        Ok(results)
+        // All or nothing: a surviving point from a refused segment fails the read
+        if let Some(i) = results.iter().find_map(|&(_, _, tag)| tag) {
+            return Err(self.residual_error(refused.swap_remove(i)));
+        }
+        Ok(results.into_iter().map(|(t, v, _)| (t, v)).collect())
     }
 
     /// Force flush `MemTable` to disk

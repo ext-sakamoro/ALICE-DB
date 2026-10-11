@@ -42,6 +42,8 @@ Thumbs.db
 
 # Test artifacts
 *.alice
+# committed store fixtures (files a released version wrote)
+!tests/fixtures/**/*.alice
 alice_db_data/
 
 # Credentials (never commit)

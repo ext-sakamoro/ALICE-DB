@@ -108,7 +108,9 @@ fn the_three_read_paths_return_the_same_bits() {
             let all = segment.generate_all();
             assert_eq!(all.len(), n, "{name} n={n}: generate_all の長さが n でない");
 
-            let range = segment.query_range(0, end);
+            let range = segment
+                .query_range(0, end)
+                .expect("residual of this arithmetic");
             assert_eq!(
                 range.len(),
                 n,
@@ -120,6 +122,7 @@ fn the_three_read_paths_return_the_same_bits() {
                 let ts = i as i64;
                 let point = segment
                     .query_point(ts)
+                    .expect("residual of this arithmetic")
                     .unwrap_or_else(|| panic!("{name} n={n} i={i}: query_point が None"));
                 let (rts, rval) = range[i];
                 assert_eq!(

@@ -26,10 +26,21 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
   `FitConfig` to store an XOR residual and read back the exact bits. A residual
   stores `original ^ model`, so it reconstructs the original only when the
   reader evaluates the law with the same arithmetic; the blob therefore carries
-  the identifier of that arithmetic, and a residual naming a different one is
-  skipped rather than applied (`segment::residual_semantics` reports which).
-  Residuals written before 0.3.0 carry no identifier: they are exact on the
-  machine that wrote them, and that cannot be checked anywhere else. Values
+  the identifier of that arithmetic. A read that meets a residual naming a
+  different one fails with an `InvalidData` error carrying a
+  `ResidualMismatch` (the segment, its key range, the store and both
+  identifiers) instead of returning a value: applying the residual would give
+  neither the original nor the model, and the model alone is not the
+  original. `StorageConfig::residual_policy = ResidualPolicy::ModelOnly` (or
+  `query_point_model_only` / `query_range_model_only` on a segment) reads the
+  model's approximation on purpose, and `residual_status()` reports which
+  case a segment is in without reading. **Recovering the exact values** of a
+  store written with another arithmetic takes that arithmetic: a store written
+  by alice-db 0.3 (alice-det-math 0.4) is read exactly by alice-db 0.3, so read
+  it there and write the values again with this version; this version alone
+  can give only the model. Residuals written before 0.3.0 carry no
+  identifier: they are applied, they are exact on the machine that wrote
+  them, and that cannot be checked anywhere else. Values
   that must come back exactly under arbitrary keys belong in an
   [exact series](#exact-series).
 - **Irregular timestamps in the model store.** A segment keeps no per-point

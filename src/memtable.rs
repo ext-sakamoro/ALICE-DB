@@ -302,7 +302,8 @@ impl MemTable {
             let mut residual_bytes = Vec::with_capacity(values.len() * 4);
             for (i, &original) in values.iter().enumerate() {
                 let timestamp = data[i].0;
-                let reconstructed = segment.query_point(timestamp).unwrap_or(0.0);
+                // the residual is measured against the model alone (there is none yet)
+                let reconstructed = segment.query_point_model_only(timestamp).unwrap_or(0.0);
                 let residual = original.to_bits() ^ reconstructed.to_bits();
                 residual_bytes.extend_from_slice(&residual.to_le_bytes());
             }
@@ -768,7 +769,7 @@ mod tests {
 
         // Verify exact reconstruction via query_point (which applies residuals)
         for &(t, expected) in &data {
-            if let Some(actual) = segment.query_point(t) {
+            if let Some(actual) = segment.query_point(t).expect("residual of this arithmetic") {
                 assert!(
                     (actual - expected).abs() < 1e-2,
                     "Lossless mismatch at t={t}: expected={expected}, actual={actual}"

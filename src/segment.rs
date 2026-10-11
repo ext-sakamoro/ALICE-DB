@@ -386,9 +386,43 @@ impl DataSegment {
     ///
     /// This is O(1) - just evaluate the mathematical function!
     /// No disk I/O needed beyond loading the segment.
+    ///
+    /// # Errors
+    ///
+    /// [`ResidualMismatch`] when the segment carries a residual pinned to a
+    /// different arithmetic: applying it would give a value that is neither
+    /// the original nor the model, and returning the model alone would give
+    /// a value that is not the original without saying so.
+    /// [`Self::query_point_model_only`] is the explicit way to read the model.
+    #[inline(always)]
+    pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualMismatch> {
+        let Some(value) = self.query_point_model_only(timestamp) else {
+            return Ok(None);
+        };
+        let Some(residual) = checked_residual(
+            self.residual_blob.as_deref(),
+            self.metadata.id,
+            self.start_time,
+            self.end_time,
+        )?
+        else {
+            return Ok(Some(value));
+        };
+        let kind = residual_kind(residual);
+        let decompressed = decompress_residual(residual);
+        let idx = self.timestamp_to_index(timestamp);
+        Ok(Some(apply_residual(value, kind, &decompressed, idx)))
+    }
+
+    /// The model's value at `timestamp`, with no residual applied
+    ///
+    /// For a lossless segment this is **not** the stored original: it is the
+    /// law's approximation, off from the original by the residual. It is the
+    /// explicit read for a segment whose residual belongs to another
+    /// arithmetic (see [`Self::query_point`] and [`Self::residual_status`]).
     #[inline(always)]
     #[must_use]
-    pub fn query_point(&self, timestamp: i64) -> Option<f32> {
+    pub fn query_point_model_only(&self, timestamp: i64) -> Option<f32> {
         if !self.contains(timestamp) {
             return None;
         }
@@ -398,22 +432,13 @@ impl DataSegment {
             self.metadata.point_count,
             timestamp,
         );
-        let value = self.evaluate_model_at(i);
+        Some(self.evaluate_model_at(i))
+    }
 
-        // Apply residual correction if available (decompress on-the-fly)
-        // A residual anchored to a different arithmetic would turn the model
-        // value into one that is neither the original nor the model, so it is
-        // skipped rather than applied — see [`residual_is_applicable`].
-        if let Some(ref residual) = self.residual_blob {
-            if residual_is_applicable(residual) {
-                let kind = residual_kind(residual);
-                let decompressed = decompress_residual(residual);
-                let idx = self.timestamp_to_index(timestamp);
-                return Some(apply_residual(value, kind, &decompressed, idx));
-            }
-        }
-
-        Some(value)
+    /// Whether this segment's values come back exactly, and if not why
+    #[must_use]
+    pub fn residual_status(&self) -> ResidualStatus {
+        residual_status(self.residual_blob.as_deref())
     }
 
     /// Query a range of values (Loop Unswitched - Branch outside loop)
@@ -426,8 +451,35 @@ impl DataSegment {
     /// Instead of branching inside the loop (killing branch prediction),
     /// we branch ONCE outside, then run a tight branchless loop.
     /// This allows CPU to pipeline SIMD instructions without stalls.
+    ///
+    /// # Errors
+    ///
+    /// [`ResidualMismatch`], as [`Self::query_point`]: the whole range or
+    /// nothing, never a shorter or partly corrected result.
+    pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualMismatch> {
+        let residual = checked_residual(
+            self.residual_blob.as_deref(),
+            self.metadata.id,
+            self.start_time,
+            self.end_time,
+        )?;
+        let mut results = self.query_range_model_only(start, end);
+        if let Some(residual) = residual {
+            // decompress once, then apply
+            let kind = residual_kind(residual);
+            let decompressed = decompress_residual(residual);
+            for (timestamp, value) in &mut results {
+                let idx = self.timestamp_to_index(*timestamp);
+                *value = apply_residual(*value, kind, &decompressed, idx);
+            }
+        }
+        Ok(results)
+    }
+
+    /// The model's values over `[start, end]`, with no residual applied (see
+    /// [`Self::query_point_model_only`])
     #[must_use]
-    pub fn query_range(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
+    pub fn query_range_model_only(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
         let query_start = start.max(self.start_time);
         let query_end = end.min(self.end_time);
 
@@ -486,18 +538,6 @@ impl DataSegment {
             }
         }
 
-        // Apply residuals in separate pass (decompress once, then apply)
-        if let Some(ref residual) = self.residual_blob {
-            if residual_is_applicable(residual) {
-                let kind = residual_kind(residual);
-                let decompressed = decompress_residual(residual);
-                for (timestamp, value) in &mut results {
-                    let idx = self.timestamp_to_index(*timestamp);
-                    *value = apply_residual(*value, kind, &decompressed, idx);
-                }
-            }
-        }
-
         results
     }
 
@@ -529,9 +569,16 @@ impl DataSegment {
     /// Query a range of values using SIMD acceleration (Phase 3)
     ///
     /// Now unified with `query_range` - this is an alias for compatibility.
+    ///
+    /// # Errors
+    ///
+    /// [`ResidualMismatch`], as [`Self::query_range`].
     #[inline]
-    #[must_use]
-    pub fn query_range_simd(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
+    pub fn query_range_simd(
+        &self,
+        start: i64,
+        end: i64,
+    ) -> Result<Vec<(i64, f32)>, ResidualMismatch> {
         // query_range now uses SIMD internally for polynomial
         self.query_range(start, end)
     }
@@ -793,6 +840,120 @@ pub fn residual_is_applicable(blob: &[u8]) -> bool {
     match residual_semantics(blob) {
         ResidualSemantics::Unpinned => true,
         ResidualSemantics::Pinned(id) => id == alice_core::law::SEMANTICS_ID,
+    }
+}
+
+/// A residual pinned to a different arithmetic than the one in use, met while
+/// reading values
+///
+/// The residual stores `original ^ model` under the arithmetic named by
+/// `stored`. With another arithmetic the model values may differ, so applying
+/// the residual can give a value that is neither the original nor the model,
+/// and returning the model alone gives a value that is not the original; a
+/// read refuses instead. The fields say which data it is: the segment and the
+/// key range it covers.
+///
+/// The exact values come back only with the arithmetic `stored` names (for a
+/// store written with `alice-det-math` 0.4, read it with `alice-db` 0.3 and
+/// write the values again). [`DataSegment::query_point_model_only`] and
+/// `ResidualPolicy::ModelOnly` read the model's approximation explicitly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ResidualMismatch {
+    /// Id of the segment whose residual was refused
+    pub segment_id: u64,
+    /// First key the segment covers
+    pub start_time: i64,
+    /// Last key the segment covers
+    pub end_time: i64,
+    /// Identifier of the arithmetic the residual was measured against
+    pub stored: [u8; SEMANTICS_ID_LEN],
+    /// Identifier of the arithmetic this build computes with
+    pub running: [u8; SEMANTICS_ID_LEN],
+    /// The store the segment belongs to (its data directory), when the read
+    /// went through a store; `None` for a segment read on its own
+    pub series: Option<std::path::PathBuf>,
+}
+
+impl std::fmt::Display for ResidualMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hex =
+            |id: &[u8; SEMANTICS_ID_LEN]| id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        write!(
+            f,
+            "segment {} (keys {}..={}) holds a residual measured against arithmetic {}, \
+             but this build computes with {}: its exact values cannot be reconstructed here",
+            self.segment_id,
+            self.start_time,
+            self.end_time,
+            hex(&self.stored),
+            hex(&self.running)
+        )?;
+        if let Some(series) = &self.series {
+            write!(f, " (store {})", series.display())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ResidualMismatch {}
+
+/// Whether a segment's values come back exactly, and if not why — the same
+/// answer the queries act on, without reading a value
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResidualStatus {
+    /// A residual measured against the arithmetic in use: reads are exact
+    Exact,
+    /// No residual: reads return the model (a lossy segment)
+    NoResidual,
+    /// A residual written before 0.3.0 with no record of its arithmetic: it
+    /// is applied, and is exact on a machine whose libm matches the writer's
+    Unpinned,
+    /// A residual measured against another arithmetic: reads refuse
+    Mismatch {
+        /// Identifier recorded with the residual
+        stored: [u8; SEMANTICS_ID_LEN],
+        /// Identifier of the arithmetic in use
+        running: [u8; SEMANTICS_ID_LEN],
+    },
+}
+
+/// [`ResidualStatus`] of an optional residual blob
+#[must_use]
+pub fn residual_status(blob: Option<&[u8]>) -> ResidualStatus {
+    match blob.map(residual_semantics) {
+        None => ResidualStatus::NoResidual,
+        Some(ResidualSemantics::Unpinned) => ResidualStatus::Unpinned,
+        Some(ResidualSemantics::Pinned(id)) if id == alice_core::law::SEMANTICS_ID => {
+            ResidualStatus::Exact
+        }
+        Some(ResidualSemantics::Pinned(stored)) => ResidualStatus::Mismatch {
+            stored,
+            running: alice_core::law::SEMANTICS_ID,
+        },
+    }
+}
+
+/// The residual a read may apply: `None` when there is none, the blob when it
+/// belongs to the arithmetic in use (or predates the identifier), and
+/// [`ResidualMismatch`] when it belongs to another
+fn checked_residual(
+    blob: Option<&[u8]>,
+    segment_id: u64,
+    start_time: i64,
+    end_time: i64,
+) -> Result<Option<&[u8]>, ResidualMismatch> {
+    match residual_status(blob) {
+        ResidualStatus::Mismatch { stored, running } => Err(ResidualMismatch {
+            segment_id,
+            start_time,
+            end_time,
+            stored,
+            running,
+            series: None,
+        }),
+        _ => Ok(blob),
     }
 }
 
@@ -1321,9 +1482,37 @@ impl SegmentView {
     ///
     /// Computes f(x) directly from archived model coefficients.
     /// No deserialization occurs - we read directly from mmap.
+    ///
+    /// # Errors
+    ///
+    /// [`ResidualMismatch`], as [`DataSegment::query_point`].
+    #[inline(always)]
+    pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualMismatch> {
+        let Some(value) = self.query_point_model_only(timestamp) else {
+            return Ok(None);
+        };
+        // Lossless mode stores per-sample residuals; the in-memory path applied
+        // them, the mmap path did not until 0.2.0-beta.2.
+        let Some(residual) = checked_residual(
+            self.archived.residual_blob.as_ref().map(|r| r.as_slice()),
+            self.archived.metadata.id,
+            self.archived.start_time,
+            self.archived.end_time,
+        )?
+        else {
+            return Ok(Some(value));
+        };
+        let kind = residual_kind(residual);
+        let decompressed = decompress_residual(residual);
+        let idx = self.archived_timestamp_to_index(timestamp);
+        Ok(Some(apply_residual(value, kind, &decompressed, idx)))
+    }
+
+    /// The model's value at `timestamp`, with no residual applied (see
+    /// [`DataSegment::query_point_model_only`])
     #[inline(always)]
     #[must_use]
-    pub fn query_point(&self, timestamp: i64) -> Option<f32> {
+    pub fn query_point_model_only(&self, timestamp: i64) -> Option<f32> {
         if !self.contains(timestamp) {
             return None;
         }
@@ -1334,19 +1523,13 @@ impl SegmentView {
             n,
             timestamp,
         );
-        let value = self.evaluate_archived_model(i);
+        Some(self.evaluate_archived_model(i))
+    }
 
-        // Lossless mode stores per-sample residuals; the in-memory path applied
-        // them, the mmap path did not until 0.2.0-beta.2.
-        if let Some(residual) = self.archived.residual_blob.as_ref() {
-            if residual_is_applicable(residual.as_slice()) {
-                let kind = residual_kind(residual.as_slice());
-                let decompressed = decompress_residual(residual.as_slice());
-                let idx = self.archived_timestamp_to_index(timestamp);
-                return Some(apply_residual(value, kind, &decompressed, idx));
-            }
-        }
-        Some(value)
+    /// Whether this segment's values come back exactly, and if not why
+    #[must_use]
+    pub fn residual_status(&self) -> ResidualStatus {
+        residual_status(self.archived.residual_blob.as_ref().map(|r| r.as_slice()))
     }
 
     /// Sample index of `timestamp` under the segment's uniform-spacing model
@@ -1367,8 +1550,34 @@ impl SegmentView {
     ///
     /// Branch ONCE outside loop, then run tight branchless loops.
     /// Polynomial uses SIMD (f64x4) for 4x throughput.
+    ///
+    /// # Errors
+    ///
+    /// [`ResidualMismatch`], as [`DataSegment::query_range`].
+    pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualMismatch> {
+        let residual = checked_residual(
+            self.archived.residual_blob.as_ref().map(|r| r.as_slice()),
+            self.archived.metadata.id,
+            self.archived.start_time,
+            self.archived.end_time,
+        )?;
+        let mut results = self.query_range_model_only(start, end);
+        // Lossless residuals (see `query_point`)
+        if let Some(residual) = residual {
+            let kind = residual_kind(residual);
+            let decompressed = decompress_residual(residual);
+            for (timestamp, value) in &mut results {
+                let idx = self.archived_timestamp_to_index(*timestamp);
+                *value = apply_residual(*value, kind, &decompressed, idx);
+            }
+        }
+        Ok(results)
+    }
+
+    /// The model's values over `[start, end]`, with no residual applied (see
+    /// [`DataSegment::query_point_model_only`])
     #[must_use]
-    pub fn query_range(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
+    pub fn query_range_model_only(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
         let query_start = start.max(self.archived.start_time);
         let query_end = end.min(self.archived.end_time);
 
@@ -1435,18 +1644,6 @@ impl SegmentView {
             ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
                 let all = self.materialise_archived_samples();
                 law::fill_range(&mut results, &plan, 0, |i| law::sampled_at(&all, i));
-            }
-        }
-
-        // Lossless residuals (see `query_point`)
-        if let Some(residual) = self.archived.residual_blob.as_ref() {
-            if residual_is_applicable(residual.as_slice()) {
-                let kind = residual_kind(residual.as_slice());
-                let decompressed = decompress_residual(residual.as_slice());
-                for (timestamp, value) in &mut results {
-                    let idx = self.archived_timestamp_to_index(*timestamp);
-                    *value = apply_residual(*value, kind, &decompressed, idx);
-                }
             }
         }
 
@@ -1613,7 +1810,10 @@ mod tests {
         assert!(segment.contains(500));
         assert!(!segment.contains(1001));
 
-        let value = segment.query_point(500).unwrap();
+        let value = segment
+            .query_point(500)
+            .expect("residual of this arithmetic")
+            .unwrap();
         assert!((value - 42.0).abs() < 0.001);
     }
 
@@ -1631,9 +1831,18 @@ mod tests {
             101 * 4,
         );
 
-        let start = segment.query_point(0).unwrap();
-        let mid = segment.query_point(50).unwrap();
-        let end = segment.query_point(100).unwrap();
+        let start = segment
+            .query_point(0)
+            .expect("residual of this arithmetic")
+            .unwrap();
+        let mid = segment
+            .query_point(50)
+            .expect("residual of this arithmetic")
+            .unwrap();
+        let end = segment
+            .query_point(100)
+            .expect("residual of this arithmetic")
+            .unwrap();
 
         assert!((start - 0.0).abs() < 0.1);
         assert!((mid - 50.0).abs() < 0.1);
@@ -1657,7 +1866,10 @@ mod tests {
             101 * 4,
         );
 
-        let at_half = segment.query_point(50).unwrap();
+        let at_half = segment
+            .query_point(50)
+            .expect("residual of this arithmetic")
+            .unwrap();
         // i = 50, y = 2500
         assert!((at_half - 2500.0).abs() < 0.01);
         assert!((segment.generate_all()[50] - at_half).abs() < f32::EPSILON);
@@ -1677,7 +1889,9 @@ mod tests {
             101 * 4,
         );
 
-        let results = segment.query_range(0, 100);
+        let results = segment
+            .query_range(0, 100)
+            .expect("residual of this arithmetic");
         assert!(!results.is_empty());
 
         // First and last should match linear interpolation
@@ -1727,8 +1941,12 @@ mod tests {
         );
 
         // Compare scalar vs SIMD results
-        let scalar_results = segment.query_range(0, 100);
-        let simd_results = segment.query_range_simd(0, 100);
+        let scalar_results = segment
+            .query_range(0, 100)
+            .expect("residual of this arithmetic");
+        let simd_results = segment
+            .query_range_simd(0, 100)
+            .expect("residual of this arithmetic");
 
         assert_eq!(scalar_results.len(), simd_results.len());
 
@@ -1761,8 +1979,12 @@ mod tests {
             1001 * 4,
         );
 
-        let scalar = segment.query_range(0, 1000);
-        let simd = segment.query_range_simd(0, 1000);
+        let scalar = segment
+            .query_range(0, 1000)
+            .expect("residual of this arithmetic");
+        let simd = segment
+            .query_range_simd(0, 1000)
+            .expect("residual of this arithmetic");
 
         assert_eq!(scalar.len(), simd.len());
 
@@ -1818,17 +2040,27 @@ mod tests {
             101,
             404,
         );
-        assert!(segment.query_point(-1).is_none());
-        assert!(segment.query_point(101).is_none());
+        assert!(segment
+            .query_point(-1)
+            .expect("residual of this arithmetic")
+            .is_none());
+        assert!(segment
+            .query_point(101)
+            .expect("residual of this arithmetic")
+            .is_none());
     }
 
     #[test]
     fn test_query_range_non_overlapping() {
         let segment = DataSegment::new(1, 100, 200, ModelType::Constant { value: 5.0 }, 101, 404);
-        let results = segment.query_range(0, 50);
+        let results = segment
+            .query_range(0, 50)
+            .expect("residual of this arithmetic");
         assert!(results.is_empty());
 
-        let results2 = segment.query_range(300, 400);
+        let results2 = segment
+            .query_range(300, 400)
+            .expect("residual of this arithmetic");
         assert!(results2.is_empty());
     }
 
@@ -1838,7 +2070,10 @@ mod tests {
         let segment = DataSegment::new(1, 42, 42, ModelType::Constant { value: 99.0 }, 1, 4);
         assert!(segment.contains(42));
         assert!(!segment.contains(41));
-        let val = segment.query_point(42).unwrap();
+        let val = segment
+            .query_point(42)
+            .expect("residual of this arithmetic")
+            .unwrap();
         assert!((val - 99.0).abs() < 0.001);
     }
 
@@ -1913,11 +2148,20 @@ mod tests {
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
         let view = SegmentView::from_vec(rkyv_bytes).unwrap();
 
-        let val = view.query_point(50).unwrap();
+        let val = view
+            .query_point(50)
+            .expect("residual of this arithmetic")
+            .unwrap();
         assert!((val - 42.0).abs() < 0.001);
 
-        assert!(view.query_point(-1).is_none());
-        assert!(view.query_point(101).is_none());
+        assert!(view
+            .query_point(-1)
+            .expect("residual of this arithmetic")
+            .is_none());
+        assert!(view
+            .query_point(101)
+            .expect("residual of this arithmetic")
+            .is_none());
     }
 
     #[test]
@@ -1936,7 +2180,9 @@ mod tests {
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
         let view = SegmentView::from_vec(rkyv_bytes).unwrap();
 
-        let results = view.query_range(0, 100);
+        let results = view
+            .query_range(0, 100)
+            .expect("residual of this arithmetic");
         assert!(!results.is_empty());
 
         let (_, first_val) = results.first().unwrap();
@@ -2037,11 +2283,17 @@ mod tests {
         assert_eq!(decompressed, raw_residuals);
 
         // Verify query_point applies residual correction
-        let val_at_0 = segment.query_point(0).unwrap();
+        let val_at_0 = segment
+            .query_point(0)
+            .expect("residual of this arithmetic")
+            .unwrap();
         // Constant model = 10.0, residual[0] = 0.0 * 0.001 = 0.0
         assert!((val_at_0 - 10.0).abs() < 0.01);
 
-        let val_at_50 = segment.query_point(50).unwrap();
+        let val_at_50 = segment
+            .query_point(50)
+            .expect("residual of this arithmetic")
+            .unwrap();
         // Constant model = 10.0, residual[50] = 50 * 0.001 = 0.05
         assert!((val_at_50 - 10.05).abs() < 0.01);
     }

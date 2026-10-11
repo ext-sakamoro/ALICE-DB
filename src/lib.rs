@@ -265,9 +265,12 @@ pub use replication::{
     Command, LogEntry, LogIndex, NodeId, RaftNode, ReplicationError, Role, Term,
 };
 pub use segment::DataSegment;
+pub use segment::{ResidualMismatch, ResidualStatus};
 pub use seqlock::{OptimisticError, OptimisticLock, OptimisticTxn, SeqLock, Version};
 pub use series::{Series, SeriesValue};
-pub use storage_engine::{LosslessKeyOrderError, StorageConfig, StorageEngine, StorageStats};
+pub use storage_engine::{
+    LosslessKeyOrderError, ResidualPolicy, StorageConfig, StorageEngine, StorageStats,
+};
 pub use transaction::{LockManager, LockMode, MvccStore, TxnError, TxnId, TxnStatus};
 
 use std::io;

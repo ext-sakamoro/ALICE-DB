@@ -22,8 +22,13 @@ on:
       - 'Cargo.lock'
       - 'src/**'
       - 'deny.toml'
+      - 'rust-toolchain.toml'
+      - '**/Cargo.toml'
+      - '**/*.rs'
+      - '.gitignore'
       - '.github/workflows/security-audit.yml'
       - 'scripts/stub_guard.sh'
+      - 'scripts/changed_paths.py'
       - '.github/paths/security-audit.txt'
   schedule:
     # every Monday 09:00 UTC
@@ -244,16 +249,17 @@ jobs:
             exit 1
           fi
 
-  # one result for the workflow: run=true needs every blocking job above to succeed,
-  # run=false needs them skipped (a skipped, cancelled or failed job after run=true is red)
-  # coverage and semver-checks are informational (continue-on-error) and are left out, so
-  # their failure stays non-blocking; they still run only when changes says run=true
+  # one result for the workflow: run=true needs every job above to succeed, run=false
+  # needs them skipped (a skipped, cancelled or failed job after run=true is red)
+  # coverage and semver-checks are informational: a job-level continue-on-error failure
+  # reaches needs as `success`, so their failure stays non-blocking, but a skip or a
+  # cancel after run=true is red like any other job
   # not a required status check: pull_request keeps its paths, so a pull request that
   # touches none of them has no run and a required check would stay pending
   gate:
     name: Gate
     if: always()
-    needs: [changes, audit, deny, unused-deps, stub-guard, package-integrity]
+    needs: [changes, audit, deny, unused-deps, stub-guard, package-integrity, coverage, semver-checks]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

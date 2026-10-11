@@ -1,7 +1,19 @@
 # the paths that run .github/workflows/fuzz.yml (scripts/changed_paths.py decide)
 # on.pull_request.paths of the workflow must list the same patterns in the same order
 # (scripts/changed_paths.py sync)
+# every file a job of the workflow executes or reads is listed: a missing one skips the
+# fuzz run on a change that alters it
+# fuzz/**: targets, fuzz/Cargo.toml / Cargo.lock (fuzz/ is its own workspace, so the root
+# Cargo.lock is not read), fuzz/coverage-floor.txt, fuzz/regressions
 src/**
 fuzz/**
+# fuzz/Cargo.toml depends on the crate by `path = ".."`
+Cargo.toml
+# `cargo install cargo-fuzz` runs at the repository root, where this file picks the toolchain
+rust-toolchain.toml
+# the run step checks each target's coverage against fuzz/coverage-floor.txt
+scripts/fuzz_reach.py
+# the changes and gate jobs
+scripts/changed_paths.py
 .github/workflows/fuzz.yml
 .github/paths/fuzz.txt

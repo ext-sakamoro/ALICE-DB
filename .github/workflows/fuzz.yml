@@ -26,6 +26,10 @@ on:
     paths:
       - 'src/**'
       - 'fuzz/**'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - 'scripts/fuzz_reach.py'
+      - 'scripts/changed_paths.py'
       - '.github/workflows/fuzz.yml'
       - '.github/paths/fuzz.txt'
   schedule:

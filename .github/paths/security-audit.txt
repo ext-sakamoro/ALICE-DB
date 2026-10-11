@@ -1,10 +1,23 @@
 # the paths that run .github/workflows/security-audit.yml (scripts/changed_paths.py decide)
 # on.pull_request.paths of the workflow must list the same patterns in the same order
 # (scripts/changed_paths.py sync)
+# every file a job of the workflow executes or reads is listed: a missing one skips the
+# checks on a change that alters them
 Cargo.toml
 Cargo.lock
 src/**
 deny.toml
+# every job runs cargo at the repository root, where this file picks the toolchain
+rust-toolchain.toml
+# cargo-machete reads every manifest under the root (fuzz/Cargo.toml has its own
+# [package.metadata.cargo-machete]) and every .rs file under it as a use of a dependency
+# (tests/, benches/, examples/, fuzz/fuzz_targets/)
+**/Cargo.toml
+**/*.rs
+# cargo package lists the files it packages through git, which .gitignore filters
+.gitignore
 .github/workflows/security-audit.yml
 scripts/stub_guard.sh
+# the changes and gate jobs
+scripts/changed_paths.py
 .github/paths/security-audit.txt

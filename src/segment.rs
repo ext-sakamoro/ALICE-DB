@@ -413,7 +413,17 @@ impl DataSegment {
         };
         let (kind, decompressed) = residual;
         let idx = self.timestamp_to_index(timestamp);
-        Ok(Some(apply_residual(value, kind, &decompressed, idx)))
+        apply_residual(value, kind, &decompressed, idx)
+            .map(Some)
+            .ok_or_else(|| {
+                missing_word(
+                    self.metadata.id,
+                    self.start_time,
+                    self.end_time,
+                    self.metadata.point_count,
+                    decompressed.len(),
+                )
+            })
     }
 
     /// The model's value at `timestamp`, with no residual applied
@@ -470,7 +480,15 @@ impl DataSegment {
         if let Some((kind, decompressed)) = residual {
             for (timestamp, value) in &mut results {
                 let idx = self.timestamp_to_index(*timestamp);
-                *value = apply_residual(*value, kind, &decompressed, idx);
+                *value = apply_residual(*value, kind, &decompressed, idx).ok_or_else(|| {
+                    missing_word(
+                        self.metadata.id,
+                        self.start_time,
+                        self.end_time,
+                        self.metadata.point_count,
+                        decompressed.len(),
+                    )
+                })?;
             }
         }
         Ok(results)
@@ -1122,19 +1140,47 @@ pub fn residual_kind(blob: &[u8]) -> ResidualKind {
     }
 }
 
-/// Apply the `idx`-th residual word of a decompressed blob to `value`.
+/// Apply the `idx`-th residual word of a decompressed blob to `value`
+///
+/// `None` when the blob holds no word for `idx`: the reader turns that into
+/// [`ResidualError::Corrupt`] rather than returning `value` (the model) as if
+/// it were the stored original. Crate-internal since 0.4.0; the checked
+/// queries are the way to read corrected values.
 #[inline]
 #[must_use]
-pub fn apply_residual(value: f32, kind: ResidualKind, decompressed: &[u8], idx: usize) -> f32 {
-    let offset = idx * 4;
-    let Some(word) = decompressed.get(offset..offset + 4) else {
-        return value;
-    };
-    let bytes: [u8; 4] = word.try_into().unwrap_or([0; 4]);
-    match kind {
-        ResidualKind::Additive => value + f32::from_le_bytes(bytes),
-        ResidualKind::Xor => f32::from_bits(value.to_bits() ^ u32::from_le_bytes(bytes)),
-    }
+pub(crate) fn apply_residual(
+    value: f32,
+    kind: ResidualKind,
+    decompressed: &[u8],
+    idx: usize,
+) -> Option<f32> {
+    let offset = idx.checked_mul(4)?;
+    let word: [u8; 4] = decompressed
+        .get(offset..offset.checked_add(4)?)?
+        .try_into()
+        .ok()?;
+    Some(match kind {
+        ResidualKind::Additive => value + f32::from_le_bytes(word),
+        ResidualKind::Xor => f32::from_bits(value.to_bits() ^ u32::from_le_bytes(word)),
+    })
+}
+
+/// [`ResidualError::Corrupt`] for a residual too short for the point read
+fn missing_word(
+    segment_id: u64,
+    start_time: i64,
+    end_time: i64,
+    point_count: usize,
+    decoded: usize,
+) -> ResidualError {
+    ResidualError::Corrupt(ResidualCorrupt {
+        segment_id,
+        start_time,
+        end_time,
+        needed_bytes: point_count.saturating_mul(4),
+        found_bytes: decoded,
+        series: None,
+    })
 }
 
 /// Compress an XOR residual (`original.to_bits() ^ model.to_bits()` per
@@ -1644,7 +1690,17 @@ impl SegmentView {
         };
         let (kind, decompressed) = residual;
         let idx = self.archived_timestamp_to_index(timestamp);
-        Ok(Some(apply_residual(value, kind, &decompressed, idx)))
+        apply_residual(value, kind, &decompressed, idx)
+            .map(Some)
+            .ok_or_else(|| {
+                missing_word(
+                    self.archived.metadata.id,
+                    self.archived.start_time,
+                    self.archived.end_time,
+                    self.archived.metadata.point_count as usize,
+                    decompressed.len(),
+                )
+            })
     }
 
     /// The model's value at `timestamp`, with no residual applied (see
@@ -1709,7 +1765,15 @@ impl SegmentView {
         if let Some((kind, decompressed)) = residual {
             for (timestamp, value) in &mut results {
                 let idx = self.archived_timestamp_to_index(*timestamp);
-                *value = apply_residual(*value, kind, &decompressed, idx);
+                *value = apply_residual(*value, kind, &decompressed, idx).ok_or_else(|| {
+                    missing_word(
+                        self.archived.metadata.id,
+                        self.archived.start_time,
+                        self.archived.end_time,
+                        self.archived.metadata.point_count as usize,
+                        decompressed.len(),
+                    )
+                })?;
             }
         }
         Ok(results)
@@ -1895,6 +1959,33 @@ impl SegmentView {
 
 #[cfg(test)]
 mod tests {
+    /// A word index past the decoded residual gives `None`, never the model
+    /// value standing in for the original (the readers turn it into
+    /// `ResidualError::Corrupt`)
+    #[test]
+    fn apply_residual_without_a_word_for_the_index_is_none() {
+        let word = 3_u32.to_le_bytes();
+        let one = word.to_vec();
+        assert_eq!(
+            apply_residual(1.5, ResidualKind::Xor, &one, 0).map(f32::to_bits),
+            Some(1.5_f32.to_bits() ^ 3)
+        );
+        assert_eq!(apply_residual(1.5, ResidualKind::Xor, &one, 1), None);
+        assert_eq!(
+            apply_residual(1.5, ResidualKind::Additive, &one[..3], 0),
+            None
+        );
+        assert_eq!(apply_residual(1.5, ResidualKind::Xor, &[], 0), None);
+        assert_eq!(
+            apply_residual(1.5, ResidualKind::Xor, &one, usize::MAX),
+            None
+        );
+        assert_eq!(
+            apply_residual(1.5, ResidualKind::Xor, &one, usize::MAX / 4),
+            None
+        );
+    }
+
     use super::*;
 
     /// `law::grid_ceil` rounds up to the next point of the even grid

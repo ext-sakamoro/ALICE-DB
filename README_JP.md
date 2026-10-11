@@ -22,14 +22,19 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
   閾値を下回れば採用する (例えば単一 sine は相対 MSE < 0.1) 厳密なビットで読み戻すには
   `FitConfig` の `lossless: true` で XOR 残差を保存する 残差は `原信号 ^ モデル` なので、
   読む側が同じ算術で法則を評価した時だけ原信号に戻る したがって blob はその算術の識別子を
-  持つ 別の算術を名乗る残差に当たった読み出しは値を返さず、`ResidualMismatch` (segment、
+  持つ 別の算術を名乗る残差に当たった読み出しは値を返さず、`ResidualError::Mismatch` (segment、
   その key 範囲、store、両方の識別子) を持つ `InvalidData` の error で失敗する 残差を適用すると
-  原信号でも model でもない値になり、model だけでは原信号でないため
+  原信号でも model でもない値になり、model だけでは原信号でないため 点ごとの補正に復号できない
+  残差も `ResidualError::Corrupt` として同じく断る 範囲読みは全件か error のどちらかで、件数の
+  少ない結果や一部だけ補正した結果は返さない 数えるのはまだ key に答える segment だけで、全 key が
+  より新しい書き込みで上書きされた古い segment は範囲読みを失敗させない
   `StorageConfig::residual_policy = ResidualPolicy::ModelOnly` (segment では
   `query_point_model_only` / `query_range_model_only`) で model の近似を明示して読める
   `residual_status()` は読まずにどの場合かを報告する **別の算術で書いた store の厳密な値を
   取り戻すにはその算術が要る** alice-db 0.3 (alice-det-math 0.4) が書いた store は
   alice-db 0.3 で厳密に読めるので、そこで読んで本版で書き直す 本版だけでは model の値しか得られない
+  **壊れた残差** (`ResidualError::Corrupt`) はどの版でも取り戻せない 補正が失われているので、
+  segment を backup から戻す (または `ModelOnly` で model を受け入れる)
   0.3.0 より前に書かれた残差は識別子を持たず、適用される 書いた機械では厳密だがそれを他の場所で
   確かめる手段が無い
   任意の key で厳密に読み戻す必要がある値は [exact series](#exact-series) に置く

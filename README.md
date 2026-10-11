@@ -28,17 +28,24 @@ License: AGPL-3.0-or-later OR LicenseRef-Commercial
   reader evaluates the law with the same arithmetic; the blob therefore carries
   the identifier of that arithmetic. A read that meets a residual naming a
   different one fails with an `InvalidData` error carrying a
-  `ResidualMismatch` (the segment, its key range, the store and both
+  `ResidualError::Mismatch` (the segment, its key range, the store and both
   identifiers) instead of returning a value: applying the residual would give
   neither the original nor the model, and the model alone is not the
-  original. `StorageConfig::residual_policy = ResidualPolicy::ModelOnly` (or
+  original. A residual that does not decode to one correction per point is
+  refused the same way as `ResidualError::Corrupt`. A range read returns all
+  its points or the error, never fewer or partly corrected ones; only the
+  segments that still answer a key count, so an old segment whose keys all
+  have newer writes does not fail it. `StorageConfig::residual_policy = ResidualPolicy::ModelOnly` (or
   `query_point_model_only` / `query_range_model_only` on a segment) reads the
   model's approximation on purpose, and `residual_status()` reports which
   case a segment is in without reading. **Recovering the exact values** of a
   store written with another arithmetic takes that arithmetic: a store written
   by alice-db 0.3 (alice-det-math 0.4) is read exactly by alice-db 0.3, so read
   it there and write the values again with this version; this version alone
-  can give only the model. Residuals written before 0.3.0 carry no
+  can give only the model. A **corrupt** residual (`ResidualError::Corrupt`)
+  is not recoverable by any version: the corrections are lost, so restore the
+  segment from a backup (or accept the model with `ModelOnly`). Residuals
+  written before 0.3.0 carry no
   identifier: they are applied, they are exact on the machine that wrote
   them, and that cannot be checked anywhere else. Values
   that must come back exactly under arbitrary keys belong in an

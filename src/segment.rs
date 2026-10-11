@@ -389,18 +389,21 @@ impl DataSegment {
     ///
     /// # Errors
     ///
-    /// [`ResidualMismatch`] when the segment carries a residual pinned to a
-    /// different arithmetic: applying it would give a value that is neither
-    /// the original nor the model, and returning the model alone would give
-    /// a value that is not the original without saying so.
+    /// [`ResidualError::Mismatch`] when the segment carries a residual pinned
+    /// to a different arithmetic (applying it would give a value that is
+    /// neither the original nor the model), [`ResidualError::Corrupt`] when
+    /// its residual does not decode to one correction per point; returning
+    /// the model alone would give a value that is not the original without
+    /// saying so.
     /// [`Self::query_point_model_only`] is the explicit way to read the model.
     #[inline(always)]
-    pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualMismatch> {
+    pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualError> {
         let Some(value) = self.query_point_model_only(timestamp) else {
             return Ok(None);
         };
         let Some(residual) = checked_residual(
             self.residual_blob.as_deref(),
+            self.metadata.point_count,
             self.metadata.id,
             self.start_time,
             self.end_time,
@@ -408,8 +411,7 @@ impl DataSegment {
         else {
             return Ok(Some(value));
         };
-        let kind = residual_kind(residual);
-        let decompressed = decompress_residual(residual);
+        let (kind, decompressed) = residual;
         let idx = self.timestamp_to_index(timestamp);
         Ok(Some(apply_residual(value, kind, &decompressed, idx)))
     }
@@ -438,7 +440,7 @@ impl DataSegment {
     /// Whether this segment's values come back exactly, and if not why
     #[must_use]
     pub fn residual_status(&self) -> ResidualStatus {
-        residual_status(self.residual_blob.as_deref())
+        residual_status(self.residual_blob.as_deref(), self.metadata.point_count)
     }
 
     /// Query a range of values (Loop Unswitched - Branch outside loop)
@@ -454,20 +456,18 @@ impl DataSegment {
     ///
     /// # Errors
     ///
-    /// [`ResidualMismatch`], as [`Self::query_point`]: the whole range or
+    /// [`ResidualError`], as [`Self::query_point`]: the whole range or
     /// nothing, never a shorter or partly corrected result.
-    pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualMismatch> {
+    pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualError> {
         let residual = checked_residual(
             self.residual_blob.as_deref(),
+            self.metadata.point_count,
             self.metadata.id,
             self.start_time,
             self.end_time,
         )?;
         let mut results = self.query_range_model_only(start, end);
-        if let Some(residual) = residual {
-            // decompress once, then apply
-            let kind = residual_kind(residual);
-            let decompressed = decompress_residual(residual);
+        if let Some((kind, decompressed)) = residual {
             for (timestamp, value) in &mut results {
                 let idx = self.timestamp_to_index(*timestamp);
                 *value = apply_residual(*value, kind, &decompressed, idx);
@@ -572,13 +572,9 @@ impl DataSegment {
     ///
     /// # Errors
     ///
-    /// [`ResidualMismatch`], as [`Self::query_range`].
+    /// [`ResidualError`], as [`Self::query_range`].
     #[inline]
-    pub fn query_range_simd(
-        &self,
-        start: i64,
-        end: i64,
-    ) -> Result<Vec<(i64, f32)>, ResidualMismatch> {
+    pub fn query_range_simd(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualError> {
         // query_range now uses SIMD internally for polynomial
         self.query_range(start, end)
     }
@@ -898,6 +894,86 @@ impl std::fmt::Display for ResidualMismatch {
 
 impl std::error::Error for ResidualMismatch {}
 
+/// A residual whose bytes cannot be decoded into one correction per point
+/// (a payload that does not decompress, a truncated identifier, an unknown
+/// format), met while reading values
+///
+/// Without the corrections a lossless segment can only return the model,
+/// which is not what was stored; a read refuses instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ResidualCorrupt {
+    /// Id of the segment whose residual was refused
+    pub segment_id: u64,
+    /// First key the segment covers
+    pub start_time: i64,
+    /// Last key the segment covers
+    pub end_time: i64,
+    /// Decoded residual bytes the segment's points need (4 per point)
+    pub needed_bytes: usize,
+    /// Decoded residual bytes the blob held
+    pub found_bytes: usize,
+    /// The store the segment belongs to (its data directory), when the read
+    /// went through a store; `None` for a segment read on its own
+    pub series: Option<std::path::PathBuf>,
+}
+
+impl std::fmt::Display for ResidualCorrupt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "segment {} (keys {}..={}) holds a residual that decodes to {} bytes, \
+             {} are needed: its exact values cannot be reconstructed",
+            self.segment_id, self.start_time, self.end_time, self.found_bytes, self.needed_bytes
+        )?;
+        if let Some(series) = &self.series {
+            write!(f, " (store {})", series.display())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ResidualCorrupt {}
+
+/// Why a read refused a segment's lossless residual
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResidualError {
+    /// The residual belongs to another arithmetic
+    Mismatch(ResidualMismatch),
+    /// The residual does not decode to one correction per point
+    Corrupt(ResidualCorrupt),
+}
+
+impl ResidualError {
+    /// Name the store the segment belongs to
+    pub(crate) fn in_store(mut self, dir: &std::path::Path) -> Self {
+        match &mut self {
+            Self::Mismatch(m) => m.series = Some(dir.to_path_buf()),
+            Self::Corrupt(c) => c.series = Some(dir.to_path_buf()),
+        }
+        self
+    }
+}
+
+impl std::fmt::Display for ResidualError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mismatch(m) => m.fmt(f),
+            Self::Corrupt(c) => c.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ResidualError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Mismatch(m) => Some(m),
+            Self::Corrupt(c) => Some(c),
+        }
+    }
+}
+
 /// Whether a segment's values come back exactly, and if not why — the same
 /// answer the queries act on, without reading a value
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -917,43 +993,106 @@ pub enum ResidualStatus {
         /// Identifier of the arithmetic in use
         running: [u8; SEMANTICS_ID_LEN],
     },
+    /// A residual that does not decode to one correction per point: reads
+    /// refuse
+    Corrupt {
+        /// Decoded residual bytes the segment's points need (4 per point)
+        needed_bytes: usize,
+        /// Decoded residual bytes the blob held
+        found_bytes: usize,
+    },
 }
 
-/// [`ResidualStatus`] of an optional residual blob
+/// [`ResidualStatus`] of an optional residual blob for a segment of
+/// `point_count` points (the identifier is checked first, then the decoded
+/// length)
 #[must_use]
-pub fn residual_status(blob: Option<&[u8]>) -> ResidualStatus {
-    match blob.map(residual_semantics) {
-        None => ResidualStatus::NoResidual,
-        Some(ResidualSemantics::Unpinned) => ResidualStatus::Unpinned,
-        Some(ResidualSemantics::Pinned(id)) if id == alice_core::law::SEMANTICS_ID => {
-            ResidualStatus::Exact
-        }
-        Some(ResidualSemantics::Pinned(stored)) => ResidualStatus::Mismatch {
+pub fn residual_status(blob: Option<&[u8]>, point_count: usize) -> ResidualStatus {
+    match decode_residual(blob, point_count) {
+        Decoded::None => ResidualStatus::NoResidual,
+        Decoded::Mismatch(stored) => ResidualStatus::Mismatch {
             stored,
             running: alice_core::law::SEMANTICS_ID,
         },
+        Decoded::Corrupt { needed, found } => ResidualStatus::Corrupt {
+            needed_bytes: needed,
+            found_bytes: found,
+        },
+        Decoded::Usable { pinned: true, .. } => ResidualStatus::Exact,
+        Decoded::Usable { pinned: false, .. } => ResidualStatus::Unpinned,
     }
 }
 
-/// The residual a read may apply: `None` when there is none, the blob when it
-/// belongs to the arithmetic in use (or predates the identifier), and
-/// [`ResidualMismatch`] when it belongs to another
+/// What a residual blob decodes to for a segment of `point_count` points
+enum Decoded {
+    None,
+    Mismatch([u8; SEMANTICS_ID_LEN]),
+    Corrupt {
+        needed: usize,
+        found: usize,
+    },
+    Usable {
+        kind: ResidualKind,
+        bytes: Vec<u8>,
+        pinned: bool,
+    },
+}
+
+fn decode_residual(blob: Option<&[u8]>, point_count: usize) -> Decoded {
+    let Some(blob) = blob else {
+        return Decoded::None;
+    };
+    let pinned = match residual_semantics(blob) {
+        ResidualSemantics::Pinned(id) if id != alice_core::law::SEMANTICS_ID => {
+            return Decoded::Mismatch(id);
+        }
+        ResidualSemantics::Pinned(_) => true,
+        ResidualSemantics::Unpinned => false,
+    };
+    let bytes = decompress_residual(blob);
+    let needed = point_count.saturating_mul(4);
+    if bytes.len() < needed {
+        return Decoded::Corrupt {
+            needed,
+            found: bytes.len(),
+        };
+    }
+    Decoded::Usable {
+        kind: residual_kind(blob),
+        bytes,
+        pinned,
+    }
+}
+
+/// The decoded residual a read may apply: `None` when there is none, the
+/// corrections when they belong to the arithmetic in use (or predate the
+/// identifier) and cover every point, and [`ResidualError`] otherwise
 fn checked_residual(
     blob: Option<&[u8]>,
+    point_count: usize,
     segment_id: u64,
     start_time: i64,
     end_time: i64,
-) -> Result<Option<&[u8]>, ResidualMismatch> {
-    match residual_status(blob) {
-        ResidualStatus::Mismatch { stored, running } => Err(ResidualMismatch {
+) -> Result<Option<(ResidualKind, Vec<u8>)>, ResidualError> {
+    match decode_residual(blob, point_count) {
+        Decoded::None => Ok(None),
+        Decoded::Usable { kind, bytes, .. } => Ok(Some((kind, bytes))),
+        Decoded::Mismatch(stored) => Err(ResidualError::Mismatch(ResidualMismatch {
             segment_id,
             start_time,
             end_time,
             stored,
-            running,
+            running: alice_core::law::SEMANTICS_ID,
             series: None,
-        }),
-        _ => Ok(blob),
+        })),
+        Decoded::Corrupt { needed, found } => Err(ResidualError::Corrupt(ResidualCorrupt {
+            segment_id,
+            start_time,
+            end_time,
+            needed_bytes: needed,
+            found_bytes: found,
+            series: None,
+        })),
     }
 }
 
@@ -1485,9 +1624,9 @@ impl SegmentView {
     ///
     /// # Errors
     ///
-    /// [`ResidualMismatch`], as [`DataSegment::query_point`].
+    /// [`ResidualError`], as [`DataSegment::query_point`].
     #[inline(always)]
-    pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualMismatch> {
+    pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualError> {
         let Some(value) = self.query_point_model_only(timestamp) else {
             return Ok(None);
         };
@@ -1495,6 +1634,7 @@ impl SegmentView {
         // them, the mmap path did not until 0.2.0-beta.2.
         let Some(residual) = checked_residual(
             self.archived.residual_blob.as_ref().map(|r| r.as_slice()),
+            self.archived.metadata.point_count as usize,
             self.archived.metadata.id,
             self.archived.start_time,
             self.archived.end_time,
@@ -1502,8 +1642,7 @@ impl SegmentView {
         else {
             return Ok(Some(value));
         };
-        let kind = residual_kind(residual);
-        let decompressed = decompress_residual(residual);
+        let (kind, decompressed) = residual;
         let idx = self.archived_timestamp_to_index(timestamp);
         Ok(Some(apply_residual(value, kind, &decompressed, idx)))
     }
@@ -1529,7 +1668,10 @@ impl SegmentView {
     /// Whether this segment's values come back exactly, and if not why
     #[must_use]
     pub fn residual_status(&self) -> ResidualStatus {
-        residual_status(self.archived.residual_blob.as_ref().map(|r| r.as_slice()))
+        residual_status(
+            self.archived.residual_blob.as_ref().map(|r| r.as_slice()),
+            self.archived.metadata.point_count as usize,
+        )
     }
 
     /// Sample index of `timestamp` under the segment's uniform-spacing model
@@ -1553,19 +1695,18 @@ impl SegmentView {
     ///
     /// # Errors
     ///
-    /// [`ResidualMismatch`], as [`DataSegment::query_range`].
-    pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualMismatch> {
+    /// [`ResidualError`], as [`DataSegment::query_range`].
+    pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualError> {
         let residual = checked_residual(
             self.archived.residual_blob.as_ref().map(|r| r.as_slice()),
+            self.archived.metadata.point_count as usize,
             self.archived.metadata.id,
             self.archived.start_time,
             self.archived.end_time,
         )?;
         let mut results = self.query_range_model_only(start, end);
         // Lossless residuals (see `query_point`)
-        if let Some(residual) = residual {
-            let kind = residual_kind(residual);
-            let decompressed = decompress_residual(residual);
+        if let Some((kind, decompressed)) = residual {
             for (timestamp, value) in &mut results {
                 let idx = self.archived_timestamp_to_index(*timestamp);
                 *value = apply_residual(*value, kind, &decompressed, idx);

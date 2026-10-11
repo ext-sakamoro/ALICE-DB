@@ -279,7 +279,7 @@ fn residuals_written_before_the_identifier_report_themselves_as_unpinned() {
 /// どの key 範囲か) を返し、model は `*_model_only` で明示した時だけ読める
 #[test]
 fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
-    use alice_db::segment::{ResidualMismatch, ResidualStatus};
+    use alice_db::segment::{ResidualError, ResidualMismatch, ResidualStatus};
     let n = 9_usize;
     let model = alice_db::model::ModelType::SineWave {
         frequency: 3.0,
@@ -312,7 +312,11 @@ fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
             running: alice_core::law::SEMANTICS_ID
         }
     );
-    let check = |err: ResidualMismatch, what: &str| {
+    let check = |err: ResidualError, what: &str| {
+        let ResidualError::Mismatch(err): ResidualError = err else {
+            panic!("{what}: expected a mismatch, got {err:?}")
+        };
+        let err: ResidualMismatch = err;
         assert_eq!(err.segment_id, 7, "{what}: segment id");
         assert_eq!(
             (err.start_time, err.end_time),
@@ -411,9 +415,12 @@ fn the_zero_copy_path_checks_the_identifier_too() {
 
     let mut compared = 0_usize;
     for i in 0..n {
-        let err = view
+        let alice_db::segment::ResidualError::Mismatch(err) = view
             .query_point(i as i64)
-            .expect_err("zero-copy 側でも断る");
+            .expect_err("zero-copy 側でも断る")
+        else {
+            panic!("i={i}: expected a mismatch");
+        };
         assert_eq!((err.segment_id, err.stored), (7, other), "i={i}");
         let want = bare.query_point_model_only(i as i64).expect("in range");
         let got = view.query_point_model_only(i as i64).expect("in range");
@@ -424,9 +431,12 @@ fn the_zero_copy_path_checks_the_identifier_too() {
         );
         compared += 1;
     }
-    let err = view
+    let alice_db::segment::ResidualError::Mismatch(err) = view
         .query_range(0, (n - 1) as i64)
-        .expect_err("zero-copy の query_range も断る");
+        .expect_err("zero-copy の query_range も断る")
+    else {
+        panic!("expected a mismatch");
+    };
     assert_eq!(err.stored, other);
     assert_eq!(view.query_range_model_only(0, (n - 1) as i64).len(), n);
     compared += 1;

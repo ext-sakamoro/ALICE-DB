@@ -12,7 +12,7 @@
 #![cfg(feature = "fs")]
 
 use alice_db::segment::{ResidualStatus, SegmentView};
-use alice_db::{AliceDB, ResidualMismatch, ResidualPolicy, StorageConfig};
+use alice_db::{AliceDB, ResidualError, ResidualMismatch, ResidualPolicy, StorageConfig};
 use std::path::{Path, PathBuf};
 
 const OLD_ID: &str = "d2209b30f6f1f45baa1b638bcdfee34ac64773b2e63b9c083b2e77afc691398e";
@@ -61,10 +61,13 @@ fn open(dir: &Path, policy: ResidualPolicy, use_mmap: bool) -> AliceDB {
 
 fn mismatch(e: &std::io::Error) -> ResidualMismatch {
     assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{e}");
-    e.get_ref()
-        .and_then(|inner| inner.downcast_ref::<ResidualMismatch>())
-        .unwrap_or_else(|| panic!("the error does not carry a ResidualMismatch: {e}"))
-        .clone()
+    match e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ResidualError>())
+    {
+        Some(ResidualError::Mismatch(m)) => m.clone(),
+        other => panic!("the error does not carry a ResidualError::Mismatch: {other:?} ({e})"),
+    }
 }
 
 /// The fixture only says something when this build's arithmetic differs
@@ -220,11 +223,12 @@ fn exact_series_are_not_affected() {
     );
 }
 
-/// Damaged or hostile residual blobs: the model-only read and the status never
-/// look past the identifier, so neither panics; the checked read does not
-/// panic either (it refuses a foreign identifier, as above)
+/// Damaged or hostile residual blobs: a residual that does not decode to one
+/// correction per point is refused as `Corrupt` (never the model presented as
+/// the stored value), `residual_status()` reports it, the model-only read
+/// still returns the model, and none of it panics
 #[test]
-fn damaged_residual_blobs_do_not_panic() {
+fn damaged_residual_blobs_are_refused_as_corrupt_without_panicking() {
     use alice_db::segment::DataSegment;
     let n = 9_usize;
     let model = alice_db::model::ModelType::Constant { value: 1.5 };
@@ -237,7 +241,7 @@ fn damaged_residual_blobs_do_not_panic() {
         v.extend_from_slice(tail);
         v
     };
-    let blobs: Vec<(&str, Vec<u8>)> = vec![
+    let corrupt: Vec<(&str, Vec<u8>)> = vec![
         ("empty", vec![]),
         ("magic 6 alone", vec![6]),
         ("magic 7, short identifier", vec![7, 1, 2, 3]),
@@ -246,32 +250,76 @@ fn damaged_residual_blobs_do_not_panic() {
         ("magic 7, identifier, 3 bytes", with_id(7, &id, &[1, 2, 3])),
         ("unknown magic", vec![42, 1, 2, 3, 4, 5]),
         ("legacy magic, garbage", vec![0, 9, 9]),
-        (
-            "foreign identifier, garbage",
-            with_id(6, &foreign, &[0xff; 5]),
-        ),
     ];
-    for (name, blob) in blobs {
+    let foreign_garbage = (
+        "foreign identifier, garbage",
+        with_id(6, &foreign, &[0xff; 5]),
+    );
+    let mut seen = 0;
+    for (name, blob) in corrupt.into_iter().chain(std::iter::once(foreign_garbage)) {
         let seg =
-            DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4).with_residual(blob);
+            DataSegment::new(3, 0, (n - 1) as i64, model.clone(), n, n * 4).with_residual(blob);
         let view = SegmentView::from_vec(seg.to_rkyv_bytes().expect("rkyv")).expect("view");
-        let model_only = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (
                 seg.query_point_model_only(3),
                 view.query_range_model_only(0, 8).len(),
                 seg.residual_status(),
                 view.residual_status(),
+                seg.query_point(3),
+                view.query_range(0, 8),
             )
         }));
-        let (point, range, ..) =
-            model_only.unwrap_or_else(|_| panic!("{name}: a model-only read panicked"));
-        assert_eq!((point, range), (Some(1.5), n), "{name}");
-        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = seg.query_point(3);
-            let _ = view.query_range(0, 8);
-        }));
-        assert!(checked.is_ok(), "{name}: a checked read panicked");
+        let (model_point, model_range, seg_status, view_status, point, range) =
+            outcome.unwrap_or_else(|_| panic!("{name}: a read panicked"));
+        assert_eq!(
+            (model_point, model_range),
+            (Some(1.5), n),
+            "{name}: model-only"
+        );
+        assert_eq!(seg_status, view_status, "{name}: both paths report alike");
+        if name.starts_with("foreign") {
+            assert!(
+                matches!(seg_status, ResidualStatus::Mismatch { .. }),
+                "{name}: {seg_status:?}"
+            );
+            assert!(
+                matches!(point, Err(ResidualError::Mismatch(_))),
+                "{name}: {point:?}"
+            );
+        } else {
+            let ResidualStatus::Corrupt {
+                needed_bytes,
+                found_bytes,
+            } = seg_status
+            else {
+                panic!("{name}: expected Corrupt, got {seg_status:?}");
+            };
+            assert_eq!(needed_bytes, n * 4, "{name}");
+            assert!(found_bytes < needed_bytes, "{name}");
+            match point {
+                Err(ResidualError::Corrupt(c)) => {
+                    assert_eq!(
+                        (c.segment_id, c.start_time, c.end_time),
+                        (3, 0, (n - 1) as i64),
+                        "{name}"
+                    );
+                    assert_eq!(
+                        (c.needed_bytes, c.found_bytes),
+                        (needed_bytes, found_bytes),
+                        "{name}"
+                    );
+                }
+                other => panic!("{name}: expected Err(Corrupt), got {other:?}"),
+            }
+            assert!(
+                matches!(range, Err(ResidualError::Corrupt(_))),
+                "{name}: range {range:?}"
+            );
+        }
+        seen += 1;
     }
+    assert_eq!(seen, 9);
 }
 
 /// The plain way to open a store refuses: refusing is the default of the

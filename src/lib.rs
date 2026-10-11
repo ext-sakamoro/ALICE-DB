@@ -265,7 +265,7 @@ pub use replication::{
     Command, LogEntry, LogIndex, NodeId, RaftNode, ReplicationError, Role, Term,
 };
 pub use segment::DataSegment;
-pub use segment::{ResidualMismatch, ResidualStatus};
+pub use segment::{ResidualCorrupt, ResidualError, ResidualMismatch, ResidualStatus};
 pub use seqlock::{OptimisticError, OptimisticLock, OptimisticTxn, SeqLock, Version};
 pub use series::{Series, SeriesValue};
 pub use storage_engine::{
@@ -562,7 +562,10 @@ impl AliceDB {
     ///
     /// # Errors
     ///
-    /// Returns an error if segment loading fails.
+    /// Returns an error if segment loading fails, and an `InvalidData` error
+    /// carrying a [`ResidualError`] when the key is answered by a lossless
+    /// segment whose residual cannot be applied (see
+    /// [`StorageEngine::query_point`] and [`ResidualPolicy`]).
     pub fn get(&self, timestamp: i64) -> io::Result<Option<f32>> {
         self.engine.query_point(timestamp)
     }
@@ -571,7 +574,11 @@ impl AliceDB {
     ///
     /// # Errors
     ///
-    /// Returns an error if segment loading fails.
+    /// Returns an error if segment loading fails, and an `InvalidData` error
+    /// carrying a [`ResidualError`] when a key in the range is answered by a
+    /// lossless segment whose residual cannot be applied: all points or the
+    /// error, and a segment superseded by newer writes does not count (see
+    /// [`StorageEngine::query_range`] and [`ResidualPolicy`]).
     pub fn scan(&self, start: i64, end: i64) -> io::Result<Vec<(i64, f32)>> {
         self.engine.query_range(start, end)
     }

@@ -415,13 +415,15 @@ pub struct StorageConfig {
 #[non_exhaustive]
 pub enum ResidualPolicy {
     /// The read fails with an `InvalidData` [`io::Error`] whose inner error is
-    /// a [`crate::segment::ResidualMismatch`] naming the segment, its key
+    /// a [`crate::segment::ResidualError`] (`Mismatch`: another arithmetic,
+    /// `Corrupt`: a residual that does not decode) naming the segment, its key
     /// range and the store; a range read fails as a whole rather than
     /// returning fewer or partly corrected points
     #[default]
     Refuse,
     /// The read returns the model's approximation for that segment's keys,
-    /// knowingly: what was stored is not reconstructed
+    /// knowingly: what was stored is not reconstructed (for a residual of
+    /// another arithmetic and for one that does not decode alike)
     ModelOnly,
 }
 
@@ -1416,7 +1418,10 @@ impl StorageEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if segment loading fails.
+    /// Returns an error if segment loading fails, and, under
+    /// [`ResidualPolicy::Refuse`], an `InvalidData` error carrying a
+    /// [`crate::segment::ResidualError`] when the segment that answers the key
+    /// holds a residual that cannot be applied.
     pub fn query_point(&self, timestamp: i64) -> io::Result<Option<f32>> {
         if let Some(v) = self.memtable.get(timestamp) {
             return Ok(Some(v));
@@ -1443,10 +1448,12 @@ impl StorageEngine {
     }
 
     /// The `io::Error` a refused residual becomes: `InvalidData`, carrying the
-    /// [`crate::segment::ResidualMismatch`] with this store's directory
-    fn residual_error(&self, mut mismatch: crate::segment::ResidualMismatch) -> io::Error {
-        mismatch.series = Some(self.config.data_dir.clone());
-        io::Error::new(io::ErrorKind::InvalidData, mismatch)
+    /// [`crate::segment::ResidualError`] with this store's directory
+    fn residual_error(&self, error: crate::segment::ResidualError) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            error.in_store(&self.config.data_dir),
+        )
     }
 
     /// Query a time range (Zero-Copy via `SegmentView`)
@@ -1462,7 +1469,16 @@ impl StorageEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if segment loading fails.
+    /// Returns an error if segment loading fails, and, under
+    /// [`ResidualPolicy::Refuse`], an `InvalidData` error carrying a
+    /// [`crate::segment::ResidualError`] when a key in the range is answered
+    /// by a segment whose residual cannot be applied (another arithmetic, or
+    /// a residual that does not decode). The read is all or nothing: it never
+    /// returns fewer points or points of which some are the model's
+    /// approximation. Only the segments that answer a key count: an older
+    /// segment whose every key in the range has a newer write (the memtable
+    /// or a newer segment) is superseded and does not fail the read; one that
+    /// still answers a key does.
     pub fn query_range(&self, start: i64, end: i64) -> io::Result<Vec<(i64, f32)>> {
         let mut entries = self.find_segments(start, end);
         entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.id));
@@ -1470,7 +1486,7 @@ impl StorageEngine {
         // Each point carries the refused residual of its segment, if any: a
         // segment whose points are all superseded by newer writes does not
         // fail the read, one that still answers a key does
-        let mut refused: Vec<crate::segment::ResidualMismatch> = Vec::new();
+        let mut refused: Vec<crate::segment::ResidualError> = Vec::new();
         let mut results: Vec<(i64, f32, Option<usize>)> = self
             .memtable
             .range(start, end)
@@ -1493,8 +1509,8 @@ impl StorageEngine {
                 ResidualPolicy::ModelOnly => (view.query_range_model_only(from, end), None),
                 ResidualPolicy::Refuse => match view.query_range(from, end) {
                     Ok(points) => (points, None),
-                    Err(mismatch) => {
-                        refused.push(mismatch);
+                    Err(error) => {
+                        refused.push(error);
                         (
                             view.query_range_model_only(from, end),
                             Some(refused.len() - 1),

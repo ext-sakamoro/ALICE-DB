@@ -256,12 +256,19 @@ def resolve_base(base: str) -> str:
                 event = json.load(f)
             candidates.append((event.get("pull_request") or {}).get("base", {}).get("sha") or "")
             candidates.append(event.get("before") or "")
-        mb = git("merge-base", "origin/main", "HEAD").stdout.strip()
-        head = git("rev-parse", "HEAD").stdout.strip()
-        candidates.append(git("rev-parse", "HEAD^").stdout.strip() if mb and mb == head else mb)
+        candidates.append(git("merge-base", "origin/main", "HEAD").stdout.strip())
+    head = git("rev-parse", "HEAD").stdout.strip()
     for c in candidates:
         if c and set(c) != {"0"} and git("cat-file", "-e", f"{c}^{{commit}}").returncode == 0:
-            return git("rev-parse", c).stdout.strip()
+            commit = git("rev-parse", c).stdout.strip()
+            if commit == head and base == "auto":
+                # the event names the commit under test itself (nothing to
+                # compare with); compare with its parent, as for the merge base
+                parent = git("rev-parse", "HEAD^").stdout.strip()
+                if parent:
+                    return parent
+                continue
+            return commit
     raise SystemExit(f"error: no base commit to compare with ({base}; fetch the history: fetch-depth 0)")
 
 

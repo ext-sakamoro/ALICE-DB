@@ -313,6 +313,25 @@ class BaseTest(unittest.TestCase):
             else:
                 os.environ["GITHUB_EVENT_PATH"] = old
 
+    def test_auto_never_compares_the_commit_with_itself(self):
+        first = wpc.resolve_base("HEAD")
+        self.write("steps: []\n")
+        self.run_git("commit", "-qam", "b")
+        head = wpc.resolve_base("HEAD")
+        event = os.path.join(self.root, "event.json")
+        old = os.environ.get("GITHUB_EVENT_PATH")
+        os.environ["GITHUB_EVENT_PATH"] = event
+        try:
+            for payload in ('{"before": "' + head + '"}', '{"pull_request": {"base": {"sha": "' + head + '"}}}'):
+                with open(event, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                self.assertEqual(wpc.resolve_base("auto"), first, payload)
+        finally:
+            if old is None:
+                del os.environ["GITHUB_EVENT_PATH"]
+            else:
+                os.environ["GITHUB_EVENT_PATH"] = old
+
 
 if __name__ == "__main__":
     unittest.main()

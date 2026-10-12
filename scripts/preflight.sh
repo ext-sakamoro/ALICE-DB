@@ -56,7 +56,8 @@ python3 scripts/changed_paths.py sync
 
 step "ci.yml / docs-lint: workflow pins (SHA, permissions)"
 python3 scripts/test_workflow_pin_check.py
-python3 scripts/workflow_pin_check.py
+python3 scripts/workflow_pin_check.py --online
+python3 scripts/test_workflow_pin_update.py
 
 step "security-audit.yml / stub-guard"
 scripts/stub_guard.sh

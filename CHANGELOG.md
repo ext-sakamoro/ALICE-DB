@@ -21,7 +21,9 @@ All notable changes to ALICE-DB will be documented in this file.
 ### Security
 
 - CI (`ci.yml` / `fuzz.yml` / `security-audit.yml`): workflow 全体の token を `permissions: contents: read` にし、書き込みが要る job だけ理由の comment を付けて上げる (actionlint の reviewdog が check run を書くので `checks: write`) 外部の action 54 箇所をすべて 40 桁の commit SHA に固定し、tag か branch を comment に残す tag と branch は別の code に付け替えられるので、参照を内容に固定する branch 参照 (`dtolnay/rust-toolchain@stable` / `@1.87` / `@nightly`、`taiki-e/install-action@cargo-hack` / `@cargo-llvm-cov`) は action.yml の既定値が toolchain と tool を決めるので、SHA に固定しても入る版は変わらない
-- `scripts/workflow_pin_check.py`: 全 workflow に top-level の `permissions:` があり、外部の `uses:` がすべて 40 桁の SHA + comment で、job の `write` に理由の comment があることを検査する workflow が 0 件・`uses:` が 0 件なら fail 試験 `scripts/test_workflow_pin_check.py` (9 本) と合わせて docs-lint job (3 OS) と `scripts/preflight.sh` で走る
+- 全 `actions/checkout` に `persist-credentials: false` を付けた どの job も push しないので、token を `.git/config` に残さない `pull_request_target` / `workflow_run` の trigger は使っていない
+- `scripts/workflow_pin_check.py`: 全 workflow に top-level の `permissions:` があり、外部の `uses:` がすべて 40 桁の SHA + comment で、job の `write` に理由の comment があり、`actions/checkout` が `persist-credentials: false` で、`pull_request_target` / `workflow_run` の trigger が無いことを検査する workflow が 0 件・`uses:` が 0 件なら fail `--online` は `gh api` で各 SHA が comment の名指す commit か (tag はその SHA に解決する、branch はその SHA を含む) を確かめ、比較 0 件で fail する CI では Linux の docs-lint job で 1 回走る 試験 `scripts/test_workflow_pin_check.py` (15 本、online は偽の API)
+- `scripts/workflow_pin_update.py`: pin を手で更新する script `# vX.Y.Z` は major tag `vX` の現在の commit とそれを指す最新の release tag に、`(branch, ...)` は branch の先頭に動かす 新しい major には動かさない 既定は diff の表示だけで、`--write` で書き換え、commit はしない 手順は `CONTRIBUTING.md` 試験 `scripts/test_workflow_pin_update.py` (5 本) 以上の試験は docs-lint job (3 OS) と `scripts/preflight.sh` で走る
 
 ## [0.3.0] - 2026-10-11
 

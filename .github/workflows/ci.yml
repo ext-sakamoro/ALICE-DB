@@ -142,7 +142,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cargo-hack
-        uses: taiki-e/install-action@a561ea09b94560aba5b8b2b78e1562ec242dc5f8 # cargo-hack (branch, default tool cargo-hack)
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-hack
       - name: Powerset ({fs, ffi, sdf} depth 2)
         run: cargo hack check --lib --feature-powerset --depth 2 --exclude-features python
 
@@ -177,6 +179,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # the online pin step compares with the commit before the push
+          fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
@@ -199,13 +203,15 @@ jobs:
         run: python scripts/workflow_pin_check.py
       - name: Workflow pin update (tests, fake GitHub API)
         run: python scripts/test_workflow_pin_update.py
-      # once per run: each pinned SHA is the commit its `# <tag>` comment names
-      # (a tag resolves to it, a branch contains it), asked through gh api
-      - name: Workflow pins (online, comment = commit)
+      # once per run, only the pins this change adds or edits: each is the
+      # commit its `# <tag>` comment names (a tag resolves to it, a branch
+      # contains it). Unchanged pins depend on the action repositories, not on
+      # this one, and are checked weekly by pin-audit.yml instead
+      - name: Workflow pins (online, new or changed pins)
         if: runner.os == 'Linux'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/workflow_pin_check.py --online
+        run: python scripts/workflow_pin_check.py --online --base auto
 
   fmt:
     name: Format

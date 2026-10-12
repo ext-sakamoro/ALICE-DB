@@ -208,6 +208,111 @@ class OnlineTest(unittest.TestCase):
         self.assertEqual(compared, 0)
         self.assertEqual(len(errors), 1)
 
+    def test_with_a_base_only_new_or_changed_pins_are_asked(self):
+        text = f"steps:\n  - uses: actions/checkout@{SHA} # v5.1.0\n  - uses: dtolnay/rust-toolchain@{SHA} # stable (branch)\n"
+        known = {("actions/checkout", SHA, "v5.1.0", False)}
+        answers = {f"repos/dtolnay/rust-toolchain/compare/{SHA}...stable": {"status": "diverged"}}
+        # the unchanged checkout pin is not asked (its upstream may have moved);
+        # the new branch pin is, and fails
+        (errors, compared), calls = self.run_online_known(text, answers, known)
+        self.assertEqual((compared, calls), (1, [f"repos/dtolnay/rust-toolchain/compare/{SHA}...stable"]))
+        self.assertEqual(len(errors), 1)
+
+    def test_with_a_base_and_no_changed_pin_nothing_is_asked_and_it_passes(self):
+        text = f"steps:\n  - uses: actions/checkout@{SHA} # v5.1.0\n"
+        (errors, compared), calls = self.run_online_known(text, {}, {("actions/checkout", SHA, "v5.1.0", False)})
+        self.assertEqual((errors, compared, calls), ([], 0, []))
+
+    def test_a_changed_comment_is_a_changed_pin(self):
+        text = f"steps:\n  - uses: actions/checkout@{SHA} # v5.2.0\n"
+        (errors, compared), _ = self.run_online_known(
+            text, {"repos/actions/checkout/commits/v5.2.0": {"sha": self.OTHER}},
+            {("actions/checkout", SHA, "v5.1.0", False)})
+        self.assertEqual((compared, len(errors)), (1, 1))
+
+    def run_online_known(self, text, answers, known):
+        calls = []
+
+        def api(path):
+            calls.append(path)
+            return answers.get(path)
+
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "ci.yml"), "w", encoding="utf-8") as f:
+                f.write(text)
+            return wpc.check_online(d, api, known=known), calls
+
+
+class BaseTest(unittest.TestCase):
+    """`--base` reads the pins of a commit from git (a throwaway repository)"""
+
+    def setUp(self):
+        import subprocess
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.root = self.tmp.name
+        self.old_root = wpc.ROOT
+        wpc.ROOT = self.root
+        self.wf = os.path.join(self.root, ".github", "workflows")
+        os.makedirs(self.wf)
+
+        def run(*a):
+            subprocess.run(["git", *a], cwd=self.root, check=True, capture_output=True,
+                           env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+        self.run_git = run
+        run("init", "-q")
+        self.write(f"steps:\n  - uses: actions/checkout@{SHA} # v5.1.0\n")
+        run("add", ".")
+        run("commit", "-q", "-m", "a")
+
+    def tearDown(self):
+        wpc.ROOT = self.old_root
+        self.tmp.cleanup()
+
+    def write(self, text):
+        with open(os.path.join(self.wf, "ci.yml"), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_pins_at_a_commit_are_read_from_git(self):
+        self.write(f"steps:\n  - uses: actions/checkout@{SHA} # v5.1.0\n  - uses: x/y@{SHA} # v1.0.0\n")
+        base = wpc.resolve_base("HEAD")
+        self.assertEqual(wpc.pins_at(base, self.wf, None), {("actions/checkout", SHA, "v5.1.0", False)})
+
+    def test_an_unknown_base_fails_instead_of_checking_everything(self):
+        with self.assertRaises(SystemExit):
+            wpc.resolve_base("0" * 40)
+        event = os.path.join(self.root, "event.json")
+        with open(event, "w", encoding="utf-8") as f:
+            f.write('{"before": "' + "0" * 40 + '"}')
+        old = os.environ.get("GITHUB_EVENT_PATH")
+        os.environ["GITHUB_EVENT_PATH"] = event
+        try:
+            # no origin/main in this repository and `before` is the zero SHA
+            with self.assertRaises(SystemExit):
+                wpc.resolve_base("auto")
+        finally:
+            if old is None:
+                del os.environ["GITHUB_EVENT_PATH"]
+            else:
+                os.environ["GITHUB_EVENT_PATH"] = old
+
+    def test_auto_takes_the_commit_before_the_push(self):
+        before = wpc.resolve_base("HEAD")
+        self.write("steps: []\n")
+        self.run_git("commit", "-qam", "b")
+        event = os.path.join(self.root, "event.json")
+        with open(event, "w", encoding="utf-8") as f:
+            f.write('{"before": "' + before + '"}')
+        old = os.environ.get("GITHUB_EVENT_PATH")
+        os.environ["GITHUB_EVENT_PATH"] = event
+        try:
+            self.assertEqual(wpc.resolve_base("auto"), before)
+        finally:
+            if old is None:
+                del os.environ["GITHUB_EVENT_PATH"]
+            else:
+                os.environ["GITHUB_EVENT_PATH"] = old
+
 
 if __name__ == "__main__":
     unittest.main()

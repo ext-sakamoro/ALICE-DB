@@ -26,9 +26,18 @@ With `--online` it also asks GitHub (`gh api`, needs `GH_TOKEN` in CI) that
 each pinned SHA is the commented ref: for a tag (`# v5.1.0`) the tag must
 resolve to that exact commit, for a branch (`# stable (branch, ...)`) the
 commit must be on the branch (identical to or behind its head). A comment
-that names another commit than the pin is an error. 0 compared is an error.
+that names another commit than the pin is an error.
 
-Usage: python scripts/workflow_pin_check.py [--online] [workflow directory]
+`--online` alone checks every pin: upstream state, so it belongs in the weekly
+audit and in the update script, not in a per-push gate (a branch an action
+rewrites would turn the gate red with no change here). Per push, `--online
+--base <ref>` checks only the pins that are new or changed since `<ref>`
+(unchanged pins were checked when they came in); no changed pin is a pass,
+printed as such. `--base auto` takes the ref from the GitHub event (the pull
+request base, or the commit before the push) and falls back to the merge base
+with origin/main.
+
+Usage: python scripts/workflow_pin_check.py [--online [--base <ref>|auto]] [workflow directory]
 """
 
 from __future__ import annotations
@@ -198,14 +207,18 @@ def gh_json(path: str):
     return json.loads(r.stdout)
 
 
-def check_online(directory: str, api=gh_json, actions_dir: str | None = None) -> tuple[list[str], int]:
-    """(errors, pins compared against GitHub)"""
+def check_online(directory: str, api=gh_json, actions_dir: str | None = None,
+                 known: set | None = None) -> tuple[list[str], int]:
+    """(errors, pins compared against GitHub); pins whose (repo, sha, ref,
+    branch) is in `known` (present at the base) are not asked again."""
     errors, compared, cache = [], 0, {}
     for n, path, _ in files(directory, actions_dir):
         with open(path, encoding="utf-8") as f:
             text = f.read()
         for no, repo, sha, ref, branch in pins(text):
             key = (repo, sha, ref, branch)
+            if known is not None and key in known:
+                continue
             if key not in cache:
                 if branch:
                     cmp = api(f"repos/{repo}/compare/{sha}...{ref}")
@@ -221,9 +234,51 @@ def check_online(directory: str, api=gh_json, actions_dir: str | None = None) ->
             if cache[key]:
                 suffix = f" `{ref}`" if branch else ""
                 errors.append(f"{n}:{no}: {repo}@{sha} {cache[key]}{suffix}")
-    if compared == 0:
+    if compared == 0 and known is None:
         errors.append(f"{directory}: no pin was compared online")
     return errors, compared
+
+
+def git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)
+
+
+def resolve_base(base: str) -> str:
+    """A commit to compare with: `base` itself, or for `auto` the ref the
+    GitHub event names, then the merge base with origin/main."""
+    candidates = []
+    if base != "auto":
+        candidates.append(base)
+    else:
+        event_path = os.environ.get("GITHUB_EVENT_PATH")
+        if event_path and os.path.exists(event_path):
+            with open(event_path, encoding="utf-8") as f:
+                event = json.load(f)
+            candidates.append((event.get("pull_request") or {}).get("base", {}).get("sha") or "")
+            candidates.append(event.get("before") or "")
+        mb = git("merge-base", "origin/main", "HEAD").stdout.strip()
+        head = git("rev-parse", "HEAD").stdout.strip()
+        candidates.append(git("rev-parse", "HEAD^").stdout.strip() if mb and mb == head else mb)
+    for c in candidates:
+        if c and set(c) != {"0"} and git("cat-file", "-e", f"{c}^{{commit}}").returncode == 0:
+            return git("rev-parse", c).stdout.strip()
+    raise SystemExit(f"error: no base commit to compare with ({base}; fetch the history: fetch-depth 0)")
+
+
+def pins_at(commit: str, directory: str, actions_dir: str | None) -> set:
+    """(repo, sha, ref, branch) of every pin in the workflow files at `commit`"""
+    keys = set()
+    roots = [os.path.relpath(directory, ROOT)]
+    if actions_dir:
+        roots.append(os.path.relpath(actions_dir, ROOT))
+    listed = git("ls-tree", "-r", "--name-only", commit, "--", *[r.replace(os.sep, "/") for r in roots])
+    for rel in listed.stdout.splitlines():
+        name = rel.rsplit("/", 1)[-1]
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        text = git("show", f"{commit}:{rel}").stdout
+        keys |= {(repo, sha, ref, branch) for _, repo, sha, ref, branch in pins(text)}
+    return keys
 
 
 def check_dir(directory: str, actions_dir: str | None = None) -> tuple[list[str], int, int]:
@@ -246,14 +301,27 @@ def main(argv: list[str]) -> int:
     args = argv[1:]
     online = "--online" in args
     args = [a for a in args if a != "--online"]
+    base = None
+    if "--base" in args:
+        i = args.index("--base")
+        base = args[i + 1]
+        del args[i:i + 2]
     directory = args[0] if args else WORKFLOWS
     actions_dir = os.path.join(os.path.dirname(directory), "actions")
     errors, n_files, uses = check_dir(directory, actions_dir)
     if online and not errors:
-        online_errors, compared = check_online(directory, actions_dir=actions_dir)
+        known = None
+        if base is not None:
+            commit = resolve_base(base)
+            known = pins_at(commit, directory, actions_dir)
+        online_errors, compared = check_online(directory, actions_dir=actions_dir, known=known)
         errors += online_errors
         if not errors:
-            print(f"online: {compared} pins match the commented tag or branch on GitHub")
+            scope = "" if known is None else f" (new or changed since {commit[:12]})"
+            if known is not None and compared == 0:
+                print(f"online: no changed pins since {commit[:12]}")
+            else:
+                print(f"online: {compared} pins{scope} match the commented tag or branch on GitHub")
     for e in errors:
         print(f"error: {e}")
     if errors:

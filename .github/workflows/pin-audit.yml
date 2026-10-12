@@ -1,0 +1,34 @@
+name: Pin audit
+
+# Every pinned action against GitHub, once a week: does each SHA still match
+# the tag or branch in its comment? This depends on the action repositories,
+# not on this one, so it is an alert, not a gate on pushes. Per push, ci.yml
+# checks only the pins a change adds or edits (`--online --base auto`).
+# A failure here: run scripts/workflow_pin_update.py and review its notes.
+
+on:
+  schedule:
+    # Mondays 02:17 UTC
+    - cron: '17 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pin-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Pin audit (every pin, online)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Every pin matches its tag or branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/workflow_pin_check.py --online

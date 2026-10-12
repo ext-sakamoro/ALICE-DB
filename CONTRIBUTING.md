@@ -47,18 +47,28 @@ cargo build --features python
 Every external action in `.github/workflows/` is pinned to a full commit SHA
 with the tag (or branch) it came from as a comment, and every workflow sets
 `permissions: contents: read` at the top. `scripts/workflow_pin_check.py`
-enforces both in CI; with `--online` it also confirms that each SHA is the
-commit its comment names.
+enforces both in CI.
+
+Whether a pinned SHA still matches its tag depends on the action's
+repository, not on this one. So CI checks online only the pins a change adds
+or edits (`--online --base auto`), and `pin-audit.yml` checks every pin once a
+week; its failure is a prompt to update, not a broken build.
+
+Pin to an immutable release tag (`# v2.87.27`). A branch pin
+(`# stable (branch, ...)`) is only for a branch that only moves forward
+(dtolnay/rust-toolchain); a branch that the action rebuilds on each release
+(taiki-e/install-action's per-tool branches) drops the pinned commit, so use
+its release tag with `with: tool: <name>`.
 
 The pins are moved by hand, once a week or when an action publishes a fix:
 
 ```bash
-python scripts/workflow_pin_update.py          # shows the diff
+python scripts/workflow_pin_update.py          # shows the diff, then checks every pin online
 python scripts/workflow_pin_update.py --write  # applies it
-python scripts/workflow_pin_check.py --online
 ```
 
 A `vX.Y.Z` comment follows the major tag `vX` (a new major version is a
-separate, reviewed change); a `(branch, ...)` comment follows the branch head.
-The script does not commit. No update bot is used: commits by a bot account
+separate, reviewed change); a `(branch, ...)` comment follows the branch head,
+and a branch that no longer contains the pin is reported and left alone. The
+script does not commit. No update bot is used: commits by a bot account
 appear among the repository's contributors.

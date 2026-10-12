@@ -25,6 +25,8 @@ def api(path):
             {"name": "v6.0.0", "commit": {"sha": NEW}},
         ],
         "repos/dtolnay/rust-toolchain/commits/stable": {"sha": BR_NEW},
+        f"repos/dtolnay/rust-toolchain/compare/{BR_OLD}...stable": {"status": "ahead"},
+        f"repos/taiki-e/install-action/compare/{BR_OLD}...cargo-hack": {"status": "diverged"},
         "repos/old/action/commits/v1": {"sha": NEW},
         "repos/old/action/tags?per_page=100": [{"name": "v1", "commit": {"sha": NEW}}],
     }
@@ -57,6 +59,13 @@ class UpdateTest(unittest.TestCase):
         new, problems = wpu.update_text(text, api)
         self.assertEqual(new, text)
         self.assertEqual(len(problems), 1)
+
+    def test_a_rewritten_branch_is_refused_and_left(self):
+        text = f"  - uses: taiki-e/install-action@{BR_OLD} # cargo-hack (branch, default tool cargo-hack)"
+        new, problems = wpu.update_text(text, api)
+        self.assertEqual(new, text)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("rewritten", problems[0])
 
 
 if __name__ == "__main__":

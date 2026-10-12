@@ -50,6 +50,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# The token only reads the repository; a job that needs more raises it for
+# that job alone, with the reason next to it
+permissions:
+  contents: read
+
 jobs:
   # which files changed: a new or force-pushed branch is compared with merge-base(origin/main),
   # another push with before..after, a pull request with base...head; schedule and manual
@@ -96,13 +101,13 @@ jobs:
           - fuzz_index_lookup
           - fuzz_law_record
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # cargo-fuzz は nightly toolchain 必須
       - name: Install nightly toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@f0d5300ba8908d942c808f4d31c08471d7798ba3 # nightly (branch, default toolchain nightly)
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: fuzz
 
@@ -158,7 +163,7 @@ jobs:
 
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: fuzz-crash-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}

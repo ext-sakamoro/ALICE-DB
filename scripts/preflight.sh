@@ -54,6 +54,10 @@ step "ci.yml / docs-lint: changed_paths tests + sync (fuzz.yml / security-audit.
 python3 scripts/test_changed_paths.py
 python3 scripts/changed_paths.py sync
 
+step "ci.yml / docs-lint: workflow pins (SHA, permissions)"
+python3 scripts/test_workflow_pin_check.py
+python3 scripts/workflow_pin_check.py
+
 step "security-audit.yml / stub-guard"
 scripts/stub_guard.sh
 

@@ -460,6 +460,21 @@ jobs:
   changes:
     steps:
       - run: python3 scripts/changed_paths.py decide --patterns-file .github/paths/x.txt
+  heavy:
+    needs: changes
+    steps:
+      - run: true
+  other:
+    needs:
+      - changes
+      - heavy
+    steps:
+      - run: true
+  gate:
+    if: always()
+    needs: [changes, heavy, other]
+    steps:
+      - run: python3 scripts/changed_paths.py gate --needs-json "$NEEDS"
 """
 
 
@@ -514,6 +529,35 @@ class Sync(unittest.TestCase):
         wf = WF_OK.replace("      - '.github/paths/x.txt'\n", "")
         errs, _ = cp.sync(self.tree(wf, "**/src/**\n"))
         self.assertTrue(any("does not list itself" in e for e in errs), errs)
+
+    def test_gate_missing_a_job_fails(self):
+        for need in ("[changes, heavy]", "[heavy, other]", "changes"):
+            errs, _ = cp.sync(self.tree(WF_OK.replace("[changes, heavy, other]", need)))
+            self.assertTrue(any("does not need" in e for e in errs), (need, errs))
+
+    def test_gate_needs_as_a_list_passes(self):
+        wf = WF_OK.replace("    needs: [changes, heavy, other]\n",
+                           "    needs:\n      - changes\n      - 'heavy'\n      - other\n")
+        self.assertEqual(cp.sync(self.tree(wf)), ([], 1))
+
+    def test_no_gate_job_fails(self):
+        wf = WF_OK.replace("changed_paths.py gate", "changed_paths.py gatex")
+        errs, _ = cp.sync(self.tree(wf))
+        self.assertTrue(any("0 jobs run" in e for e in errs), errs)
+
+    def test_two_gate_jobs_fail(self):
+        wf = WF_OK.replace("  heavy:\n    needs: changes\n    steps:\n      - run: true\n",
+                           "  heavy:\n    needs: changes\n    steps:\n"
+                           "      - run: python3 scripts/changed_paths.py gate --needs-json x\n")
+        errs, _ = cp.sync(self.tree(wf))
+        self.assertTrue(any("2 jobs run" in e for e in errs), errs)
+
+    def test_gate_with_no_heavy_job_fails(self):
+        wf = WF_OK.split("  heavy:\n")[0] + (
+            "  gate:\n    needs: [changes]\n    steps:\n"
+            "      - run: python3 scripts/changed_paths.py gate --needs-json x\n")
+        errs, _ = cp.sync(self.tree(wf))
+        self.assertTrue(any("no job besides" in e for e in errs), errs)
 
     def test_nothing_compared_fails(self):
         root = self.tree(WF_OK, None)

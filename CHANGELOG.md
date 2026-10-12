@@ -6,6 +6,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 
+- CI: `scripts/changed_paths.py sync` が各 workflow の Gate job の `needs` に他の全 job が入っているかを確かめる (入れ忘れた job は Gate を通らずに失敗や skip が見えなくなるため) `changed_paths.py` と試験は ALICE-DetMath と byte 一致
 - **Behavior change:** `alice-det-math` を 0.4 から 0.5 に、`alice-zip` (`alice_core`) を 0.9 から 0.10 に、`analytics` feature の `alice-analytics` を 0.4 から 0.5 に上げた 算術の識別子 `alice_db::SEMANTICS_ID` が `d2209b30…` から `135c407d…` に変わる 法則の評価値は変わらない (determinism golden の `law_id and evaluate` は旧識別子で計算すると記録済の `94bf9625…` のまま、変わったのは識別子だけ) `law_id` は識別子を混ぜるので値が変わる
 - **破壊的:** `segment::apply_residual` を crate 内部 (`pub(crate)`) にした 補正の語が無い index で値をそのまま返しており、外から呼ぶと model の値が原信号の顔で返る経路だった (crate 内の読み出しは長さを先に検査するので通らない) 内部では `Option<f32>` を返し、語の無い index は読み出しが `ResidualError::Corrupt` にする 補正した値は `query_point` / `query_range` で読む ALICE-* の main に呼び出し元は無い
   - `cargo semver-checks` (0.3.0 との比較): 破壊的 2 件 = `function_missing` (`segment::apply_residual`) と `constructible_struct_adds_field` (`StorageConfig::residual_policy`) 一方で `DataSegment` / `SegmentView` の `query_point` / `query_range` / `query_range_simd` の戻り値が `Option` / `Vec` から `Result` に変わったことは検出しない (method の戻り値の型の変化はこの版の lint に無い) が破壊的

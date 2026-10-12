@@ -891,8 +891,13 @@ pub struct ResidualMismatch {
 
 impl std::fmt::Display for ResidualMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let hex =
-            |id: &[u8; SEMANTICS_ID_LEN]| id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let hex = |id: &[u8; SEMANTICS_ID_LEN]| {
+            id.iter()
+                .fold(String::with_capacity(2 * SEMANTICS_ID_LEN), |mut out, b| {
+                    let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{b:02x}"));
+                    out
+                })
+        };
         write!(
             f,
             "segment {} (keys {}..={}) holds a residual measured against arithmetic {}, \
@@ -1679,7 +1684,10 @@ impl SegmentView {
         // Lossless mode stores per-sample residuals; the in-memory path applied
         // them, the mmap path did not until 0.2.0-beta.2.
         let Some(residual) = checked_residual(
-            self.archived.residual_blob.as_ref().map(|r| r.as_slice()),
+            self.archived
+                .residual_blob
+                .as_ref()
+                .map(rkyv::vec::ArchivedVec::as_slice),
             self.archived.metadata.point_count as usize,
             self.archived.metadata.id,
             self.archived.start_time,
@@ -1725,7 +1733,10 @@ impl SegmentView {
     #[must_use]
     pub fn residual_status(&self) -> ResidualStatus {
         residual_status(
-            self.archived.residual_blob.as_ref().map(|r| r.as_slice()),
+            self.archived
+                .residual_blob
+                .as_ref()
+                .map(rkyv::vec::ArchivedVec::as_slice),
             self.archived.metadata.point_count as usize,
         )
     }
@@ -1754,7 +1765,10 @@ impl SegmentView {
     /// [`ResidualError`], as [`DataSegment::query_range`].
     pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualError> {
         let residual = checked_residual(
-            self.archived.residual_blob.as_ref().map(|r| r.as_slice()),
+            self.archived
+                .residual_blob
+                .as_ref()
+                .map(rkyv::vec::ArchivedVec::as_slice),
             self.archived.metadata.point_count as usize,
             self.archived.metadata.id,
             self.archived.start_time,

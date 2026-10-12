@@ -29,8 +29,9 @@
 //! | `6`/`7` XOR | `SEMANTICS_ID` 32 byte (`Pinned`) | 識別子が一致する限りどこでも |
 //!
 //! この file が pin するもの — 旧 blob が本機で厳密に戻ること / 新 blob が識別子を持つこと /
-//! 旧 blob が `Unpinned` と報告されること / ⚠️ **識別子が違う blob は適用されず model 値が
-//! 返ること** (原信号でも model でもない値を黙って返さない)
+//! 旧 blob が `Unpinned` と報告されること / ⚠️ **識別子が違う blob は適用も model 値の代用も
+//! せず `ResidualError::Mismatch` で断ること** (原信号でない値を黙って返さない、model は
+//! `*_model_only` で明示した時だけ)
 
 // numeric oracles cast freely between the index / float domains; the crate's
 // pedantic gate is about API code, not about the reference arithmetic here

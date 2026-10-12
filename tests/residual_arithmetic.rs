@@ -10,6 +10,14 @@
 //! `query_point_model_only`).
 
 #![cfg(feature = "fs")]
+// numeric oracles cast freely between the index / float domains and carry
+// f32 bit patterns as hex; the crate's pedantic gate is about API code
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::unreadable_literal,
+    clippy::too_many_lines
+)]
 
 use alice_db::segment::{ResidualStatus, SegmentView};
 use alice_db::{AliceDB, ResidualError, ResidualMismatch, ResidualPolicy, StorageConfig};
@@ -30,7 +38,11 @@ const ORIGINAL: [u32; 64] = [
 ];
 
 fn hex(id: &[u8; 32]) -> String {
-    id.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    id.iter().fold(String::with_capacity(64), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 /// A private copy of the fixture store (a read may not change the fixture)

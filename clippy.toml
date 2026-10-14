@@ -95,6 +95,8 @@ disallowed-methods = [
     # read back on a different machine; a path that reads the clock or draws
     # OS randomness can't be replayed identically there.
     { path = "std::time::Instant::now", reason = "the wall clock makes results depend on timing; pass time in or use a step count" },
+    { path = "std::time::Instant::elapsed", reason = "reads the wall clock the same as Instant::now; duration_since on an already-held value is fine, this reads the clock again" },
+    { path = "std::time::SystemTime::elapsed", reason = "reads the wall clock the same as SystemTime::now; duration_since on an already-held value is fine, this reads the clock again" },
     { path = "std::time::SystemTime::now", reason = "the wall clock makes results depend on timing; pass time in or use a step count" },
     { path = "std::collections::hash_map::RandomState::new", reason = "seeds from OS randomness and would make HashMap iteration order non-deterministic" },
 ]

@@ -902,6 +902,14 @@ impl AliceDB {
     /// — nothing is ever deleted here, so [`Self::law_pointers_by_id`] keeps
     /// answering to the old identifier too — this only adds the new one.
     ///
+    /// A `(name, version)` written under an identifier neither `semantics_id`
+    /// nor any entry of [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] accounts for (one
+    /// [`alice_det_math::SemanticsCheck::Mismatch`] would reject) is left
+    /// alone: this method only ever repeats a pointer the fallback in
+    /// [`Self::law_pointers_for`] would already have accepted, it never
+    /// manufactures a new one for a law whose original identifier carries no
+    /// such guarantee.
+    ///
     /// Returns the number of `(name, version)` pairs a pointer was newly
     /// written for.
     ///
@@ -918,11 +926,22 @@ impl AliceDB {
                 let Some(law) = self.load_version(&name, version)? else {
                     continue;
                 };
-                let key = law_id_key(&law.law_id(semantics_id), &name, version)?;
-                if self.blob.get(&key)?.is_some() {
+                let current_key = law_id_key(&law.law_id(semantics_id), &name, version)?;
+                if self.blob.get(&current_key)?.is_some() {
                     continue;
                 }
-                self.blob.put(&key, &[])?;
+                let mut found_under_previous = false;
+                for previous in alice_det_math::PREVIOUS_SEMANTICS_IDS {
+                    let key = law_id_key(&law.law_id(previous), &name, version)?;
+                    if self.blob.get(&key)?.is_some() {
+                        found_under_previous = true;
+                        break;
+                    }
+                }
+                if !found_under_previous {
+                    continue;
+                }
+                self.blob.put(&current_key, &[])?;
                 added += 1;
             }
         }

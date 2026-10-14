@@ -388,74 +388,45 @@ fn law_pointers_for_tries_the_current_identifier_before_any_previous_one() {
 }
 
 #[test]
-fn reindex_adds_a_pointer_under_the_current_identifier_without_removing_the_old_one() {
+fn reindex_leaves_a_law_stored_under_an_unaccepted_identifier_alone() {
+    // SEMANTICS_A is not the identifier passed as "current" here, and it is
+    // not in `alice_det_math::PREVIOUS_SEMANTICS_IDS` either (that list only
+    // ever holds identifiers the arithmetic crate itself published as
+    // bit-reproducing) — exactly the shape of a `SemanticsCheck::Mismatch`.
+    // Reindex must not manufacture a pointer for it: doing so would assert a
+    // bit-equivalence between SEMANTICS_A and SEMANTICS_B that nothing backs.
     let db = memory_db();
     let law = line_law("run 1");
     let version = db.put_law("line", &law, &SEMANTICS_A).expect("stored");
 
-    let old_id = law.law_id(&SEMANTICS_A);
-    let new_id = law.law_id(&SEMANTICS_B);
-    assert!(
-        db.law_pointers_by_id(&new_id).expect("before").is_empty(),
-        "premise: not yet indexed under the identifier we are about to reindex to"
-    );
-
     let added = db
         .reindex_laws_under_current_semantics(&SEMANTICS_B)
         .expect("reindex");
-    assert_eq!(added, 1, "exactly the one stored (name, version) pair");
-
     assert_eq!(
-        db.law_pointers_by_id(&new_id).expect("after"),
-        vec![("line".to_string(), version)],
-        "now reachable under the new identifier too"
+        added, 0,
+        "SEMANTICS_A is accepted by neither the current id nor any previous one"
+    );
+    assert!(
+        db.law_pointers_by_id(&law.law_id(&SEMANTICS_B))
+            .expect("after")
+            .is_empty(),
+        "no pointer must appear under the identifier reindex was given as current"
     );
     assert_eq!(
-        db.law_pointers_by_id(&old_id).expect("old still answers"),
+        db.law_pointers_by_id(&law.law_id(&SEMANTICS_A))
+            .expect("still under A"),
         vec![("line".to_string(), version)],
-        "reindex adds a pointer, it does not move or remove the old one"
+        "the original pointer is untouched"
     );
 }
 
 #[test]
-fn reindex_is_idempotent() {
-    let db = memory_db();
-    let law = line_law("run 1");
-    db.put_law("line", &law, &SEMANTICS_A).expect("stored");
-
-    let first = db
-        .reindex_laws_under_current_semantics(&SEMANTICS_B)
-        .expect("first reindex");
-    assert_eq!(first, 1);
-
-    let second = db
-        .reindex_laws_under_current_semantics(&SEMANTICS_B)
-        .expect("second reindex");
-    assert_eq!(
-        second, 0,
-        "the pointer already exists, so the second run writes nothing new"
-    );
-
-    // A law already addressed by the identifier it is reindexed to (the
-    // common case: nothing has moved) must not be double-counted either.
-    let already_current = db
-        .reindex_laws_under_current_semantics(&SEMANTICS_A)
-        .expect("reindex to the identifier already in use");
-    assert_eq!(already_current, 0);
-}
-
-#[test]
-fn reindex_covers_every_version_of_every_name() {
+fn reindex_is_a_noop_when_already_reachable_under_the_current_identifier() {
     let db = memory_db();
     db.put_law("line", &line_law("run 1"), &SEMANTICS_A)
         .expect("v1");
-    // A second, differently-shaped law under its own name, also only indexed
-    // under SEMANTICS_A so far.
     let other = law_with(vec![2.0, -1.0], vec![(0.0, 2.0), (4.0, 1.0)], "run 2");
     db.put_law("other", &other, &SEMANTICS_A).expect("other v1");
-
-    // Evidence that forces a refit on "line", producing a version 2 under
-    // SEMANTICS_A that reindex must also reach.
     let moved: Vec<(f64, f64)> = (0..5)
         .map(|i| (f64::from(i), 1.6 + 2.0 * f64::from(i)))
         .collect();
@@ -463,29 +434,14 @@ fn reindex_covers_every_version_of_every_name() {
         .expect("refit to v2");
     assert_eq!(db.law_versions("line").expect("versions"), vec![1, 2]);
 
-    let added = db
-        .reindex_laws_under_current_semantics(&SEMANTICS_B)
-        .expect("reindex");
-    assert_eq!(
-        added, 3,
-        "line v1, line v2 (the refit), and other v1: every stored version, not just the latest"
-    );
-
-    for (name, version) in [
-        ("line".to_string(), 1_u64),
-        ("line".to_string(), 2_u64),
-        ("other".to_string(), 1_u64),
-    ] {
-        let law = db
-            .get_law_version(&name, version)
-            .expect("read")
-            .expect("present");
-        assert_eq!(
-            db.law_pointers_by_id(&law.law_id(&SEMANTICS_B))
-                .expect("pointers"),
-            vec![(name.clone(), version)],
-            "{name} v{version} must be reachable under the new identifier"
-        );
+    // Every stored (name, version) is already under SEMANTICS_A, the identity
+    // being reindexed to, so nothing is added — and running it again changes
+    // nothing either (idempotent on the trivially-already-current case too).
+    for attempt in 0..2 {
+        let added = db
+            .reindex_laws_under_current_semantics(&SEMANTICS_A)
+            .unwrap_or_else(|e| panic!("reindex attempt {attempt}: {e:?}"));
+        assert_eq!(added, 0, "attempt {attempt}: all three are already current");
     }
 }
 

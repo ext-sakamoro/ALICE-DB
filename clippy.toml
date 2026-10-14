@@ -1,4 +1,5 @@
-# Determinism gate for everything this crate computes with floating point.
+# Determinism gate for everything this crate computes with floating point,
+# plus (further down) a second gate against OS entropy and the wall clock.
 #
 # A segment stores a model, and reading it back means evaluating that model.
 # A lossless segment additionally stores `original ^ model`, so the stored
@@ -89,4 +90,11 @@ disallowed-methods = [
     { path = "f64::cbrt", reason = "platform libm is not cross-platform bit-exact; use alice_det_math" },
     { path = "f64::hypot", reason = "platform libm is not cross-platform bit-exact; use alice_det_math" },
     { path = "f64::powi", reason = "lowers to a multiplication tree of unspecified association order; write the multiplications out" },
+    # Determinism gate (G10): no OS entropy and no wall clock in the crate's
+    # production code. A segment's model and residual are written once and
+    # read back on a different machine; a path that reads the clock or draws
+    # OS randomness can't be replayed identically there.
+    { path = "std::time::Instant::now", reason = "the wall clock makes results depend on timing; pass time in or use a step count" },
+    { path = "std::time::SystemTime::now", reason = "the wall clock makes results depend on timing; pass time in or use a step count" },
+    { path = "std::collections::hash_map::RandomState::new", reason = "seeds from OS randomness and would make HashMap iteration order non-deterministic" },
 ]

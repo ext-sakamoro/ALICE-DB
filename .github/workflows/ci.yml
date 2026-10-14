@@ -190,6 +190,10 @@ jobs:
         run: python scripts/docs_lint.py --check
       - name: Python package license == crate license
         run: python scripts/check_py_license.py
+      - name: Entropy guard (tests)
+        run: python scripts/test_entropy_guard.py
+      - name: Entropy guard (no OS entropy / wall clock in production code)
+        run: python scripts/entropy_guard.py
       - name: Fuzz reach gate (tests)
         run: python scripts/test_fuzz_reach.py
       - name: changed_paths oracle (path filter decision, gate and trigger lint)

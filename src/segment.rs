@@ -294,6 +294,10 @@ pub struct SegmentMetadata {
 fn unix_millis_now() -> u64 {
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "created_at is a stored wall-clock metadata timestamp, never read back in any query or compute path"
+        )]
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64)

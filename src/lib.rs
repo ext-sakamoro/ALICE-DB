@@ -743,12 +743,24 @@ mod python {
     impl PyAliceDB {
         /// Open a database at the specified path
         #[new]
-        #[pyo3(signature = (path, memtable_capacity=1000, enable_wal=true))]
-        fn new(path: &str, memtable_capacity: usize, enable_wal: bool) -> PyResult<Self> {
+        #[pyo3(signature = (path, memtable_capacity=1000, enable_wal=true, lossless=false))]
+        fn new(
+            path: &str,
+            memtable_capacity: usize,
+            enable_wal: bool,
+            lossless: bool,
+        ) -> PyResult<Self> {
+            // `lossless=False` (the default) keeps the lossy model store: a series with gaps
+            // reads back on an even grid. `lossless=True` stores residuals so points come back
+            // exactly (see the "Irregular timestamps" note and the Python section of the README).
             let config = StorageConfig {
                 data_dir: std::path::PathBuf::from(path),
                 memtable_capacity,
                 enable_wal,
+                fit_config: FitConfig {
+                    lossless,
+                    ..FitConfig::default()
+                },
                 ..Default::default()
             };
             let db = AliceDB::with_config(config).map_err(io_to_py)?;
@@ -1004,9 +1016,14 @@ mod python {
 
     /// Open a database (convenience function)
     #[pyfunction]
-    #[pyo3(signature = (path, memtable_capacity=1000, enable_wal=true))]
-    fn open(path: &str, memtable_capacity: usize, enable_wal: bool) -> PyResult<PyAliceDB> {
-        PyAliceDB::new(path, memtable_capacity, enable_wal)
+    #[pyo3(signature = (path, memtable_capacity=1000, enable_wal=true, lossless=false))]
+    fn open(
+        path: &str,
+        memtable_capacity: usize,
+        enable_wal: bool,
+        lossless: bool,
+    ) -> PyResult<PyAliceDB> {
+        PyAliceDB::new(path, memtable_capacity, enable_wal, lossless)
     }
 
     /// alice_db Python module

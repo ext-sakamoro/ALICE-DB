@@ -118,6 +118,19 @@ step "ci.yml / feature-powerset: {fs, ffi, sdf} depth 2"
 need cargo-hack "cargo install cargo-hack --locked"
 cargo hack check --lib --feature-powerset --depth 2 --exclude-features python
 
+step "ci.yml / python: maturin build + README example test (fail on 0 tests)"
+need maturin "pip install 'maturin>=1.5,<2.0'"
+pf_venv="$(mktemp -d)/venv"; pf_dist="$(mktemp -d)"
+python3 -m venv "$pf_venv"
+"$pf_venv/bin/pip" install -q numpy pytest
+maturin build --out "$pf_dist"              # features from [tool.maturin]; version dynamic from Cargo.toml
+"$pf_venv/bin/pip" install -q "$pf_dist"/*.whl
+"$pf_venv/bin/python" -c "import alice_db; print('alice_db', alice_db.__version__, 'imported')"
+pf_n=$("$pf_venv/bin/python" -m pytest python/tests --collect-only -q 2>/dev/null | grep -c '::')
+echo "collected ${pf_n} python test(s)"
+[[ "${pf_n}" -gt 0 ]] || { echo "no python tests collected" >&2; exit 1; }
+"$pf_venv/bin/python" -m pytest python/tests -v
+
 step "fuzz.yml: build every fuzz target (nightly)"
 if has_toolchain nightly && cargo +nightly fuzz --version >/dev/null 2>&1; then
   (cd fuzz && RUSTFLAGS= cargo +nightly fuzz build)

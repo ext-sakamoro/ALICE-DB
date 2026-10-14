@@ -253,8 +253,23 @@ maturin develop --release --features python
 import alice_db
 
 db = alice_db.open("./my_timeseries")
-db.put_batch([(i, i * 0.5) for i in range(1000)])
+timestamps = list(range(1000))
+values = [i * 0.5 for i in range(1000)]
+db.put_batch(timestamps, values)  # two equal-length sequences
 print(db.get(100), db.aggregate(0, 999, "avg"))
+db.close()
+```
+
+`open` defaults to the lossy model store (`lossless=False`): a series whose
+timestamps have gaps reads back on an even grid, so a gapped point can change
+after a flush. Pass `lossless=True` to store residuals and read increasing
+timestamps back exactly (the same promise as the Rust `FitConfig { lossless: true }`):
+
+```python
+db = alice_db.open("./exact", lossless=True)
+db.put_batch([0, 1, 2, 10], [10.0, 20.0, 30.0, 31.0])
+db.flush()
+print(db.get(10))  # 31.0 exactly (lossy default would read a grid value here)
 db.close()
 ```
 

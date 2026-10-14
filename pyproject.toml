@@ -4,7 +4,9 @@ build-backend = "maturin"
 
 [project]
 name = "alice-db"
-version = "0.1.0"
+# single source of truth: maturin reads the version from Cargo.toml (`dynamic`),
+# so the wheel can never drift from the crate version (checked in the python CI job)
+dynamic = ["version"]
 description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
 readme = "README.md"
 license = { text = "MIT" }

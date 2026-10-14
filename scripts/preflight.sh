@@ -82,6 +82,10 @@ step "ci.yml / doc: rustdoc -D warnings (default + full native feature set)"
 RUSTDOCFLAGS="-Dwarnings" cargo doc --lib --no-deps
 RUSTDOCFLAGS="-Dwarnings" cargo doc --lib --no-deps --features "$NATIVE_FEATURES"
 
+step "public-text.yml / public-text: Public text (ALICE-Law checker at the pin; tree, then the commits)"
+python3 scripts/test_public_text.py
+scripts/public_text.sh
+
 if [[ $quick -eq 1 ]]; then
   step "cargo test --lib (quick)"
   cargo test --lib

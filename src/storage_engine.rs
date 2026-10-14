@@ -1999,12 +1999,22 @@ mod tests {
     /// carries a freshly constructed `HashMap` with its own randomized
     /// per-instance hasher state (`RandomState` reseeds on every
     /// `HashMap::new()`, not once per process), so two *different*
-    /// `HashMap` instances holding the same two keys can legally iterate
-    /// (and therefore `Debug`-format) in different orders even within one
-    /// test process and even though both are logically equal maps. A
-    /// `BTreeMap` iterates by sorted key regardless of instance or
-    /// insertion order, so both the value comparison and the string
-    /// comparison below must hold unconditionally.
+    /// `HashMap` instances holding the same keys can legally iterate (and
+    /// therefore `Debug`-format) in different orders even within one test
+    /// process and even though both are logically equal maps. A `BTreeMap`
+    /// iterates by sorted key regardless of instance or insertion order, so
+    /// both the value comparison and the string comparison below must hold
+    /// unconditionally.
+    ///
+    /// Three distinct model types, not two, and many independent engine
+    /// pairs, not one: with a `HashMap`, two keys give only 2 possible
+    /// iteration orders (a 50/50 chance any one comparison happens to agree
+    /// anyway), and a single pair of engines draws only one instance of the
+    /// per-instance hasher state each. A first version of this oracle used
+    /// 2 keys and 1 pair and caught a reverted `HashMap` mutation in only
+    /// 6/10 runs. 3 keys (3! = 6 possible orders) times 8 independent fresh
+    /// pairs (8 independent draws of each side's hasher state) makes an
+    /// undetected mismatch require all 8 pairs to coincidentally agree.
     #[test]
     fn test_stats_model_distribution_order_independent() {
         fn flush_constant(engine: &StorageEngine, start: i64) {
@@ -2021,6 +2031,19 @@ mod tests {
             engine.flush().unwrap();
         }
 
+        fn flush_sine(engine: &StorageEngine, start: i64) {
+            for i in 0..50 {
+                let t = i as f32 * 0.1;
+                engine
+                    .put(
+                        start + i,
+                        alice_det_math::sin(t * 2.0 * std::f32::consts::PI),
+                    )
+                    .unwrap();
+            }
+            engine.flush().unwrap();
+        }
+
         fn make_engine(dir: &tempfile::TempDir) -> StorageEngine {
             StorageEngine::new(StorageConfig {
                 data_dir: dir.path().to_path_buf(),
@@ -2031,53 +2054,73 @@ mod tests {
             .unwrap()
         }
 
-        // Engine A: Constant, Linear, Constant.
-        let dir_a = tempdir().unwrap();
-        let engine_a = make_engine(&dir_a);
-        flush_constant(&engine_a, 0);
-        flush_ramp(&engine_a, 10_000);
-        flush_constant(&engine_a, 20_000);
+        // Every (engine, flush order) pair below writes the same multiset of
+        // 4 segments (2 Constant, 1 Linear, 1 sine) in a genuinely different
+        // order, so the resulting `model_distribution` (summed per type) is
+        // the same logical value every time, by construction.
+        type FlushFn = fn(&StorageEngine, i64);
+        let orders: [[FlushFn; 4]; 8] = [
+            [flush_constant, flush_ramp, flush_constant, flush_sine],
+            [flush_ramp, flush_constant, flush_constant, flush_sine],
+            [flush_sine, flush_constant, flush_ramp, flush_constant],
+            [flush_constant, flush_sine, flush_ramp, flush_constant],
+            [flush_ramp, flush_sine, flush_constant, flush_constant],
+            [flush_sine, flush_ramp, flush_constant, flush_constant],
+            [flush_constant, flush_constant, flush_sine, flush_ramp],
+            [flush_constant, flush_constant, flush_ramp, flush_sine],
+        ];
 
-        // Engine B: Linear, Constant, Constant -- a genuinely different
-        // flush order, but the same final multiset (two Constant segments,
-        // one Linear segment).
-        let dir_b = tempdir().unwrap();
-        let engine_b = make_engine(&dir_b);
-        flush_ramp(&engine_b, 0);
-        flush_constant(&engine_b, 10_000);
-        flush_constant(&engine_b, 20_000);
+        let mut distributions = Vec::with_capacity(orders.len());
+        for (i, order) in orders.iter().enumerate() {
+            let dir = tempdir().unwrap();
+            let engine = make_engine(&dir);
+            for (j, flush) in order.iter().enumerate() {
+                flush(&engine, i64::try_from(i * 1_000_000 + j * 10_000).unwrap());
+            }
+            let stats = engine.stats();
+            assert_eq!(stats.total_segments, 4, "order {i}: {order:?}");
+            distributions.push(stats.model_distribution);
+        }
 
-        let stats_a = engine_a.stats();
-        let stats_b = engine_b.stats();
-
-        assert_eq!(stats_a.total_segments, 3);
-        assert_eq!(stats_b.total_segments, 3);
-
-        // Sanity: this oracle is only meaningful if both engines actually
-        // produced more than one distinct model type (otherwise a
-        // single-key map can't exhibit order dependence).
+        // Sanity: this oracle is only meaningful if the multiset actually has
+        // 3+ distinct model types (otherwise 2 keys can't give the 6-order
+        // spread the comment above relies on).
         assert!(
-            stats_a.model_distribution.len() >= 2,
-            "expected at least 2 distinct model types, got {:?}",
-            stats_a.model_distribution
+            distributions[0].len() >= 3,
+            "expected at least 3 distinct model types, got {:?}",
+            distributions[0]
         );
 
+        let first = &distributions[0];
+        // A `BTreeMap` always iterates by sorted key: assert that directly,
+        // not just indirectly through the cross-engine comparison below (a
+        // reader of this test should see the property the fix establishes,
+        // not only its consequence).
+        let keys: Vec<&String> = first.keys().collect();
+        let mut sorted_keys = keys.clone();
+        sorted_keys.sort_unstable();
         assert_eq!(
-            stats_a.model_distribution, stats_b.model_distribution,
-            "same multiset of model types flushed in a different order must yield \
-             the same distribution: {:?} vs {:?}",
-            stats_a.model_distribution, stats_b.model_distribution
+            keys, sorted_keys,
+            "BTreeMap::keys() must already iterate in sorted order"
         );
 
-        // The part that would vary under a HashMap: two independently
-        // constructed stats objects, formatted with `{:?}`, must be
-        // byte-identical.
-        assert_eq!(
-            format!("{:?}", stats_a.model_distribution),
-            format!("{:?}", stats_b.model_distribution),
-            "Debug-formatted model_distribution must be byte-identical across \
-             differently-ordered flushes"
-        );
+        for (i, dist) in distributions.iter().enumerate().skip(1) {
+            assert_eq!(
+                dist, first,
+                "order 0 ({:?}) and order {i} ({:?}) flush the same multiset of model \
+                 types in a different sequence and must yield the same distribution",
+                orders[0], orders[i]
+            );
+            // The part that would vary under a HashMap: independently
+            // constructed stats objects, formatted with `{:?}`, must be
+            // byte-identical.
+            assert_eq!(
+                format!("{dist:?}"),
+                format!("{first:?}"),
+                "Debug-formatted model_distribution must be byte-identical across \
+                 differently-ordered flushes (order 0 vs order {i})"
+            );
+        }
     }
 
     #[test]

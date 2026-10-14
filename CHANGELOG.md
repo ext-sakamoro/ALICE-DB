@@ -4,6 +4,10 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `alice-law-conformance.toml` を追加し、ALICE-Law の G1〜G14 を現在の main で 1 件ずつ判定した (pass は G12 のみ、G1 / G3 / G9 / G10 / G14 は unverified、ほかは fail-known で該当の file と行を記載) README / README_JP の ALICE-Law 節を同じ revision の生成器で再生成した
+
 ## [0.5.0] - 2026-10-14
 
 ### Changed

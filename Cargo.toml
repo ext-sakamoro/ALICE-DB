@@ -119,6 +119,13 @@ sdf = ["fs"]  # SDF spatial data storage (Morton code indexing, path-based open)
 # own tests by the self dev-dependency below; not for dependants
 open-file-audit = []
 
+# Uses the crash-point / open-file helpers of src/fs_audit.rs, which exist only with
+# `open-file-audit` (this crate's own dev self-dependency enables it; a plain
+# `cargo test` on the unpacked crate has no such self-dependency)
+[[test]]
+name = "blob_compaction_crash_safety"
+required-features = ["fs", "open-file-audit"]
+
 [[bench]]
 name = "db_benchmark"
 harness = false

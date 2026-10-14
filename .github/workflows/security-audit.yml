@@ -193,6 +193,10 @@ jobs:
             echo "::error::このcrateの file ではないものが package に入っている (Cargo.toml の include を確認)"
             exit 1
           fi
+          # README の doctest 入力 (src/lib.rs の cfg(doctest) include_str!) と test fixture
+          for f in README.md README_JP.md tests/fixtures/store_det_math_0_4/seg_1.rkyv; do
+            grep -qx "$f" /tmp/package-files.txt || { echo "::error::$f が package に無い"; exit 1; }
+          done
           echo "package files: $total"
 
       - name: 展開して隔離 build
@@ -210,7 +214,11 @@ jobs:
           cargo check --all-features --all-targets
           # README の doctest は cfg(doctest) の include_str! なので、README が
           # package から漏れても cargo check では見えない
-          cargo test --doc
+          doc=$(cargo test --doc 2>&1 | tee /dev/stderr | sed -n 's/^running \([0-9]*\) tests\?$/\1/p' | head -1)
+          [ "${doc:-0}" -gt 0 ] || { echo "::error::doctest が 0 件 (README の doctest が走っていない)"; exit 1; }
+          # fixture (tests/fixtures) を実際に読む test と、open-file-audit が要る test を
+          # 展開した crate で走らせる (単独 package には dev の self 依存が無いので feature を明示)
+          cargo test --features open-file-audit --test residual_arithmetic --test blob_compaction_crash_safety
 
   coverage:
     needs: changes

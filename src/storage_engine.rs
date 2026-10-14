@@ -1635,10 +1635,10 @@ impl StorageEngine {
 
         let total_size: u64 = index.values().map(|e| e.size).sum();
 
-        let model_counts: std::collections::HashMap<String, usize> =
+        let model_counts: std::collections::BTreeMap<String, usize> =
             index
                 .values()
-                .fold(std::collections::HashMap::new(), |mut acc, e| {
+                .fold(std::collections::BTreeMap::new(), |mut acc, e| {
                     *acc.entry(e.model_type.clone()).or_insert(0) += 1;
                     acc
                 });
@@ -1666,7 +1666,7 @@ pub struct StorageStats {
     pub memtable_size: usize,
     pub total_disk_size: u64,
     pub average_compression_ratio: f64,
-    pub model_distribution: std::collections::HashMap<String, usize>,
+    pub model_distribution: std::collections::BTreeMap<String, usize>,
 }
 
 #[cfg(all(test, feature = "fs"))]
@@ -1984,6 +1984,100 @@ mod tests {
         // The constant data should be stored with some model type
         let total_models: usize = stats.model_distribution.values().sum();
         assert_eq!(total_models, stats.total_segments);
+    }
+
+    /// G13 oracle: `StorageEngine::stats().model_distribution` must not
+    /// depend on the order segments were flushed in -- only on the
+    /// resulting multiset of model types. The per-segment model fit
+    /// (`MemTable::fit_best_model`) is a pure function of that segment's
+    /// own values, so two engines that flush the *same* two data patterns
+    /// in a genuinely different order, but end on the same multiset of
+    /// model types, must report an identical distribution.
+    ///
+    /// This also exercises the `{:?}` formatting of the field directly:
+    /// under the old `HashMap<String, usize>` field, each engine's stats
+    /// carries a freshly constructed `HashMap` with its own randomized
+    /// per-instance hasher state (`RandomState` reseeds on every
+    /// `HashMap::new()`, not once per process), so two *different*
+    /// `HashMap` instances holding the same two keys can legally iterate
+    /// (and therefore `Debug`-format) in different orders even within one
+    /// test process and even though both are logically equal maps. A
+    /// `BTreeMap` iterates by sorted key regardless of instance or
+    /// insertion order, so both the value comparison and the string
+    /// comparison below must hold unconditionally.
+    #[test]
+    fn test_stats_model_distribution_order_independent() {
+        fn flush_constant(engine: &StorageEngine, start: i64) {
+            for i in 0..50 {
+                engine.put(start + i, 42.0).unwrap();
+            }
+            engine.flush().unwrap();
+        }
+
+        fn flush_ramp(engine: &StorageEngine, start: i64) {
+            for i in 0..50 {
+                engine.put(start + i, i as f32 * 0.5).unwrap();
+            }
+            engine.flush().unwrap();
+        }
+
+        fn make_engine(dir: &tempfile::TempDir) -> StorageEngine {
+            StorageEngine::new(StorageConfig {
+                data_dir: dir.path().to_path_buf(),
+                memtable_capacity: 1000,
+                enable_wal: false,
+                ..Default::default()
+            })
+            .unwrap()
+        }
+
+        // Engine A: Constant, Linear, Constant.
+        let dir_a = tempdir().unwrap();
+        let engine_a = make_engine(&dir_a);
+        flush_constant(&engine_a, 0);
+        flush_ramp(&engine_a, 10_000);
+        flush_constant(&engine_a, 20_000);
+
+        // Engine B: Linear, Constant, Constant -- a genuinely different
+        // flush order, but the same final multiset (two Constant segments,
+        // one Linear segment).
+        let dir_b = tempdir().unwrap();
+        let engine_b = make_engine(&dir_b);
+        flush_ramp(&engine_b, 0);
+        flush_constant(&engine_b, 10_000);
+        flush_constant(&engine_b, 20_000);
+
+        let stats_a = engine_a.stats();
+        let stats_b = engine_b.stats();
+
+        assert_eq!(stats_a.total_segments, 3);
+        assert_eq!(stats_b.total_segments, 3);
+
+        // Sanity: this oracle is only meaningful if both engines actually
+        // produced more than one distinct model type (otherwise a
+        // single-key map can't exhibit order dependence).
+        assert!(
+            stats_a.model_distribution.len() >= 2,
+            "expected at least 2 distinct model types, got {:?}",
+            stats_a.model_distribution
+        );
+
+        assert_eq!(
+            stats_a.model_distribution, stats_b.model_distribution,
+            "same multiset of model types flushed in a different order must yield \
+             the same distribution: {:?} vs {:?}",
+            stats_a.model_distribution, stats_b.model_distribution
+        );
+
+        // The part that would vary under a HashMap: two independently
+        // constructed stats objects, formatted with `{:?}`, must be
+        // byte-identical.
+        assert_eq!(
+            format!("{:?}", stats_a.model_distribution),
+            format!("{:?}", stats_b.model_distribution),
+            "Debug-formatted model_distribution must be byte-identical across \
+             differently-ordered flushes"
+        );
     }
 
     #[test]

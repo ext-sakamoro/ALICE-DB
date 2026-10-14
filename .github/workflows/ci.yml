@@ -188,6 +188,8 @@ jobs:
         run: python scripts/test_docs_lint.py
       - name: Docs lint (public documents, CHANGELOG structure)
         run: python scripts/docs_lint.py --check
+      - name: Python package license == crate license
+        run: python scripts/check_py_license.py
       - name: Fuzz reach gate (tests)
         run: python scripts/test_fuzz_reach.py
       - name: changed_paths oracle (path filter decision, gate and trigger lint)

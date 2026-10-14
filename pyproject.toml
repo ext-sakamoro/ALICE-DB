@@ -9,7 +9,10 @@ name = "alice-db"
 dynamic = ["version"]
 description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
 readme = "README.md"
-license = { text = "MIT" }
+# the SPDX expression from Cargo.toml (checked by scripts/check_py_license.py);
+# the crate is dual-licensed, the two files below are the terms
+license = "AGPL-3.0-or-later OR LicenseRef-Commercial"
+license-files = ["LICENSE-AGPL", "LICENSE-COMMERCIAL.md"]
 authors = [
     { name = "Moroya Sakamoto" }
 ]
@@ -18,7 +21,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",

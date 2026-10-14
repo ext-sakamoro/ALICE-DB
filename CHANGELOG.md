@@ -28,9 +28,6 @@ All notable changes to ALICE-DB will be documented in this file.
 - Python: README / README_JP の quick-start 例を修正 `put_batch` は `(timestamps, values)` の長さの等しい 2 列を取る (pair の list を渡すと `ValueError`/`TypeError` だった) 例は `python/tests/test_readme.py` が verbatim に実行する source of truth
 - Python: wheel の version を Cargo.toml に一元化 pyproject を `version = "0.1.0"` から `dynamic = ["version"]` に変え、maturin が Cargo.toml の version を使う wheel が 0.1.0 固定で crate 0.4.0 と drift していた python CI が `alice_db.__version__ == Cargo.toml の version` を検査する
 - Python: wheel の license metadata を crate の宣言に一致させた pyproject が `MIT` を宣言していたが、crate は `AGPL-3.0-or-later OR LicenseRef-Commercial` (Cargo.toml / LICENSE-AGPL / LICENSE-COMMERCIAL.md / README) pyproject を SPDX 式 + `license-files` にし、MIT classifier を除去 `scripts/check_py_license.py` が pyproject と Cargo.toml の license 一致を検査する (0 件比較で fail)
-
-### Changed
-
 - CI: build した library と実行形式を tracked にしない検査 (`scripts/tracked_binaries.py`) を追加 例外は `.github/tracked-binaries.txt` に理由付きで書いた path だけ、読めない file と走査 0 件でも失敗する CI と preflight で走る
 - CI / `scripts/preflight.sh`: python feature を build + test する `python` job を追加 (`maturin build` → wheel install → import smoke → `pytest python/tests`、collected 0 件で fail) これまで CI は python を一切 build しておらず (`cargo hack` も `--exclude-features python`)、binding と README の例が壊れても気付けなかった
 - CI: `scripts/changed_paths.py sync` が各 workflow の Gate job の `needs` に他の全 job が入っているかを確かめる (入れ忘れた job は Gate を通らずに失敗や skip が見えなくなるため) `changed_paths.py` と試験は ALICE-DetMath と byte 一致

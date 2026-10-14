@@ -10,6 +10,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Fixed
 
+- CI: ci / fuzz / security-audit の concurrency を main では commit ごとの group で打ち切らない形に変更 (branch と PR だけ新しい run で打ち切る) ci.yml には top-level の concurrency を追加 `scripts/workflow_concurrency.py` + `scripts/test_workflow_concurrency.py` (他 repo と byte 一致) が main の打ち切りと group の欠落を検査する (比較 0 件で fail、docs-lint job と preflight に配線)
 - Python: README / README_JP の quick-start 例を修正 `put_batch` は `(timestamps, values)` の長さの等しい 2 列を取る (pair の list を渡すと `ValueError`/`TypeError` だった) 例は `python/tests/test_readme.py` が verbatim に実行する source of truth
 - Python: wheel の version を Cargo.toml に一元化 pyproject を `version = "0.1.0"` から `dynamic = ["version"]` に変え、maturin が Cargo.toml の version を使う wheel が 0.1.0 固定で crate 0.4.0 と drift していた python CI が `alice_db.__version__ == Cargo.toml の version` を検査する
 - Python: wheel の license metadata を crate の宣言に一致させた pyproject が `MIT` を宣言していたが、crate は `AGPL-3.0-or-later OR LicenseRef-Commercial` (Cargo.toml / LICENSE-AGPL / LICENSE-COMMERCIAL.md / README) pyproject を SPDX 式 + `license-files` にし、MIT classifier を除去 `scripts/check_py_license.py` が pyproject と Cargo.toml の license 一致を検査する (0 件比較で fail)

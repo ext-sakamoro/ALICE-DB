@@ -16,6 +16,12 @@ on:
   pull_request:
     branches: [main]
 
+# on main each commit has a group of its own and a run there is never
+# cancelled; a newer run cancels an older one only off main
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
@@ -188,6 +194,10 @@ jobs:
         run: python scripts/test_docs_lint.py
       - name: Docs lint (public documents, CHANGELOG structure)
         run: python scripts/docs_lint.py --check
+      - name: Concurrency of every branch-triggered workflow (test, then check)
+        run: |
+          python scripts/test_workflow_concurrency.py
+          python scripts/workflow_concurrency.py
       - name: Python package license == crate license
         run: python scripts/check_py_license.py
       - name: Fuzz reach gate (tests)

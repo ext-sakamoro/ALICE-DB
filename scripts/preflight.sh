@@ -49,6 +49,8 @@ step "ci.yml / docs-lint: tests + public documents / CHANGELOG structure"
 python3 scripts/test_docs_lint.py
 python3 scripts/docs_lint.py --check
 python3 scripts/check_py_license.py
+python3 scripts/test_workflow_concurrency.py
+python3 scripts/workflow_concurrency.py
 python3 scripts/test_fuzz_reach.py
 
 step "ci.yml / docs-lint: changed_paths tests + sync (fuzz.yml / security-audit.yml trigger and pattern files)"

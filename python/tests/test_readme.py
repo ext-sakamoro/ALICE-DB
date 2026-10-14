@@ -14,7 +14,7 @@ import alice_db
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CARGO = _ROOT / "Cargo.toml"
-_README = _ROOT / "README.md"
+_READMES = [_ROOT / "README.md", _ROOT / "README_JP.md"]
 
 
 def _cargo_version() -> str:
@@ -30,20 +30,22 @@ def _python_blocks(md: str) -> list[str]:
 
 
 def test_readme_python_examples_execute():
-    # run every ```python block of README.md top to bottom in one namespace and a
-    # scratch cwd, so a broken example (e.g. put_batch([(t, v)...])) fails here
-    blocks = _python_blocks(_README.read_text(encoding="utf-8"))
-    assert len(blocks) >= 2, f"expected the README Python examples, found {len(blocks)} blocks"
-    ns: dict = {}
+    # run every ```python block of each README top to bottom in one namespace and a
+    # scratch cwd, so a broken example (e.g. put_batch([(t, v)...])) fails here.
+    # both README.md and README_JP.md are run (their code is identical, comments differ)
     import os
-    with tempfile.TemporaryDirectory() as d:
-        cwd = os.getcwd()
-        os.chdir(d)
-        try:
-            for block in blocks:
-                exec(block, ns)  # noqa: S102 - executing our own README is the point
-        finally:
-            os.chdir(cwd)
+    for readme in _READMES:
+        blocks = _python_blocks(readme.read_text(encoding="utf-8"))
+        assert len(blocks) >= 2, f"{readme.name}: expected the Python examples, found {len(blocks)} blocks"
+        ns: dict = {}
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            try:
+                for block in blocks:
+                    exec(block, ns)  # noqa: S102 - executing our own README is the point
+            finally:
+                os.chdir(cwd)
 
 
 def test_put_batch_rejects_mismatched_lengths():
@@ -79,12 +81,16 @@ def test_lossless_reads_every_written_point_exactly():
 
 def test_lossy_default_drifts_on_a_gapped_interior_point():
     # this is WHY lossless exists: the default loses interior points of a gapped series.
-    # if this ever stops differing, the lossless test above is no longer a real distinction.
+    # it pins the lossy model's imprecision on THIS series; if the lossy fit ever improves
+    # to exact here, this fails for a GOOD reason — the lossless test above is then no longer
+    # a distinction, so move both to a harder gapped series rather than loosening this.
     ts = [0, 1, 2, 10]
     vals = [10.0, 20.0, 30.0, 31.0]
     with tempfile.TemporaryDirectory() as d:
         got = _read_back(Path(d) / "lossy", ts, vals, lossless=False)
-    assert got != vals, f"lossy read {got} == {vals}; expected a gapped interior point to drift"
+    assert got != vals, (f"lossy read {got} == {vals}: a gapped interior point no longer drifts. "
+                         "If the lossy fit genuinely improved, pick a harder gapped series so the "
+                         "lossless test stays a real distinction (do not just loosen this assert).")
 
 
 def test_module_version_is_the_crate_version():

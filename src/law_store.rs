@@ -920,6 +920,25 @@ impl AliceDB {
         &self,
         semantics_id: &[u8; 32],
     ) -> Result<usize, LawStoreError> {
+        self.reindex_with(semantics_id, alice_det_math::PREVIOUS_SEMANTICS_IDS)
+    }
+
+    /// [`Self::reindex_laws_under_current_semantics`] against an explicit
+    /// `accepted` list instead of reading
+    /// [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] directly
+    ///
+    /// Split out so a test can exercise the "found under a previous
+    /// identifier, add a pointer" path with an injected `accepted` entry: the
+    /// crate's own `PREVIOUS_SEMANTICS_IDS` is empty at the currently pinned
+    /// `alice-det-math` release, so a committed test that only goes through
+    /// the public method cannot tell a correct restriction from a stub that
+    /// always returns 0 — both report nothing added, because nothing in
+    /// `PREVIOUS_SEMANTICS_IDS` is there to be found.
+    pub(crate) fn reindex_with(
+        &self,
+        semantics_id: &[u8; 32],
+        accepted: &[[u8; 32]],
+    ) -> Result<usize, LawStoreError> {
         let mut added = 0usize;
         for name in self.law_names()? {
             for version in self.law_versions(&name)? {
@@ -931,7 +950,7 @@ impl AliceDB {
                     continue;
                 }
                 let mut found_under_previous = false;
-                for previous in alice_det_math::PREVIOUS_SEMANTICS_IDS {
+                for previous in accepted {
                     let key = law_id_key(&law.law_id(previous), &name, version)?;
                     if self.blob.get(&key)?.is_some() {
                         found_under_previous = true;
@@ -1071,5 +1090,105 @@ impl AliceDB {
             }
         }
         Ok(names)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LawStoreError, Provenance, ResidualStats, SignalLaw, SignalLawParts, ValidRange};
+    use crate::{AliceDB, StorageConfig};
+
+    const SEMANTICS_CURRENT: [u8; 32] = [0xAA; 32];
+    const SEMANTICS_ACCEPTED: [u8; 32] = [0xBB; 32];
+    const SEMANTICS_NOT_ACCEPTED: [u8; 32] = [0xCC; 32];
+
+    fn memory_db() -> AliceDB {
+        AliceDB::in_memory(StorageConfig::default()).expect("in-memory database")
+    }
+
+    fn law_with(coefficients: Vec<f64>, source: &str) -> SignalLaw {
+        SignalLaw::from_parts(SignalLawParts {
+            coefficients,
+            domain: ValidRange { lo: 0.0, hi: 4.0 },
+            evidence: vec![(0.0, 1.0), (4.0, 2.0)],
+            residual: ResidualStats {
+                n: 0,
+                rms: 0.0,
+                max_abs: 0.0,
+            },
+            provenance: Provenance::new(source, "hand-written"),
+            oracles: Vec::new(),
+        })
+        .expect("fixture satisfies from_parts")
+    }
+
+    // `reindex_with` takes `accepted` as an explicit argument instead of
+    // reading `alice_det_math::PREVIOUS_SEMANTICS_IDS`, so these tests
+    // exercise the "found under a previous identifier, add a pointer" path
+    // with an injected entry -- the real PREVIOUS_SEMANTICS_IDS is empty at
+    // the currently pinned alice-det-math release, so the public
+    // `reindex_laws_under_current_semantics` cannot be used to distinguish a
+    // correct restriction from a stub that always returns 0: both report
+    // nothing added when nothing in the (empty) list is there to be found.
+    #[test]
+    fn reindex_with_adds_a_pointer_for_a_law_found_under_an_accepted_identifier() {
+        let db = memory_db();
+        let law = law_with(vec![1.0, 2.0], "run 1");
+        let version = db
+            .put_law("line", &law, &SEMANTICS_ACCEPTED)
+            .expect("stored under the accepted id");
+
+        let added = db
+            .reindex_with(&SEMANTICS_CURRENT, &[SEMANTICS_ACCEPTED])
+            .expect("reindex");
+        assert_eq!(added, 1, "the accepted-identifier law must be reindexed");
+        assert_eq!(
+            db.law_pointers_by_id(&law.law_id(&SEMANTICS_CURRENT))
+                .expect("after"),
+            vec![("line".to_string(), version)],
+            "now reachable under the current identifier"
+        );
+        assert_eq!(
+            db.law_pointers_by_id(&law.law_id(&SEMANTICS_ACCEPTED))
+                .expect("old pointer"),
+            vec![("line".to_string(), version)],
+            "the previous pointer is not removed"
+        );
+    }
+
+    #[test]
+    fn reindex_with_leaves_a_law_under_an_unaccepted_identifier_alone() {
+        let db = memory_db();
+        let law = law_with(vec![1.0, 2.0], "run 1");
+        db.put_law("line", &law, &SEMANTICS_NOT_ACCEPTED)
+            .expect("stored under an id the accepted list does not name");
+
+        let added = db
+            .reindex_with(&SEMANTICS_CURRENT, &[SEMANTICS_ACCEPTED])
+            .expect("reindex");
+        assert_eq!(
+            added, 0,
+            "SEMANTICS_NOT_ACCEPTED is not in the accepted list"
+        );
+        assert!(db
+            .law_pointers_by_id(&law.law_id(&SEMANTICS_CURRENT))
+            .expect("after")
+            .is_empty());
+    }
+
+    #[test]
+    fn reindex_with_is_idempotent_on_the_accepted_path() -> Result<(), LawStoreError> {
+        let db = memory_db();
+        db.put_law(
+            "line",
+            &law_with(vec![1.0, 2.0], "run 1"),
+            &SEMANTICS_ACCEPTED,
+        )?;
+
+        let first = db.reindex_with(&SEMANTICS_CURRENT, &[SEMANTICS_ACCEPTED])?;
+        assert_eq!(first, 1);
+        let second = db.reindex_with(&SEMANTICS_CURRENT, &[SEMANTICS_ACCEPTED])?;
+        assert_eq!(second, 0, "already reindexed, nothing new to add");
+        Ok(())
     }
 }

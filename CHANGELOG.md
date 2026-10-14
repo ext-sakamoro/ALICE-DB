@@ -11,6 +11,7 @@ All notable changes to ALICE-DB will be documented in this file.
 ### Changed
 
 - CI: 公開する文面の検査の pin を ALICE-Law f9b9000 (checker sha256 84226ec7…) に進めた 新しい版で HEAD の全 file に指摘 0 件
+- CI: clippy の禁止一覧に `f32::sin_cos` / `f64::sin_cos` を足した (ALICE-Law G1 の一覧と揃える)
 
 ## [0.5.0] - 2026-10-14
 

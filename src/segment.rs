@@ -805,10 +805,15 @@ pub enum ResidualSemantics {
     Unpinned,
     /// The model values were produced with the arithmetic this identifier names.
     ///
-    /// Compare it against the identifier of the arithmetic in use
-    /// (`alice_core::law::SEMANTICS_ID`): equal means the residual reconstructs
-    /// the original exactly on any target, different means it would not, and
-    /// that is detectable instead of silent.
+    /// Check it with `alice_det_math::check_semantics`: [`Verified`] or
+    /// [`VerifiedPrevious`] means the residual reconstructs the original
+    /// exactly on any target (a release that only adds functions still
+    /// reproduces data an earlier release stamped), [`Mismatch`] means it
+    /// would not, and that is detectable instead of silent.
+    ///
+    /// [`Verified`]: alice_det_math::SemanticsCheck::Verified
+    /// [`VerifiedPrevious`]: alice_det_math::SemanticsCheck::VerifiedPrevious
+    /// [`Mismatch`]: alice_det_math::SemanticsCheck::Mismatch
     Pinned([u8; SEMANTICS_ID_LEN]),
 }
 
@@ -834,13 +839,16 @@ pub fn residual_semantics(blob: &[u8]) -> ResidualSemantics {
 /// [`ResidualSemantics::Unpinned`] answers `true`: those blobs predate the
 /// identifier and applying them is the established behaviour (exact on the
 /// machine that wrote them). A [`ResidualSemantics::Pinned`] blob answers
-/// `true` only when its identifier matches, and the query paths then return the
-/// model value on its own rather than a corrupted one.
+/// `true` when its identifier is [`alice_det_math::SEMANTICS_ID`] **or** one of
+/// [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] (`alice_det_math::check_semantics`)
+/// — a release that only adds functions still reconstructs residuals an
+/// earlier release stamped, so those must not be refused — and the query
+/// paths then return the model value on its own rather than a corrupted one.
 #[must_use]
 pub fn residual_is_applicable(blob: &[u8]) -> bool {
     match residual_semantics(blob) {
         ResidualSemantics::Unpinned => true,
-        ResidualSemantics::Pinned(id) => id == alice_core::law::SEMANTICS_ID,
+        ResidualSemantics::Pinned(id) => alice_det_math::check_semantics(&id).is_reproducible(),
     }
 }
 
@@ -1053,7 +1061,9 @@ fn decode_residual(blob: Option<&[u8]>, point_count: usize) -> Decoded {
         return Decoded::None;
     };
     let pinned = match residual_semantics(blob) {
-        ResidualSemantics::Pinned(id) if id != alice_core::law::SEMANTICS_ID => {
+        ResidualSemantics::Pinned(id)
+            if !alice_det_math::check_semantics(&id).is_reproducible() =>
+        {
             return Decoded::Mismatch(id);
         }
         ResidualSemantics::Pinned(_) => true,
@@ -2646,5 +2656,65 @@ mod tests {
         // Now exclusive lock should succeed
         let file4 = File::open(&path).unwrap();
         assert!(file4.try_lock_exclusive().is_ok());
+    }
+
+    /// `alice-det-math` 0.5.0's identifier (frozen: this is the exact byte
+    /// value that release recorded as `SEMANTICS_ID`, copied verbatim and
+    /// never edited — not read from the dependency, which may since have
+    /// moved on). A residual stamped with it must keep reading back once
+    /// `alice-det-math` publishes a release whose `PREVIOUS_SEMANTICS_IDS`
+    /// accepts it (`check_semantics(..).is_reproducible()`), not only while
+    /// it happens to equal the crate's current running identifier.
+    const SEMANTICS_ID_0_5_0: [u8; SEMANTICS_ID_LEN] = [
+        0x13, 0x5c, 0x40, 0x7d, 0x42, 0x49, 0xc1, 0xc2, 0x00, 0xe4, 0xd1, 0xbe, 0x79, 0xa1, 0x2e,
+        0x84, 0x8c, 0xe5, 0xc3, 0x55, 0xfc, 0x3a, 0x91, 0x8d, 0xa9, 0x65, 0x84, 0x9e, 0x69, 0x7e,
+        0xf0, 0x00,
+    ];
+
+    /// A residual stamped with 0.5.0's identifier still applies today (it is
+    /// this crate's current `alice_det_math::SEMANTICS_ID` as of this commit,
+    /// so `Verified`), and keeps applying once a later `alice-det-math`
+    /// moves the running identifier and lists 0.5.0's as
+    /// `PREVIOUS_SEMANTICS_IDS` (then `VerifiedPrevious`) — `check_semantics`
+    /// accepts both, `residual_is_applicable` does not distinguish them.
+    /// Verified locally (not part of this commit) against a path-patched
+    /// `alice-det-math` whose running identifier had moved past 0.5.0's: the
+    /// fixture below read back `VerifiedPrevious` and this test stayed
+    /// green; reverting `residual_is_applicable` to the raw equality this
+    /// commit replaces turned it red (the moved identifier no longer equals
+    /// the stored one).
+    #[test]
+    fn a_residual_stamped_with_0_5_0s_identifier_still_applies() {
+        let raw: Vec<u8> = (0..16u8).collect();
+        let blob = compress_residual_xor(&raw, &SEMANTICS_ID_0_5_0);
+        assert_eq!(
+            residual_semantics(&blob),
+            ResidualSemantics::Pinned(SEMANTICS_ID_0_5_0)
+        );
+        assert!(
+            residual_is_applicable(&blob),
+            "a residual stamped with a previously-accepted identifier must still apply"
+        );
+        assert!(matches!(
+            decode_residual(Some(&blob), raw.len() / 4),
+            Decoded::Usable { pinned: true, .. }
+        ));
+    }
+
+    /// An identifier this build neither runs nor lists as a previous one is
+    /// refused, not silently treated as a match (the failure mode a plain
+    /// `id == SEMANTICS_ID` equality and `check_semantics` both guard
+    /// against, so this alone does not distinguish the two — the test above
+    /// does, once run against a moved identifier).
+    #[test]
+    fn an_unknown_semantics_id_is_refused() {
+        let unknown = [0xee_u8; SEMANTICS_ID_LEN];
+        let raw: Vec<u8> = (0..16u8).collect();
+        let blob = compress_residual_xor(&raw, &unknown);
+        assert!(!residual_is_applicable(&blob));
+        assert!(matches!(
+            decode_residual(Some(&blob), raw.len() / 4),
+            Decoded::Mismatch(id) if id == unknown
+        ));
     }
 }

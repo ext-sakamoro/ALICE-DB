@@ -1722,6 +1722,72 @@ mod tests {
         assert!(stats.total_segments >= 1);
     }
 
+    /// G10 wiring oracle: `StorageConfig::created_at` must actually reach
+    /// the flushed segment's metadata through `StorageEngine` -> `MemTable`
+    /// -> `DataSegment::new`, not get dropped anywhere along that path (a
+    /// mutant hard-coding `0` at the `MemTable::with_config_and_created_at`
+    /// call site would otherwise pass every other test in this crate).
+    #[test]
+    fn storage_config_created_at_reaches_the_flushed_segment() {
+        const CREATED_AT: u64 = 1_712_345_678_901;
+
+        let dir = tempdir().unwrap();
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            memtable_capacity: 1000,
+            enable_wal: false,
+            created_at: CREATED_AT,
+            ..Default::default()
+        };
+        let engine = StorageEngine::new(config).unwrap();
+        for i in 0..100 {
+            engine.put(i, i as f32).unwrap();
+        }
+        engine.flush().unwrap();
+
+        let entries = engine.find_segments(0, 99);
+        assert_eq!(entries.len(), 1);
+        let view = engine.load_segment(&entries[0]).unwrap();
+        assert_eq!(view.created_at(), CREATED_AT);
+    }
+
+    /// Companion to the above: two engines given the SAME `created_at` (and
+    /// otherwise identical input) must write byte-identical segment files --
+    /// not just an equal `created_at` field read back through the API, but
+    /// the same bytes on disk, the actual property G10 exists to guarantee.
+    #[test]
+    fn two_engines_with_the_same_created_at_write_identical_segment_bytes() {
+        const CREATED_AT: u64 = 1_712_345_678_901;
+
+        let make_and_flush = |dir: &std::path::Path| -> Vec<u8> {
+            let config = StorageConfig {
+                data_dir: dir.to_path_buf(),
+                memtable_capacity: 1000,
+                enable_wal: false,
+                created_at: CREATED_AT,
+                ..Default::default()
+            };
+            let engine = StorageEngine::new(config).unwrap();
+            for i in 0..100 {
+                engine.put(i, i as f32).unwrap();
+            }
+            engine.flush().unwrap();
+            let entries = engine.find_segments(0, 99);
+            assert_eq!(entries.len(), 1);
+            let path = dir.join(segment_file_name(entries[0].id));
+            fs::read(path).unwrap()
+        };
+
+        let dir_a = tempdir().unwrap();
+        let dir_b = tempdir().unwrap();
+        let bytes_a = make_and_flush(dir_a.path());
+        let bytes_b = make_and_flush(dir_b.path());
+        assert_eq!(
+            bytes_a, bytes_b,
+            "same created_at + same input must give byte-identical segment files (G10)"
+        );
+    }
+
     #[test]
     fn test_storage_engine_query() {
         let dir = tempdir().unwrap();

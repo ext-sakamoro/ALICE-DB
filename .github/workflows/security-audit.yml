@@ -181,6 +181,20 @@ jobs:
       - name: cargo package (.crate を作る)
         run: cargo package --no-verify --allow-dirty
 
+      # このcrateの file ではないもの (CI 設定 / script / fuzz / 設計メモ) が
+      # .crate に入っていないこと 件数 0 の比較は fail (空振り防止)
+      - name: package 内容 (このcrateの file のみ)
+        run: |
+          set -euo pipefail
+          cargo package --list --allow-dirty > /tmp/package-files.txt
+          total=$(wc -l < /tmp/package-files.txt)
+          [ "$total" -gt 0 ] || { echo "::error::package 一覧が空 (検査が空振り)"; exit 1; }
+          if grep -E '^(\.github|docs|scripts|fuzz)/' /tmp/package-files.txt; then
+            echo "::error::このcrateの file ではないものが package に入っている (Cargo.toml の include を確認)"
+            exit 1
+          fi
+          echo "package files: $total"
+
       - name: 展開して隔離 build
         run: |
           set -euo pipefail
@@ -193,7 +207,10 @@ jobs:
           # 親 workspace を継承すると member 扱いになり、境界を越えた file が
           # 再び見えてしまう (検査の意味が消える) ので単独 package として build
           printf '\n[workspace]\n' >> Cargo.toml
-          cargo check --all-features
+          cargo check --all-features --all-targets
+          # README の doctest は cfg(doctest) の include_str! なので、README が
+          # package から漏れても cargo check では見えない
+          cargo test --doc
 
   coverage:
     needs: changes

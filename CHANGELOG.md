@@ -13,6 +13,7 @@ All notable changes to ALICE-DB will be documented in this file.
 ### Changed
 
 - **Behavior change:** `residual_is_applicable` / 残差の読み取り経路が、pin された識別子を `alice_core::law::SEMANTICS_ID` との生の等値比較でなく `alice_det_math::check_semantics(..).is_reproducible()` で判定するようにした 生の等値比較は `alice-det-math` が関数を追加するだけで識別子が動いた時 (bit は 1 つも変わっていなくても) 既存の segment を拒否してしまう `check_semantics` は現在の識別子 (`Verified`) に加え、同じ bit を保証する過去の識別子 (`VerifiedPrevious`、`alice_det_math::PREVIOUS_SEMANTICS_IDS`) も受理し、未知の識別子だけを拒否する (`Mismatch`) oracle: 0.5.0 自身の識別子 (frozen な byte 列、依存から読まない) で stamp した残差が読み戻ること、未知の識別子は拒否されること 変異試験: 2 箇所の判定をそれぞれ生の等値比較に戻すと red (この crate が現在依存する `alice-det-math` 0.5.0 だけでは識別子が動いていないため見えない差で、識別子が動いた `alice-det-math` 0.5.1 への path 上書きで local 確認、commit には含めない)
+- `Cargo.toml` の `[package]` に `include` を追加し、publish される `.crate` を src / tests / benches / examples / bindings / README / CHANGELOG / LICENSE 類に限定した (CI 設定・scripts・fuzz・docs は含まない) CI の package integrity job が、`.crate` の file 一覧にこの crate のものでない path が無いこと (一覧が 0 件なら fail) と、展開した `.crate` が `--all-targets` で build でき doctest も通ることを検査する
 
 ### Added
 

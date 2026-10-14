@@ -3,7 +3,7 @@
 //! スナップショット分離によるマルチバージョン並行制御と、
 //! キー粒度の排他/共有ロック管理。
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// トランザクション ID。
@@ -400,7 +400,16 @@ impl LockManager {
     #[must_use]
     pub fn detect_deadlock(&self) -> Option<Vec<TxnId>> {
         // wait-for グラフを構築
-        let mut wait_for: HashMap<TxnId, HashSet<TxnId>> = HashMap::new();
+        //
+        // BTreeMap/BTreeSet を使う (HashMap/HashSet ではない): このグラフは直後に
+        // キー順 (`.keys()`) とネイバー順 (`for &next in neighbors`) で DFS 走査され、
+        // DFS の開始ノード順・探索順が「どの循環を検出するか」「返す Vec<TxnId> の
+        // 回転順」という外部可視な戻り値そのものを左右する。HashMap/HashSet は
+        // `RandomState` によりプロセス内でもインスタンスごとに反復順が変わりうるため、
+        // 同一のロック状態に対して detect_deadlock() を呼ぶたびに異なる循環 / 異なる
+        // victim が返り得る (非決定性)。BTreeMap/BTreeSet はキー順序 (TxnId = u64 の
+        // 全順序) で一意に反復順が定まるため、この非決定性を排除する。
+        let mut wait_for: BTreeMap<TxnId, BTreeSet<TxnId>> = BTreeMap::new();
 
         for entry in self.locks.values() {
             for &(waiter, _) in &entry.waiters {
@@ -411,8 +420,8 @@ impl LockManager {
         }
 
         // DFS で循環検出
-        let mut visited = HashSet::new();
-        let mut in_stack = HashSet::new();
+        let mut visited = BTreeSet::new();
+        let mut in_stack = BTreeSet::new();
         let mut path = Vec::new();
 
         for &txn in wait_for.keys() {
@@ -430,10 +439,10 @@ impl LockManager {
 
     /// DFS 循環検出ヘルパー。
     fn dfs_cycle(
-        graph: &HashMap<TxnId, HashSet<TxnId>>,
+        graph: &BTreeMap<TxnId, BTreeSet<TxnId>>,
         node: TxnId,
-        visited: &mut HashSet<TxnId>,
-        in_stack: &mut HashSet<TxnId>,
+        visited: &mut BTreeSet<TxnId>,
+        in_stack: &mut BTreeSet<TxnId>,
         path: &mut Vec<TxnId>,
     ) -> Option<Vec<TxnId>> {
         visited.insert(node);
@@ -647,6 +656,101 @@ mod tests {
     fn deadlock_detection_no_cycle() {
         let lm = LockManager::new();
         assert!(lm.detect_deadlock().is_none());
+    }
+
+    /// `LockEntry`/`LockManager` の private field を直接組み立てて wait-for グラフを
+    /// 作る helper。
+    ///
+    /// `acquire()` は現状どの経路でも `LockEntry::waiters` に push しない (`waiters`
+    /// への書き込みは crate 全体を探しても存在せず、`pop_front` される側でしか現れ
+    /// ない) ので、公開 API だけでは `detect_deadlock()` が実際に循環を見つける状態
+    /// を作れない。これは G13 (本テストの対象、`HashMap`/`HashSet` の反復順依存) とは別の
+    /// 配線上の欠落であり、本 commit の scope 外として直さず、private field への
+    /// 直接代入でテスト用の wait-for グラフを構築する (このテストモジュールは
+    /// `super::*` を介して同一ファイル内の private field にアクセスできる)。
+    ///
+    /// `key -> (holder, waiter)` の対応で 2 本の独立した 2-cycle
+    /// (txn 1 <-> txn 2、txn 3 <-> txn 4) を作る。`key_order` は `LockManager::locks`
+    /// (`HashMap`) へ挿入する順序を変えるためのもの。
+    fn build_two_cycle_lock_manager(key_order: &[&str]) -> LockManager {
+        let mut lm = LockManager::new();
+        for &k in key_order {
+            let (holder, waiter): (TxnId, TxnId) = match k {
+                "a" => (1, 2), // txn 2 が txn 1 の保持するロックを待つ
+                "b" => (2, 1), // txn 1 が txn 2 の保持するロックを待つ (a と合わせて 1<->2 の循環)
+                "c" => (3, 4), // txn 4 が txn 3 の保持するロックを待つ
+                "d" => (4, 3), // txn 3 が txn 4 の保持するロックを待つ (c と合わせて 3<->4 の循環)
+                _ => unreachable!("unknown key in test fixture: {k}"),
+            };
+            let mut holders = HashSet::new();
+            holders.insert(holder);
+            lm.locks.insert(
+                k.to_string(),
+                LockEntry {
+                    holders,
+                    mode: LockMode::Exclusive,
+                    waiters: VecDeque::from(vec![(waiter, LockMode::Exclusive)]),
+                },
+            );
+        }
+        lm
+    }
+
+    /// G13: `detect_deadlock()` は同一のロック状態に対して常に同じ循環を返す。
+    ///
+    /// 2 つの独立した 2-cycle (1<->2、3<->4) がある状態では、
+    /// `detect_deadlock()` が最初に見つける循環は wait-for グラフの反復順に左右さ
+    /// れる。`detect_deadlock()` は呼ばれるたびに内部で新しい wait-for グラフを
+    /// 構築するため、`wait_for`/`visited`/`in_stack` が `HashMap`/`HashSet` だった旧実装
+    /// では、`RandomState` がプロセス内でもインスタンスごとに反復順を変えるせいで、
+    /// 「同じ `&self` 状態に対する呼び出しのたびに」異なる循環が返り得た。
+    /// `BTreeMap`/`BTreeSet` 化した現在の実装は `TxnId` (= `u64`) の全順序でキー・ネイバー
+    /// の反復順が一意に定まるため、何度呼んでも結果は同じでなければならない。
+    #[test]
+    fn detect_deadlock_result_is_order_independent() {
+        let lm = build_two_cycle_lock_manager(&["a", "b", "c", "d"]);
+        let first = lm.detect_deadlock();
+
+        // 同一の `&self` 状態に対して detect_deadlock() を繰り返し呼ぶ。各呼び出しは
+        // 内部で新しい wait_for グラフを fresh 構築するため、HashMap/HashSet のまま
+        // であればここで反復順の揺れが表面化しうる。
+        for i in 0..200 {
+            let again = lm.detect_deadlock();
+            assert_eq!(
+                again, first,
+                "detect_deadlock() returned a different cycle on repeated call #{i} \
+                 against the exact same lock state: first={first:?} now={again:?}"
+            );
+        }
+    }
+
+    /// G13: `detect_deadlock()` の結果は `locks` (`HashMap`) への挿入順序にも依らない。
+    ///
+    /// `locks` 自体は iteration 結果が wait-for グラフの「内容」(集合としてのメンバ
+    /// シップ) にしか効かず、順序には効かない (= 集合への insert は可換) ので、この
+    /// assertion は挿入順序を変えても自明に成立しうる。しかし挙動の契約として明示
+    /// しておく価値があるため、ここでも固定する。
+    #[test]
+    fn detect_deadlock_result_is_insertion_order_independent() {
+        let orders: [&[&str]; 4] = [
+            &["a", "b", "c", "d"],
+            &["d", "c", "b", "a"],
+            &["b", "d", "a", "c"],
+            &["c", "a", "d", "b"],
+        ];
+
+        let results: Vec<Option<Vec<TxnId>>> = orders
+            .iter()
+            .map(|order| build_two_cycle_lock_manager(order).detect_deadlock())
+            .collect();
+
+        for (order, result) in orders.iter().zip(results.iter()) {
+            assert_eq!(
+                *result, results[0],
+                "insertion order {order:?} produced a different cycle than {:?}: {result:?}",
+                orders[0]
+            );
+        }
     }
 
     #[test]

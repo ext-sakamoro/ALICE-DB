@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def license_in(path: Path, section: str) -> str | None:
     """the SPDX string of `license = "…"` inside [section] (PEP 639 / Cargo [package])"""
     in_section = False
-    for line in path.read_text().splitlines():
+    # encoding is explicit: read_text() defaults to the locale encoding, which is
+    # cp1252 on the Windows CI runner and fails on any non-ASCII byte in the file
+    for line in path.read_text(encoding="utf-8").splitlines():
         s = line.strip()
         if s.startswith("[") and s.endswith("]"):
             in_section = s == f"[{section}]"

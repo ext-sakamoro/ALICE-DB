@@ -14,7 +14,7 @@ _CARGO = Path(__file__).resolve().parents[2] / "Cargo.toml"
 
 
 def _cargo_version() -> str:
-    for line in _CARGO.read_text().splitlines():
+    for line in _CARGO.read_text(encoding="utf-8").splitlines():
         m = re.match(r'\s*version\s*=\s*"([^"]+)"', line)
         if m:
             return m.group(1)

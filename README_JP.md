@@ -278,6 +278,55 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | 保存時暗号化 (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | 組込み機器でのモデル当てはめ |
 
+<!-- law-integration:begin law=5c6363312520f9991837e519bab14909ccf6f2b3 -->
+## ALICE-Law との統合
+
+ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
+
+| | |
+|---|---|
+| release train | alice-db 0.4.0 (published)、Law への依存: あり |
+| 算術 | train の alice-det-math 0.5.0、算術の識別子 `135c407d4249c1c200e4d1be79a12e848ce5c355fc3a918da965849e697ef000` この crate の要求は `alice-det-math = "0.5"` |
+| end to end 検査 | 対象 (`alice-db = "0.4"`)、digest `966a78784bb4e3341ac6627d519db896f398176b71c2402b188294db6c8e3728`、aarch64 と x86_64 で同じ |
+
+### 適合 (G1-G14)
+
+この repository には `alice-law-conformance.toml` が無い すべての gate は未申告
+
+| gate | 状態 | 注記 |
+|---|---|---|
+| G1 no-libm-direct | 未申告 |  |
+| G2 ieee-max-min | 未申告 |  |
+| G3 no-outer-fneg-of-fma | 未申告 |  |
+| G4 debug-release-arch-goldens | 未申告 |  |
+| G5 release-profile-test-leg | 未申告 |  |
+| G6 semantics-id | 未申告 |  |
+| G7 handshake-carries-id | 未申告 |  |
+| G8 persisted-semantics-id | 未申告 |  |
+| G9 persisted-meaning-change-is-major | 未申告 |  |
+| G10 no-run-varying-artifacts | 未申告 |  |
+| G11 gate-self-tests | 未申告 |  |
+| G12 public-repo-text-rules | 未申告 |  |
+| G13 no-unspecified-order | 未申告 |  |
+| G14 float-environment-invariants | 未申告 |  |
+
+### feature と保証の範囲
+
+| feature | 保証 | 注記 |
+|---|---|---|
+| `alice-analytics` | 未申告 |  |
+| `analytics` | 未申告 |  |
+| `crypto` | 未申告 |  |
+| `ffi` | 未申告 |  |
+| `fs` | 未申告 |  |
+| `ndarray` | 未申告 |  |
+| `numpy` | 未申告 |  |
+| `open-file-audit` | 未申告 |  |
+| `pyo3` | 未申告 |  |
+| `python` | 未申告 |  |
+| `sdf` | 未申告 |  |
+<!-- law-integration:end -->
+
 ## ライセンス
 
 `AGPL-3.0-or-later OR LicenseRef-Commercial` のデュアルライセンスで、どちらかを選ぶ

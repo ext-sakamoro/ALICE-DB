@@ -16,8 +16,8 @@
 //! Expected values are written here, never read back from the store.
 
 use alice_db::law_store::{
-    law_id_key, law_version_key, IngestPolicy, LawStoreError, Provenance, ResidualStats, SignalLaw,
-    SignalLawParts, ValidRange, Verdict,
+    law_id_key, law_version_key, IngestPolicy, LawPointersFoundUnder, LawStoreError, Provenance,
+    ResidualStats, SignalLaw, SignalLawParts, ValidRange, Verdict,
 };
 use alice_db::{AliceDB, StorageConfig};
 
@@ -311,6 +311,183 @@ fn law_id_key_rejects_the_names_the_store_rejects() {
 // Pins the shared prefix, the tag, the field order, the length prefix and the
 // byte order, so an independent implementation can reproduce a key.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 8. Reading a law without knowing which semantics identifier wrote it
+//
+// `law_pointers_for` tries the current identifier, then every one
+// `alice_det_math::check_semantics` still accepts as reproducing the same
+// bits (`alice_det_math::PREVIOUS_SEMANTICS_IDS`); `reindex_laws_under_current_semantics`
+// writes a pointer under the current identifier for whatever it finds that
+// way, without touching the pointer it found.
+//
+// The crate this test runs against pins `alice-det-math` 0.5.0, whose
+// `PREVIOUS_SEMANTICS_IDS` is still empty (0.5.0 is the first release of the
+// arithmetic these oracles are pinned to), so the fallback loop's body never
+// executes here and a mutant that removes it is not caught by this file —
+// that case is checked locally against a `[patch.crates-io]` override to the
+// unpublished 0.5.1 that populates the list, the same method used for
+// `check_semantics`'s own forward-looking test, and is not committed. What
+// this file does pin: the current-identifier fast path, the empty-list
+// behaviour of the fallback (so a change that panics or errors on an empty
+// `PREVIOUS_SEMANTICS_IDS` is caught here), and `reindex`'s additive,
+// idempotent write.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn law_pointers_for_finds_a_fresh_write_under_the_current_identifier() {
+    let db = memory_db();
+    let law = line_law("run 1");
+    let version = db.put_law("line", &law, &SEMANTICS_A).expect("stored");
+
+    let (pointers, found_under) = db.law_pointers_for(&law, &SEMANTICS_A).expect("lookup");
+    assert_eq!(pointers, vec![("line".to_string(), version)]);
+    assert_eq!(
+        found_under,
+        LawPointersFoundUnder::Current,
+        "a law stored under the identifier it is looked up with is found as Current, \
+         never as Previous"
+    );
+}
+
+#[test]
+fn law_pointers_for_misses_when_stored_under_neither_current_nor_any_previous_identifier() {
+    let db = memory_db();
+    let law = line_law("run 1");
+    db.put_law("line", &law, &SEMANTICS_A).expect("stored");
+
+    // SEMANTICS_B is a different made-up identifier, not one
+    // `alice_det_math::PREVIOUS_SEMANTICS_IDS` contains (that list only ever
+    // holds identifiers the arithmetic crate itself published), so looking the
+    // same law up under it must come back empty regardless of how many
+    // previous identifiers the running crate happens to carry.
+    let (pointers, found_under) = db.law_pointers_for(&law, &SEMANTICS_B).expect("lookup");
+    assert!(
+        pointers.is_empty(),
+        "stored only under SEMANTICS_A, must not answer for SEMANTICS_B or any real previous id"
+    );
+    assert_eq!(
+        found_under,
+        LawPointersFoundUnder::Current,
+        "the marker is meaningless next to an empty list, but is defined to be Current"
+    );
+}
+
+#[test]
+fn law_pointers_for_tries_the_current_identifier_before_any_previous_one() {
+    // Even if a previous identifier also happened to address this law (not
+    // constructible here without a real one from `alice_det_math`, see the
+    // module doc above), the current identifier must win when it alone is
+    // non-empty: cheapest and most specific answer first.
+    let db = memory_db();
+    let law = line_law("run 1");
+    db.put_law("line", &law, &SEMANTICS_A).expect("stored");
+
+    let (_, found_under) = db.law_pointers_for(&law, &SEMANTICS_A).expect("lookup");
+    assert_eq!(found_under, LawPointersFoundUnder::Current);
+}
+
+#[test]
+fn reindex_adds_a_pointer_under_the_current_identifier_without_removing_the_old_one() {
+    let db = memory_db();
+    let law = line_law("run 1");
+    let version = db.put_law("line", &law, &SEMANTICS_A).expect("stored");
+
+    let old_id = law.law_id(&SEMANTICS_A);
+    let new_id = law.law_id(&SEMANTICS_B);
+    assert!(
+        db.law_pointers_by_id(&new_id).expect("before").is_empty(),
+        "premise: not yet indexed under the identifier we are about to reindex to"
+    );
+
+    let added = db
+        .reindex_laws_under_current_semantics(&SEMANTICS_B)
+        .expect("reindex");
+    assert_eq!(added, 1, "exactly the one stored (name, version) pair");
+
+    assert_eq!(
+        db.law_pointers_by_id(&new_id).expect("after"),
+        vec![("line".to_string(), version)],
+        "now reachable under the new identifier too"
+    );
+    assert_eq!(
+        db.law_pointers_by_id(&old_id).expect("old still answers"),
+        vec![("line".to_string(), version)],
+        "reindex adds a pointer, it does not move or remove the old one"
+    );
+}
+
+#[test]
+fn reindex_is_idempotent() {
+    let db = memory_db();
+    let law = line_law("run 1");
+    db.put_law("line", &law, &SEMANTICS_A).expect("stored");
+
+    let first = db
+        .reindex_laws_under_current_semantics(&SEMANTICS_B)
+        .expect("first reindex");
+    assert_eq!(first, 1);
+
+    let second = db
+        .reindex_laws_under_current_semantics(&SEMANTICS_B)
+        .expect("second reindex");
+    assert_eq!(
+        second, 0,
+        "the pointer already exists, so the second run writes nothing new"
+    );
+
+    // A law already addressed by the identifier it is reindexed to (the
+    // common case: nothing has moved) must not be double-counted either.
+    let already_current = db
+        .reindex_laws_under_current_semantics(&SEMANTICS_A)
+        .expect("reindex to the identifier already in use");
+    assert_eq!(already_current, 0);
+}
+
+#[test]
+fn reindex_covers_every_version_of_every_name() {
+    let db = memory_db();
+    db.put_law("line", &line_law("run 1"), &SEMANTICS_A)
+        .expect("v1");
+    // A second, differently-shaped law under its own name, also only indexed
+    // under SEMANTICS_A so far.
+    let other = law_with(vec![2.0, -1.0], vec![(0.0, 2.0), (4.0, 1.0)], "run 2");
+    db.put_law("other", &other, &SEMANTICS_A).expect("other v1");
+
+    // Evidence that forces a refit on "line", producing a version 2 under
+    // SEMANTICS_A that reindex must also reach.
+    let moved: Vec<(f64, f64)> = (0..5)
+        .map(|i| (f64::from(i), 1.6 + 2.0 * f64::from(i)))
+        .collect();
+    db.ingest_evidence("line", &moved, &POLICY, &SEMANTICS_A)
+        .expect("refit to v2");
+    assert_eq!(db.law_versions("line").expect("versions"), vec![1, 2]);
+
+    let added = db
+        .reindex_laws_under_current_semantics(&SEMANTICS_B)
+        .expect("reindex");
+    assert_eq!(
+        added, 3,
+        "line v1, line v2 (the refit), and other v1: every stored version, not just the latest"
+    );
+
+    for (name, version) in [
+        ("line".to_string(), 1_u64),
+        ("line".to_string(), 2_u64),
+        ("other".to_string(), 1_u64),
+    ] {
+        let law = db
+            .get_law_version(&name, version)
+            .expect("read")
+            .expect("present");
+        assert_eq!(
+            db.law_pointers_by_id(&law.law_id(&SEMANTICS_B))
+                .expect("pointers"),
+            vec![(name.clone(), version)],
+            "{name} v{version} must be reachable under the new identifier"
+        );
+    }
+}
 
 #[test]
 fn law_id_key_layout_golden() {

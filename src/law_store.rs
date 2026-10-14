@@ -210,6 +210,18 @@ impl From<LawError> for LawStoreError {
     }
 }
 
+/// Which semantics identifier [`AliceDB::law_pointers_for`] found a law
+/// stored under
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LawPointersFoundUnder {
+    /// Found under the identifier the lookup was given as current.
+    Current,
+    /// Found under an older identifier [`alice_det_math::check_semantics`]
+    /// still accepts as reproducing the same bits as the current one.
+    Previous([u8; 32]),
+}
+
 /// The kind of a recorded [`Verdict`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -804,8 +816,17 @@ impl AliceDB {
     ///
     /// Empty when nothing was stored under it: an identifier that addresses no
     /// law is absence, not damage. An identifier is computed from the law
-    /// together with the numeric semantics it is evaluated under, so a law
-    /// stored under one `semantics_id` does not answer for another.
+    /// together with the numeric semantics it is evaluated under.
+    ///
+    /// Writing always addresses a law under the identifier of the day it was
+    /// written; a stored pointer never moves on its own. So a law written
+    /// before the arithmetic's identifier changed (a dependency upgrade that
+    /// [`alice_det_math::check_semantics`] still judges bit-reproducing) stays
+    /// addressed only under the old identifier here — this method does not
+    /// try any other one. To look a law up without knowing which identifier
+    /// it was last touched under, use [`Self::law_pointers_for`], which tries
+    /// the current identifier first and then every one `check_semantics`
+    /// still accepts, and reports which one it found the law under.
     ///
     /// The order is the byte order of the keys, which is the name length, then
     /// the name, then the version.
@@ -823,6 +844,89 @@ impl AliceDB {
             .into_iter()
             .map(|(k, _)| law_id_pointer(&k, &prefix))
             .collect()
+    }
+
+    /// Every `(name, version)` stored under `law`'s content identifier,
+    /// trying `semantics_id` first and, if that finds nothing, every
+    /// identifier in [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] in order
+    ///
+    /// A write never moves a law to a new identifier on its own
+    /// ([`Self::law_pointers_by_id`]'s doc), so a law written under an
+    /// identifier a later `alice-det-math` release superseded is otherwise
+    /// unreachable without knowing that old identifier by name. This method
+    /// is the read-side counterpart: [`alice_det_math::check_semantics`]
+    /// already decides which identifiers are accepted as reproducing the same
+    /// bits as the current one ([`alice_det_math::SemanticsCheck::VerifiedPrevious`]),
+    /// and this tries exactly that set, in the same order, after the current
+    /// one. The second element of the result says which identifier the first
+    /// non-empty answer came from, so a caller that cares can tell a fresh
+    /// write from an inherited one; **no pointer is written here** — a
+    /// successful previous-identifier match does not make the law reachable
+    /// under the current identifier until [`Self::reindex_laws_under_current_semantics`]
+    /// is called.
+    ///
+    /// Returns `(vec![], `[`LawPointersFoundUnder::Current`]`)` when nothing is
+    /// found under any identifier (the marker is meaningless in that case;
+    /// only the empty list is).
+    ///
+    /// # Errors
+    /// As [`Self::law_pointers_by_id`].
+    pub fn law_pointers_for(
+        &self,
+        law: &SignalLaw,
+        semantics_id: &[u8; 32],
+    ) -> Result<(Vec<(String, u64)>, LawPointersFoundUnder), LawStoreError> {
+        let current = self.law_pointers_by_id(&law.law_id(semantics_id))?;
+        if !current.is_empty() {
+            return Ok((current, LawPointersFoundUnder::Current));
+        }
+        for previous in alice_det_math::PREVIOUS_SEMANTICS_IDS {
+            let pointers = self.law_pointers_by_id(&law.law_id(previous))?;
+            if !pointers.is_empty() {
+                return Ok((pointers, LawPointersFoundUnder::Previous(*previous)));
+            }
+        }
+        Ok((Vec::new(), LawPointersFoundUnder::Current))
+    }
+
+    /// Writes a pointer under `semantics_id` for every stored law version this
+    /// store still only addresses under an identifier
+    /// [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] accepts as reproducing the
+    /// same bits, so later lookups find it under the current identifier
+    /// directly instead of falling through [`Self::law_pointers_for`] every
+    /// time
+    ///
+    /// Idempotent: a `(name, version)` already pointed at by `semantics_id`
+    /// writes nothing on a repeat call, so running this on a schedule or
+    /// after every upgrade is safe. It does not remove the previous pointer
+    /// — nothing is ever deleted here, so [`Self::law_pointers_by_id`] keeps
+    /// answering to the old identifier too — this only adds the new one.
+    ///
+    /// Returns the number of `(name, version)` pairs a pointer was newly
+    /// written for.
+    ///
+    /// # Errors
+    /// [`LawStoreError::Io`], and [`LawStoreError::Corrupt`] for a damaged
+    /// stored version or identifier key.
+    pub fn reindex_laws_under_current_semantics(
+        &self,
+        semantics_id: &[u8; 32],
+    ) -> Result<usize, LawStoreError> {
+        let mut added = 0usize;
+        for name in self.law_names()? {
+            for version in self.law_versions(&name)? {
+                let Some(law) = self.load_version(&name, version)? else {
+                    continue;
+                };
+                let key = law_id_key(&law.law_id(semantics_id), &name, version)?;
+                if self.blob.get(&key)?.is_some() {
+                    continue;
+                }
+                self.blob.put(&key, &[])?;
+                added += 1;
+            }
+        }
+        Ok(added)
     }
 
     /// `f(x)` of the law addressed by `law_id`

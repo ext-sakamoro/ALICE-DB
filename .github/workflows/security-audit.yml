@@ -214,7 +214,7 @@ jobs:
           cargo check --all-features --all-targets
           # README の doctest は cfg(doctest) の include_str! なので、README が
           # package から漏れても cargo check では見えない
-          doc=$(cargo test --doc 2>&1 | tee /dev/stderr | sed -n 's/^running \([0-9]*\) tests\?$/\1/p' | head -1)
+          doc=$(cargo test --doc 2>&1 | tee /dev/stderr | sed -E -n 's/^running ([0-9]+) tests?$/\1/p' | head -1)
           [ "${doc:-0}" -gt 0 ] || { echo "::error::doctest が 0 件 (README の doctest が走っていない)"; exit 1; }
           # fixture (tests/fixtures) を実際に読む test と、open-file-audit が要る test を
           # 展開した crate で走らせる (単独 package には dev の self 依存が無いので feature を明示)

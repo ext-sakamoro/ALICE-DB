@@ -997,7 +997,7 @@ mod python {
         #[pyo3(get)]
         pub average_compression_ratio: f64,
         #[pyo3(get)]
-        pub model_distribution: std::collections::HashMap<String, usize>,
+        pub model_distribution: std::collections::BTreeMap<String, usize>,
     }
 
     #[pymethods]

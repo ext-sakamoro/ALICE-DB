@@ -168,7 +168,7 @@ This proposal is **not scheduled**. It documents the path if and when we decide 
 
 ## 10. Cross-references
 
-- `~/ALICE-CodeTracker/CHANGELOG.md#040` — v0.4.0 release notes documenting the deferral of the ALICE-DB backend
-- `~/ALICE-CodeTracker/docs/audits/STUB_AUDIT_v0.4.0.md` — audit trail confirming this deferral
-- `~/ALICE-CodeTracker/crates/shared/alice-tracker-jsonl/src/compression.rs` — the ALICE-Zip integration that establishes the dogfooding link
-- `~/ALICE-Zip/libalice/src/compression/mod.rs` — the compression API this proposal reuses
+- `ALICE-CodeTracker/CHANGELOG.md#040` — v0.4.0 release notes documenting the deferral of the ALICE-DB backend
+- `ALICE-CodeTracker/docs/audits/STUB_AUDIT_v0.4.0.md` — audit trail confirming this deferral
+- `ALICE-CodeTracker/crates/shared/alice-tracker-jsonl/src/compression.rs` — the ALICE-Zip integration that establishes the dogfooding link
+- `ALICE-Zip/libalice/src/compression/mod.rs` — the compression API this proposal reuses

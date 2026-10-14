@@ -245,7 +245,7 @@ db.close()
 db = alice_db.open("./exact", lossless=True)
 db.put_batch([0, 1, 2, 10], [10.0, 20.0, 30.0, 31.0])
 db.flush()
-print(db.get(10))  # 厳密に 31.0 (lossy 既定では grid 上の値になる)
+print(db.get(10))  # 厳密に 31.0 lossless は残差を保存するので書いた点は厳密に読み戻る
 db.close()
 ```
 

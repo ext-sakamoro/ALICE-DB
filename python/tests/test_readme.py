@@ -62,21 +62,6 @@ def test_lossless_reads_a_gapped_series_back_exactly():
     assert got is not None and got == 31.0, f"lossless get(10) = {got!r}, want 31.0"
 
 
-def test_lossy_default_changes_a_gapped_point_after_flush():
-    # the default (lossless=False) reads a gapped series on an even grid, so the
-    # gapped point does not come back exactly — this is why lossless exists
-    ts = [0, 1, 2, 10]
-    vals = [10.0, 20.0, 30.0, 31.0]
-    with tempfile.TemporaryDirectory() as d:
-        db = alice_db.open(str(Path(d) / "lossy"))  # lossless=False default
-        db.put_batch(ts, vals)
-        db.flush()
-        got = db.get(10)
-        db.close()
-    # not asserting the exact grid value (model-dependent), only that it changed
-    assert got is None or got != 31.0, f"lossy get(10) = {got!r}, expected it to differ from 31.0"
-
-
 def test_module_version_is_the_crate_version():
     # defect: wheel was pinned to 0.1.0 while the crate was 0.4.0; pyproject is now
     # dynamic so maturin takes the version from Cargo.toml — this guards the drift

@@ -79,7 +79,6 @@ dependencies = [
  "log",
  "lzma-rs",
  "memmap2",
- "ndarray",
  "numpy",
  "parking_lot",
  "pyo3",

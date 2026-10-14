@@ -721,7 +721,7 @@ impl AliceDB {
 #[cfg(feature = "python")]
 mod python {
     use super::*;
-    use ndarray::Array2;
+    use numpy::ndarray::Array2;
     use numpy::PyArray2;
     use parking_lot::Mutex;
     use pyo3::exceptions::{PyIOError, PyValueError};

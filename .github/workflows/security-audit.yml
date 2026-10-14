@@ -219,6 +219,12 @@ jobs:
           # fixture (tests/fixtures) を実際に読む test と、open-file-audit が要る test を
           # 展開した crate で走らせる (単独 package には dev の self 依存が無いので feature を明示)
           cargo test --features open-file-audit --test residual_arithmetic --test blob_compaction_crash_safety
+          # 利用者は .crate 同梱の Cargo.lock を使わず依存を新たに解決する 同梱 lock の
+          # ままでは、直接依存と依存先 (例: numpy が使う ndarray) の版が食い違っても
+          # 同じ版に揃って見えて compile が通る lock を外して lib を全 feature で check
+          rm Cargo.lock
+          cargo check --lib --all-features
+          grep -q '^name = "numpy"$' Cargo.lock || { echo "::error::lock 無しの check で numpy が解決されていない (python feature が検査されていない)"; exit 1; }
 
   coverage:
     needs: changes

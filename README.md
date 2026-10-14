@@ -344,7 +344,6 @@ This repository has no `alice-law-conformance.toml`: every gate is not declared.
 | `crypto` | not declared |  |
 | `ffi` | not declared |  |
 | `fs` | not declared |  |
-| `ndarray` | not declared |  |
 | `numpy` | not declared |  |
 | `open-file-audit` | not declared |  |
 | `pyo3` | not declared |  |

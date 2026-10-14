@@ -319,7 +319,6 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 | `crypto` | 未申告 |  |
 | `ffi` | 未申告 |  |
 | `fs` | 未申告 |  |
-| `ndarray` | 未申告 |  |
 | `numpy` | 未申告 |  |
 | `open-file-audit` | 未申告 |  |
 | `pyo3` | 未申告 |  |

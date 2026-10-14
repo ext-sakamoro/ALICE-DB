@@ -95,3 +95,22 @@ def test_lossy_default_drifts_on_a_gapped_interior_point():
 
 def test_module_version_is_the_crate_version():
     assert alice_db.__version__ == _cargo_version(), (alice_db.__version__, _cargo_version())
+
+
+def test_scan_numpy_matches_scan():
+    # scan_numpy builds the (N, 2) array with the ndarray type numpy re-exports; it must
+    # come back as a numpy array holding the same points as scan()
+    import numpy as np
+    ts = [0, 1, 2, 3]
+    vals = [1.5, 2.5, 3.5, 4.5]
+    with tempfile.TemporaryDirectory() as d:
+        db = alice_db.open(str(Path(d) / "np"), lossless=True)
+        try:
+            db.put_batch(ts, vals)
+            pairs = db.scan(0, 3)
+            arr = db.scan_numpy(0, 3)
+        finally:
+            db.close()
+    assert isinstance(arr, np.ndarray) and arr.dtype == np.float64, (type(arr), getattr(arr, "dtype", None))
+    assert arr.shape == (len(pairs), 2) and len(pairs) == len(ts), (arr.shape, pairs)
+    assert arr.tolist() == [[float(t), float(v)] for t, v in pairs], (arr.tolist(), pairs)

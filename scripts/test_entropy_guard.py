@@ -156,8 +156,14 @@ class EntropyGuard(unittest.TestCase):
         self.assertTrue(any("Instant::now" in x for x in p), p)
 
     def test_a_raw_string_brace_does_not_break_the_test_module_skip(self):
+        # A `#`-delimited raw string with one embedded plain quote before its
+        # brace: a naive "pair up quote characters" approach consumes the
+        # first `"..."`-looking span (`"say "`) and, finding no second quote
+        # to close a span around the rest, leaves `hi{` -- including the
+        # brace -- as unstripped code (confirmed against the pre-fix script:
+        # `r#"say "hi{"#;` reduces to `r#""hi{"#;`, brace intact).
         src = (
-            '#[cfg(test)]\nmod t {\n    const S: &str = r"{";\n    fn t() {}\n}\n\n'
+            '#[cfg(test)]\nmod t {\n    const S: &str = r#"say "hi{"#;\n    fn t() {}\n}\n\n'
             "pub fn f() { let _ = std::time::Instant::now(); }\n"
         )
         p = self.problems({"src/a.rs": src})

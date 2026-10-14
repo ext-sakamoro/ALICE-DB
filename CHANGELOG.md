@@ -6,6 +6,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Added
 
+- `alice-law-conformance.toml`: ALICE-Law の gate G1-G14 の適合状況を gate ごとに記す manifest 公開文面の検査 (G12) は pass、ほかの 13 gate は未達の箇所 (file と行) を添えて fail-known とした README の ALICE-Law 節はこの manifest から再生成した
 - Python: `open` / `AliceDB(...)` に `lossless=False` 引数を追加 既定は従来どおり lossy (gap のある系列は等間隔 grid で読み戻され、flush 後に gap の点の値が変わる)、`lossless=True` で残差を保存し増加するタイムスタンプを厳密に読み戻す (Rust の `FitConfig { lossless: true }` と同じ約束) README / README_JP の Python 節に lossy 既定と lossless の例を明記
 
 ### Fixed

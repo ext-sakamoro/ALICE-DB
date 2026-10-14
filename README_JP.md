@@ -291,24 +291,22 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 
 ### 適合 (G1-G14)
 
-この repository には `alice-law-conformance.toml` が無い すべての gate は未申告
-
 | gate | 状態 | 注記 |
 |---|---|---|
-| G1 no-libm-direct | 未申告 |  |
-| G2 ieee-max-min | 未申告 |  |
-| G3 no-outer-fneg-of-fma | 未申告 |  |
-| G4 debug-release-arch-goldens | 未申告 |  |
-| G5 release-profile-test-leg | 未申告 |  |
-| G6 semantics-id | 未申告 |  |
-| G7 handshake-carries-id | 未申告 |  |
-| G8 persisted-semantics-id | 未申告 |  |
-| G9 persisted-meaning-change-is-major | 未申告 |  |
-| G10 no-run-varying-artifacts | 未申告 |  |
-| G11 gate-self-tests | 未申告 |  |
-| G12 public-repo-text-rules | 未申告 |  |
-| G13 no-unspecified-order | 未申告 |  |
-| G14 float-environment-invariants | 未申告 |  |
+| G1 no-libm-direct | 未達 | unmet: (1) clippy.toml lists 24 of the 25 banned method names for both f32 and f64 plus powi, but not sin_cos (f32::sin_cos and f64::sin_cos are absent). … |
+| G2 ieee-max-min | 未達 | unmet: the clippy list does not ban f32::max / f32::min / f64::max / f64::min, there is no Law max/min helper and no default-deny manifest of raw sites. Float … |
+| G3 no-outer-fneg-of-fma | 未達 | unmet as a gate: there is no checker for the outer negation of a fused multiply-add and no CI step for it. The claim itself holds on a one-off scan: … |
+| G4 debug-release-arch-goldens | 未達 | unmet: no test checks signed-zero or exact-cancellation cases against fixed bit patterns, and no CI job runs the tests under the release profile (see G5). … |
+| G5 release-profile-test-leg | 未達 | unmet: .github/workflows/ci.yml runs every `cargo test` step without --release (lines 50-70), on macos-latest and ubuntu-24.04-arm among others, so the aarch64 … |
+| G6 semantics-id | 未達 | unmet: src/lib.rs:248 is `pub use alice_core::law::SEMANTICS_ID`, a re-export of alice-zip's identifier (tests/determinism_golden.rs:284 … |
+| G7 handshake-carries-id | 未達 | unmet at one boundary. Compliant: the lossless residual of a segment (bytes, file, zero-copy mapped read) carries the writer's identifier … |
+| G8 persisted-semantics-id | 未達 | unmet for law records. Durable forms and writers: segment lossless residual (compress_residual_xor, src/segment.rs:1206; magic bytes 6 and 7 carry a 32-byte … |
+| G9 persisted-meaning-change-is-major | 未達 | history audit done, one point unmet. `git log -S` over the identifier: the residual identifier was introduced in 179ef23 (released as 0.3.0-beta.2, 2026-10-08, … |
+| G10 no-run-varying-artifacts | 未達 | unmet on this commit: no lint bans a wall clock, a UUID or an unseeded random source (clippy.toml has none). A lexical scan of src/ finds 3 matches: … |
+| G11 gate-self-tests | 未達 | unmet: of the gates this crate carries, only G12 has a self-check here (scripts/test_public_text.py: a malformed pin or a base that is not a commit exits 2; … |
+| G12 public-repo-text-rules | 適合 | scripts/public_text.sh fetches ALICE-Law's scripts/public_text_check.py at the revision named in .github/public-text-pin (ca96d9214ffe...) and refuses it … |
+| G13 no-unspecified-order | 未達 | unmet: no lint bans HashMap / HashSet iteration and there is no allowlist of membership-only sites with reasons. Sites in src/ (36 lines naming HashMap or … |
+| G14 float-environment-invariants | 未達 | unmet as a gate, clean on inspection. Every place a flag can come from was read: there is no .cargo/config*, no build.rs, no Cargo.toml profile flag (the … |
 
 ### feature と保証の範囲
 

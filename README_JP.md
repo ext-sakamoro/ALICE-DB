@@ -291,24 +291,22 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 
 ### 適合 (G1-G14)
 
-この repository には `alice-law-conformance.toml` が無い すべての gate は未申告
-
 | gate | 状態 | 注記 |
 |---|---|---|
-| G1 no-libm-direct | 未申告 |  |
-| G2 ieee-max-min | 未申告 |  |
-| G3 no-outer-fneg-of-fma | 未申告 |  |
-| G4 debug-release-arch-goldens | 未申告 |  |
-| G5 release-profile-test-leg | 未申告 |  |
-| G6 semantics-id | 未申告 |  |
-| G7 handshake-carries-id | 未申告 |  |
-| G8 persisted-semantics-id | 未申告 |  |
-| G9 persisted-meaning-change-is-major | 未申告 |  |
-| G10 no-run-varying-artifacts | 未申告 |  |
-| G11 gate-self-tests | 未申告 |  |
-| G12 public-repo-text-rules | 未申告 |  |
-| G13 no-unspecified-order | 未申告 |  |
-| G14 float-environment-invariants | 未申告 |  |
+| G1 no-libm-direct | 未確認 | unverified: no banned call is known (a scan of src/ for the banned method names finds only test code: src/lib.rs lines 1100 and 1140, src/memtable.rs lines 753 … |
+| G2 ieee-max-min | 未達 | unmet: there is no Law max / min helper, clippy.toml does not ban f32::max / f32::min / f64::max / f64::min, and there is no default-deny manifest of raw … |
+| G3 no-outer-fneg-of-fma | 未確認 | unverified: no violation is known, but there is no syntax-tree checker for the outer negation of a fused multiply-add and no CI step for it. A one-off run of … |
+| G4 debug-release-arch-goldens | 未達 | unmet, with the test now present. (1) A signed-zero case is known and not pinned: Aggregation::Min and Max fold with f64::min / f64::max (src/query_engine.rs … |
+| G5 release-profile-test-leg | 未達 | unmet: the release leg exists, on aarch64 (macos-latest), but runs only two test binaries: .github/workflows/release-profile.yml line 52 is `cargo test … |
+| G6 semantics-id | 未達 | unmet: src/lib.rs line 248 re-exports alice-zip's identifier (the alice-det-math arithmetic identifier) instead of computing one that folds this crate's own … |
+| G7 handshake-carries-id | 未達 | unmet at one type-erasing boundary. AliceDB::from_bytes (src/lib.rs line 447, snapshot::decode at src/snapshot.rs line 119) takes serialized bytes that carry … |
+| G8 persisted-semantics-id | 未達 | unmet for law records. Compliant: the lossless segment residual carries the writer's identifier (src/segment.rs line 1203) and the reader accepts its own or a … |
+| G9 persisted-meaning-change-is-major | 未確認 | unverified: the audit covers the one identifier this crate persists and finds no violation, but the law record has no identifier (see G8), so its history … |
+| G10 no-run-varying-artifacts | 未確認 | unverified: no use is known (the guard reports `23 files, 10 patterns, 0 problems`; created_at is an explicit input since 0008049) and the RandomState and … |
+| G11 gate-self-tests | 未達 | unmet: the clippy bans that carry G1 and part of G10 (clippy.toml lines 43 to 108, disallowed-methods and disallowed-types, run by .github/workflows/ci.yml … |
+| G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
+| G13 no-unspecified-order | 未確認 | unverified: no order-dependent output is known. The two sites found earlier are fixed with an oracle each (mutants above): model_distribution, which the Python … |
+| G14 float-environment-invariants | 未確認 | unverified: no flag is known; every place a flag can come from was read at this commit: there is no .cargo/config* and no build.rs, Cargo.toml's release … |
 
 ### feature と保証の範囲
 

@@ -245,8 +245,8 @@ db.close()
 db = alice_db.open("./exact", lossless=True)
 db.put_batch([0, 1, 2, 10], [10.0, 20.0, 30.0, 31.0])
 db.flush()
-print(db.get(10))  # 厳密に 31.0 lossless は残差を保存するので書いた点は厳密に読み戻る
-db.close()
+print([db.get(t) for t in (0, 1, 2, 10)])  # [10.0, 20.0, 30.0, 31.0] 書いた全点が厳密
+db.close()  # lossy 既定は gap の内側がずれる (例: get(1) は 20.0 でなく 10.0)
 ```
 
 ## 最小サポート Rust バージョン

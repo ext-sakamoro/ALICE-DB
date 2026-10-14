@@ -269,8 +269,8 @@ timestamps back exactly (the same promise as the Rust `FitConfig { lossless: tru
 db = alice_db.open("./exact", lossless=True)
 db.put_batch([0, 1, 2, 10], [10.0, 20.0, 30.0, 31.0])
 db.flush()
-print(db.get(10))  # 31.0 — lossless stores residuals, so written points read back exactly
-db.close()
+print([db.get(t) for t in (0, 1, 2, 10)])  # [10.0, 20.0, 30.0, 31.0] — every written point exact
+db.close()  # the lossy default drifts on the interior gap (e.g. get(1) reads 10.0, not 20.0)
 ```
 
 ## Minimum supported Rust version

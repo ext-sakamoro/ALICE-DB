@@ -137,13 +137,6 @@ Conclusion: out of scope for G13, no change. (Documented here per the
 instruction to record this as a considered-and-excluded conclusion
 rather than a silent omission.)
 
-## Pending merge
-
-- `src/transaction.rs` findings (separate, concurrently-run change) are
-  not included in this file. When the two branches are reconciled,
-  append that file's table(s) here using the same `stays` / `fixed` /
-  `out of scope` vocabulary.
-
 ---
 
 # G13 HashMap/HashSet 反復順序監査 (`src/transaction.rs`)

@@ -16,6 +16,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Added
 
+- `AliceDB::law_pointers_for` / `AliceDB::reindex_laws_under_current_semantics`: `law_pointers_by_id` は書かれた時の識別子だけに答えるため、`alice-det-math` の識別子が (bit を変えずに) 動いた後は古い識別子を知らない限り以前の law に届かなかった `law_pointers_for` は現在の識別子に加え `alice_det_math::PREVIOUS_SEMANTICS_IDS` (`check_semantics` が受理する過去の識別子) を順に試し、どちらで見つかったかを返す (`LawPointersFoundUnder::Current` / `Previous`、書き込みは一切しない) `reindex_laws_under_current_semantics` は見つかった law に現在の識別子のポインタを追加で書く (冪等、古いポインタは消さない) oracle: 現在の識別子で見つかる・どの識別子にも無い・reindex が追加のみで冪等・全 name の全 version を reindex する、の 4 本 変異試験: fallback の削除、reindex の冪等性チェックの削除、reindex が最新 version しか辿らない、の 3 本が red 「見つかる previous」自体は、この crate が現在依存する `alice-det-math` 0.5.0 の `PREVIOUS_SEMANTICS_IDS` がまだ空のため commit した test では見えない差になる (`check_semantics` の時と同じ構造) ため、識別子が動いた `alice-det-math` 0.5.1 への path 上書きで local 確認 (found/miss/reindex の 3 oracle green、fallback 変異 red)、commit には含めない
 - Python: `open` / `AliceDB(...)` に `lossless=False` 引数を追加 既定は従来どおり lossy (gap のある系列は等間隔 grid で読み戻され、flush 後に gap の点の値が変わる)、`lossless=True` で残差を保存し増加するタイムスタンプを厳密に読み戻す (Rust の `FitConfig { lossless: true }` と同じ約束) README / README_JP の Python 節に lossy 既定と lossless の例を明記
 
 ### Fixed

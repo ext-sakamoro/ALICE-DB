@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "alice-db"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "alice-det-math",
  "alice-zip",
@@ -30,7 +30,6 @@ dependencies = [
  "crossbeam-channel",
  "fs2",
  "getrandom 0.2.17",
- "js-sys",
  "log",
  "lzma-rs",
  "memmap2",
@@ -54,15 +53,15 @@ dependencies = [
 
 [[package]]
 name = "alice-det-math"
-version = "0.4.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eef90265249a97cc0fac787cf918f62639991513c0219c33e1853de7f1a28a03"
+checksum = "2857e06dcc3838a2138f4c8ed7b30cf8515a223eeb6d5fbd068dd13d45cb4ff4"
 
 [[package]]
 name = "alice-zip"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffa4a63eedd9ce8dfaa483ca6a5e9052fb0cded2c93f3960d5c85682398a84fd"
+checksum = "0c74382778e10a48c4f3269a1b904dec6cc8a424690daadf51b655b49554a3e4"
 dependencies = [
  "alice-det-math",
  "flate2",

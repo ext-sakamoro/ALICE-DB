@@ -287,11 +287,14 @@ fn semantics_id_is_the_recorded_value() {
         alice_det_math::SEMANTICS_ID,
         "the identifier the residuals record is not the arithmetic this crate computes with"
     );
+    // re-recorded for alice-det-math 0.5.1 (135c407d… → 85e08846…): 0.5.1 adds
+    // sign-defined min / max and keeps 135c407d… in `PREVIOUS_SEMANTICS_IDS`,
+    // so residuals pinned under it are still applied on read
     assert_eq!(
         hex(&alice_db::SEMANTICS_ID),
-        "135c407d4249c1c200e4d1be79a12e848ce5c355fc3a918da965849e697ef000",
-        "the numeric semantics changed: every residual pinned under the old \
-         value is no longer applied on read"
+        "85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315",
+        "the numeric semantics changed: a residual pinned under an identifier \
+         that `check_semantics` does not accept is no longer applied on read"
     );
 }
 
@@ -443,8 +446,9 @@ fn bloom_sizing_is_the_recorded_bits() {
 // 5. Law identifiers
 // ---------------------------------------------------------------------------
 
-#[test]
-fn law_id_and_evaluation_are_the_recorded_bits() {
+/// The law fixtures hashed with their identifier under `semantics` and their
+/// evaluation bits
+fn law_bits(semantics: &[u8; 32]) -> Bits {
     let fits: [LawFixture; 3] = [
         ("line", 1, &|x| 2.0f64.mul_add(x, 1.0)),
         ("parabola", 2, &|x| 0.5 * x * x - x + 3.0),
@@ -461,7 +465,7 @@ fn law_id_and_evaluation_are_the_recorded_bits() {
         let law = SignalLaw::fit_polynomial(&points, degree, Provenance::new("golden", name))
             .expect("the fixture satisfies every fit precondition");
         bits.tag(name);
-        bits.raw(&law.law_id(&alice_db::SEMANTICS_ID));
+        bits.raw(&law.law_id(semantics));
         for i in 0..=40 {
             bits.f64(
                 law.evaluate(f64::from(i) / 10.0)
@@ -469,13 +473,41 @@ fn law_id_and_evaluation_are_the_recorded_bits() {
             );
         }
     }
+    bits
+}
+
+#[test]
+fn law_id_and_evaluation_are_the_recorded_bits() {
     assert_golden(
         "law_id and evaluate",
-        bits,
+        law_bits(&alice_db::SEMANTICS_ID),
         3 * (32 + 41 * 8),
         // re-recorded for alice-det-math 0.5: with the 0.4 identifier
         // (d2209b30…) in place of `alice_db::SEMANTICS_ID` the same scenario
         // still hashes to the previous 94bf9625…, so only the identifier moved
+        //
+        // re-recorded again for alice-det-math 0.5.1 (identifier 135c407d… →
+        // 85e08846…): with the 0.5.0 identifier the same scenario still hashes
+        // to the previous f18a2a53… (next test)
+        "703f17b165de1699421256302a23582a65cf3904f7ddc14e4c37365b0e444127",
+    );
+}
+
+/// Re-recording the digest above for alice-det-math 0.5.1 moved the identifier
+/// input only: under the 0.5.0 identifier (`135c407d…`, kept in
+/// `PREVIOUS_SEMANTICS_IDS`) the scenario hashes to the digest recorded before
+#[test]
+fn law_id_digest_under_the_previous_identifier_is_unchanged() {
+    let previous = alice_det_math::PREVIOUS_SEMANTICS_IDS
+        .iter()
+        .find(|id| {
+            hex(&id[..]) == "135c407d4249c1c200e4d1be79a12e848ce5c355fc3a918da965849e697ef000"
+        })
+        .expect("alice-det-math keeps the identifier of 0.5.0 as a previous one");
+    assert_golden(
+        "law_id and evaluate under the previous identifier",
+        law_bits(previous),
+        3 * (32 + 41 * 8),
         "f18a2a53ad6a8bdeb4feb7f80a6c12b814f26c49b69d6e461568efcf8fdc650e",
     );
 }

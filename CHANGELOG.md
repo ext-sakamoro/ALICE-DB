@@ -8,6 +8,11 @@ All notable changes to ALICE-DB will be documented in this file.
 
 - CI: release profile で bit 一致 golden を走らせる `release-profile.yml` (ubuntu / macOS、`scripts/run_tests.sh` で 0 件と未実行の file を fail、preflight の full にも同じ step) と、公開 API の符号付きゼロと桁落ちの結果を `to_bits()` で固定する `tests/float_edge_golden.rs` (15 件: `aggregate` / `downsample` の Sum・Avg・Variance・StdDev、flush 後の constant / linear model と lossless 残差の `get` / `scan`) を追加
 
+### Fixed
+
+- **Behavior change:** `Aggregation::Min`/`Max` (`aggregate` の plain fold と `group_by` / `downsample` の bucket の両方、`query_engine.rs`) を `f64::min`/`max` / `f32::min`/`max` から `alice_det_math::{min64, max64, min, max}` に変えた 等しい符号違いのゼロ (`-0.0` と `+0.0`) に対する `f64::min`/`max` の結果は規定されておらず、aarch64 は IEEE の minimum / maximum (順序に依らず `min` は `-0`、`max` は `+0`)、x86_64 は同値のとき第 2 引数を返すので、同じ多重集合でも arch と行の順序で符号が変わっていた 実測 (16 入力 × plain / grouped × Min / Max の 64 出力を aarch64 / x86_64 × debug / release で `to_bits` 比較): 修正前は混在ゼロの 4 入力の 8 出力だけが x86_64 で aarch64 と異なり、修正後は 4 構成の全出力が一致 変わったのは x86_64 のその 8 出力だけで、aarch64 と混在ゼロ以外の入力 (非ゼロ / +0 のみ / -0 のみ / NaN / 大きな値 / 0..99) は不変 試験 `tests/minmax_signed_zero_arch.rs` (両方の順序、plain と grouped) 4 箇所のどれか 1 つを `f64::min`/`max` / `f32::min`/`max` に戻すと x86_64 で red (aarch64 は IEEE どおりなので green)
+- `alice-det-math` の要求を 0.5.1 に上げた (符号を決めた `min`/`max`/`min64`/`max64` は 0.5.1 で追加) 0.5.1 で `SEMANTICS_ID` が `135c407d…` から `85e08846…` に変わるので、`tests/determinism_golden.rs` の識別子と law_id の 2 つの pin を記録し直した 動いたのは識別子の入力だけで、0.5.0 の識別子 (0.5.1 の `PREVIOUS_SEMANTICS_IDS` にある) を渡すと law_id と evaluate の digest は以前の `f18a2a53…` のまま (同じ file の試験で固定)、他の digest は不変 0.5.0 の識別子で書いた残差は `check_semantics` が受理するので読み戻せる
+
 ## [0.5.0] - 2026-10-14
 
 ### Changed

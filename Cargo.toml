@@ -10,6 +10,23 @@ description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural gen
 repository = "https://github.com/ext-sakamoro/ALICE-DB"
 keywords = ["database", "compression", "procedural", "time-series", "lsm-tree"]
 categories = ["database", "compression"]
+# Allowlist: the published crate carries its own sources, tests, benches, examples,
+# FFI headers and licence / docs files only. CI files, scripts, fuzz targets and
+# design notes are not the crate's (the publish gate refuses them)
+include = [
+    "/src/**",
+    "/tests/**",
+    "/benches/**",
+    "/examples/**",
+    "/bindings/**",
+    "/Cargo.toml",
+    "/README.md",
+    "/README_JP.md",
+    "/CHANGELOG.md",
+    "/LICENSE-AGPL",
+    "/LICENSE-COMMERCIAL.md",
+    "/TRADEMARK_NOTICE",
+]
 
 [lib]
 name = "alice_db"

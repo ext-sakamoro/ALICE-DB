@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Local reproduction of the CI gates before `git push`: every command below is
-# the one .github/workflows/ci.yml, security-audit.yml or fuzz.yml runs, with the
-# same arguments. A step this script does not cover is a step that can only fail
-# remotely, so a step added to a workflow is added here in the same commit.
+# the one .github/workflows/ci.yml, release-profile.yml, security-audit.yml or
+# fuzz.yml runs, with the same arguments. A step this script does not cover is
+# a step that can only fail remotely, so a step added to a workflow is added
+# here in the same commit.
 #
 # usage: scripts/preflight.sh [--quick]
 #   (none)   every gate: static checks, clippy, wasm build, docs, MSRV, feature
 #            powerset, fuzz build, the full test suites (every feature set),
+#            the goldens under the release profile,
 #            the law_store example, benches compile, and the security jobs
 #            (cargo audit / deny / machete)
 #   --quick  static checks, clippy, wasm build, docs and `cargo test --lib`;
@@ -103,6 +105,9 @@ scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_com
 scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact -- cargo test --features "$NATIVE_FEATURES"
 scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor -- cargo test --no-default-features
 scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
+
+step "release-profile.yml / release: goldens under the release profile (fail on 0 tests)"
+scripts/run_tests.sh determinism_golden,float_edge_golden -- cargo test --release --test determinism_golden --test float_edge_golden
 
 step "ci.yml / test: law_store example"
 cargo run --example law_store

@@ -1,0 +1,52 @@
+name: Release profile
+
+# The bit-exact goldens under the release profile (opt-level 3, no debug
+# assertions): an optimisation that changes a stored or answered float (a
+# contracted multiply-add, a reordered sum, a lost sign of zero) is red here
+# even when the debug build in ci.yml is green. Mirrored in scripts/preflight.sh.
+#
+# No paths filter: every push to main runs it.
+
+on:
+  push:
+    # ci/**: the same checks on a branch before it is fast-forwarded to main
+    branches: [main, 'ci/**']
+  pull_request:
+    branches: [main]
+
+# on main each commit has a group of its own and a run there is never
+# cancelled; a newer run cancels an older one only off main
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+# The token only reads the repository; a job that needs more raises it for
+# that job alone, with the reason next to it
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Release goldens (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # aarch64: macos-latest / x86_64: ubuntu-latest
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # the toolchain itself comes from rust-toolchain.toml
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # fails when no test ran, and when either golden file ran none
+      - name: Test (release profile, goldens)
+        shell: bash
+        run: scripts/run_tests.sh determinism_golden,float_edge_golden -- cargo test --release --test determinism_golden --test float_edge_golden

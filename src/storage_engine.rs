@@ -2150,15 +2150,9 @@ mod tests {
         let engine = StorageEngine::new(config).unwrap();
 
         // Insert enough data to trigger multiple flushes
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "measuring this test's own wall-clock duration, not a deterministic computation"
-        )]
-        let start = std::time::Instant::now();
         for i in 0..200 {
             engine.put(i, i as f32 * 0.5).unwrap();
         }
-        let _elapsed = start.elapsed();
 
         // Wait for background flush to complete
         engine.close().unwrap();

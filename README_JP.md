@@ -302,7 +302,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 | G7 handshake-carries-id | 未達 | unmet at one type-erasing boundary. AliceDB::from_bytes (src/lib.rs line 447, snapshot::decode at src/snapshot.rs line 119) takes serialized bytes that carry … |
 | G8 persisted-semantics-id | 未達 | unmet for law records. Compliant: the lossless segment residual carries the writer's identifier (src/segment.rs line 1203) and the reader accepts its own or a … |
 | G9 persisted-meaning-change-is-major | 未確認 | unverified: the audit covers the one identifier this crate persists and finds no violation, but the law record has no identifier (see G8), so its history … |
-| G10 no-run-varying-artifacts | 未確認 | unverified: no use is known (the guard reports `23 files, 10 patterns, 0 problems`; created_at is an explicit input since 0008049) and the RandomState and … |
+| G10 no-run-varying-artifacts | 適合 | no ambient clock or OS-entropy read is known in a Law-bearing path: scripts/entropy_guard.py reports `23 files, 10 patterns, 0 problems`, created_at is an … |
 | G11 gate-self-tests | 未達 | unmet: clause (c). scripts/clippy_canary.py, scripts/test_clippy_canary.py, scripts/clippy_canary_calls.tsv and scripts/test_run_tests.py are byte-identical … |
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
 | G13 no-unspecified-order | 未確認 | unverified: no order-dependent output is known. The two sites found earlier are fixed with an oracle each (mutants above): model_distribution, which the Python … |

@@ -8,6 +8,10 @@ All notable changes to ALICE-DB will be documented in this file.
 
 - CI: release profile で bit 一致 golden を走らせる `release-profile.yml` (ubuntu / macOS、`scripts/run_tests.sh` で 0 件と未実行の file を fail、preflight の full にも同じ step) と、公開 API の符号付きゼロと桁落ちの結果を `to_bits()` で固定する `tests/float_edge_golden.rs` (15 件: `aggregate` / `downsample` の Sum・Avg・Variance・StdDev、flush 後の constant / linear model と lossless 残差の `get` / `scan`) を追加
 
+### Changed
+
+- CI: clippy の禁止一覧に `f32::sin_cos` / `f64::sin_cos` を足した (ALICE-Law G1 の一覧と揃える)
+
 ## [0.5.0] - 2026-10-14
 
 ### Changed

@@ -103,7 +103,7 @@ fn the_three_read_paths_return_the_same_bits() {
     for n in LENGTHS {
         let end = (n - 1) as i64;
         for (name, model) in models(n) {
-            let segment = DataSegment::new(1, 0, end, model, n, n * 4);
+            let segment = DataSegment::new(1, 0, end, model, n, n * 4, 0);
 
             let all = segment.generate_all();
             assert_eq!(all.len(), n, "{name} n={n}: generate_all の長さが n でない");

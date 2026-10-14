@@ -286,29 +286,6 @@ pub struct SegmentMetadata {
     pub compression_ratio: f64,
 }
 
-/// Current wall-clock time in Unix milliseconds, for segment metadata.
-///
-/// `SegmentMetadata::created_at` is part of the stored segment format.
-/// wasm32-unknown-unknown has no clock in `std` (`SystemTime::now` panics
-/// there), so that target reads the host clock through `Date.now()`.
-fn unix_millis_now() -> u64 {
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "created_at is a stored wall-clock metadata timestamp, never read back in any query or compute path"
-        )]
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64)
-    }
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        // `Date.now()` is a non-negative integral millisecond count.
-        js_sys::Date::now() as u64
-    }
-}
-
 /// Data Segment: A time range stored as a mathematical model
 ///
 /// This is the fundamental storage unit of ALICE-DB.
@@ -333,6 +310,11 @@ pub struct DataSegment {
 
 impl DataSegment {
     /// Create a new segment from a model
+    ///
+    /// `created_at` is a Unix-millis metadata timestamp stamped verbatim
+    /// into the stored segment (see [`SegmentMetadata::created_at`]); this
+    /// crate never reads the wall clock itself (G10), so the caller supplies
+    /// whatever value it wants recorded (or `0`).
     #[must_use]
     pub fn new(
         id: u64,
@@ -341,6 +323,7 @@ impl DataSegment {
         model: ModelType,
         point_count: usize,
         original_size: usize,
+        created_at: u64,
     ) -> Self {
         let model_size = model.estimated_size();
         let compression_ratio = if model_size > 0 {
@@ -356,7 +339,7 @@ impl DataSegment {
             residual_blob: None,
             metadata: SegmentMetadata {
                 id,
-                created_at: unix_millis_now(),
+                created_at,
                 point_count,
                 original_size,
                 model_size,
@@ -2055,6 +2038,7 @@ mod tests {
             ModelType::Constant { value: 42.0 },
             1001,
             1001 * 4,
+            0,
         );
 
         assert!(segment.contains(500));
@@ -2079,6 +2063,7 @@ mod tests {
             },
             101,
             101 * 4,
+            0,
         );
 
         let start = segment
@@ -2114,6 +2099,7 @@ mod tests {
             },
             101,
             101 * 4,
+            0,
         );
 
         let at_half = segment
@@ -2137,6 +2123,7 @@ mod tests {
             },
             101,
             101 * 4,
+            0,
         );
 
         let results = segment
@@ -2164,6 +2151,7 @@ mod tests {
             },
             1001,
             1001 * 4,
+            0,
         );
 
         let bytes = segment.to_bytes().unwrap();
@@ -2188,6 +2176,7 @@ mod tests {
             },
             101,
             101 * 4,
+            0,
         );
 
         // Compare scalar vs SIMD results
@@ -2227,6 +2216,7 @@ mod tests {
             },
             1001,
             1001 * 4,
+            0,
         );
 
         let scalar = segment
@@ -2251,7 +2241,7 @@ mod tests {
 
     #[test]
     fn test_contains_boundary_values() {
-        let segment = DataSegment::new(1, 10, 20, ModelType::Constant { value: 1.0 }, 11, 44);
+        let segment = DataSegment::new(1, 10, 20, ModelType::Constant { value: 1.0 }, 11, 44, 0);
         // Inclusive boundaries
         assert!(segment.contains(10));
         assert!(segment.contains(20));
@@ -2265,7 +2255,8 @@ mod tests {
 
     #[test]
     fn test_overlaps() {
-        let segment = DataSegment::new(1, 100, 200, ModelType::Constant { value: 1.0 }, 101, 404);
+        let segment =
+            DataSegment::new(1, 100, 200, ModelType::Constant { value: 1.0 }, 101, 404, 0);
         // Overlapping ranges
         assert!(segment.overlaps(50, 150)); // partial overlap left
         assert!(segment.overlaps(150, 250)); // partial overlap right
@@ -2289,6 +2280,7 @@ mod tests {
             },
             101,
             404,
+            0,
         );
         assert!(segment
             .query_point(-1)
@@ -2302,7 +2294,8 @@ mod tests {
 
     #[test]
     fn test_query_range_non_overlapping() {
-        let segment = DataSegment::new(1, 100, 200, ModelType::Constant { value: 5.0 }, 101, 404);
+        let segment =
+            DataSegment::new(1, 100, 200, ModelType::Constant { value: 5.0 }, 101, 404, 0);
         let results = segment
             .query_range(0, 50)
             .expect("residual of this arithmetic");
@@ -2317,7 +2310,7 @@ mod tests {
     #[test]
     fn test_single_point_segment() {
         // Segment with start_time == end_time (single point)
-        let segment = DataSegment::new(1, 42, 42, ModelType::Constant { value: 99.0 }, 1, 4);
+        let segment = DataSegment::new(1, 42, 42, ModelType::Constant { value: 99.0 }, 1, 4, 0);
         assert!(segment.contains(42));
         assert!(!segment.contains(41));
         let val = segment
@@ -2329,7 +2322,7 @@ mod tests {
 
     #[test]
     fn test_constant_segment_generate_all() {
-        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 7.5 }, 100, 400);
+        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 7.5 }, 100, 400, 0);
         let all = segment.generate_all();
         assert_eq!(all.len(), 100);
         for &v in &all {
@@ -2349,6 +2342,7 @@ mod tests {
             },
             100,
             400,
+            0,
         );
         let all = segment.generate_all();
         assert_eq!(all.len(), 100);
@@ -2372,6 +2366,7 @@ mod tests {
             },
             401,
             1604,
+            0,
         );
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
         assert!(!rkyv_bytes.is_empty());
@@ -2386,7 +2381,7 @@ mod tests {
 
     #[test]
     fn test_segment_view_source_type() {
-        let segment = DataSegment::new(1, 0, 10, ModelType::Constant { value: 1.0 }, 11, 44);
+        let segment = DataSegment::new(1, 0, 10, ModelType::Constant { value: 1.0 }, 11, 44, 0);
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
         let view = SegmentView::from_vec(rkyv_bytes).unwrap();
         assert_eq!(view.source_type(), "vec");
@@ -2394,7 +2389,7 @@ mod tests {
 
     #[test]
     fn test_segment_view_query_point_constant() {
-        let segment = DataSegment::new(1, 0, 100, ModelType::Constant { value: 42.0 }, 101, 404);
+        let segment = DataSegment::new(1, 0, 100, ModelType::Constant { value: 42.0 }, 101, 404, 0);
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
         let view = SegmentView::from_vec(rkyv_bytes).unwrap();
 
@@ -2426,6 +2421,7 @@ mod tests {
             },
             101,
             404,
+            0,
         );
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
         let view = SegmentView::from_vec(rkyv_bytes).unwrap();
@@ -2443,7 +2439,7 @@ mod tests {
 
     #[test]
     fn test_segment_view_compression_ratio_and_point_count() {
-        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 1.0 }, 100, 400);
+        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 1.0 }, 100, 400, 0);
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
         let view = SegmentView::from_vec(rkyv_bytes).unwrap();
         assert!(view.compression_ratio() > 1.0);
@@ -2463,6 +2459,7 @@ mod tests {
             },
             51,
             204,
+            0,
         );
 
         let mut buf: Vec<u8> = Vec::new();
@@ -2479,7 +2476,7 @@ mod tests {
 
     #[test]
     fn test_with_residual() {
-        let segment = DataSegment::new(1, 0, 10, ModelType::Constant { value: 5.0 }, 11, 44);
+        let segment = DataSegment::new(1, 0, 10, ModelType::Constant { value: 5.0 }, 11, 44, 0);
         assert!(segment.residual_blob.is_none());
 
         let residual_data: Vec<u8> = (0..44).map(|i| i as u8).collect();
@@ -2490,6 +2487,9 @@ mod tests {
 
     #[test]
     fn test_segment_metadata_fields() {
+        // created_at is an explicit input now (G10: the crate never reads
+        // the wall clock itself), so the test pins a nonzero literal and
+        // checks it flows through verbatim rather than merely being nonzero.
         let segment = DataSegment::new(
             99,
             1000,
@@ -2500,18 +2500,46 @@ mod tests {
             },
             1001,
             4004,
+            1_700_000_000_000,
         );
         assert_eq!(segment.metadata.id, 99);
         assert_eq!(segment.metadata.point_count, 1001);
         assert_eq!(segment.metadata.original_size, 4004);
-        assert!(segment.metadata.created_at > 0);
+        assert_eq!(segment.metadata.created_at, 1_700_000_000_000);
         assert!(segment.metadata.compression_ratio > 1.0);
+    }
+
+    /// G10 oracle: two segments built from identical arguments (including
+    /// `created_at`) serialize to identical bytes. Before this crate stopped
+    /// reading the wall clock, this was false -- the same inputs, called a
+    /// few milliseconds apart, produced a different `created_at` and so a
+    /// different stored byte stream for the same logical segment.
+    #[test]
+    fn identical_args_including_created_at_give_identical_bytes() {
+        let make = || {
+            DataSegment::new(
+                1,
+                0,
+                1000,
+                ModelType::Linear {
+                    start_value: 0.0,
+                    end_value: 1.0,
+                },
+                1001,
+                4004,
+                1_700_000_000_000,
+            )
+        };
+        let a = make().to_bytes().expect("serialize a");
+        let b = make().to_bytes().expect("serialize b");
+        assert_eq!(a, b, "same inputs must give identical bytes (G10)");
     }
 
     #[test]
     fn test_lossless_lzma_roundtrip() {
         // Create a segment with known residuals
-        let mut segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 10.0 }, 100, 400);
+        let mut segment =
+            DataSegment::new(1, 0, 99, ModelType::Constant { value: 10.0 }, 100, 400, 0);
 
         // Build raw residual f32 bytes
         let mut raw_residuals = Vec::with_capacity(100 * 4);
@@ -2576,7 +2604,7 @@ mod tests {
         use fs2::FileExt;
 
         // Write a valid segment to a temp file
-        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 42.0 }, 100, 400);
+        let segment = DataSegment::new(1, 0, 99, ModelType::Constant { value: 42.0 }, 100, 400, 0);
         let rkyv_bytes = segment.to_rkyv_bytes().unwrap();
 
         let dir = tempfile::tempdir().unwrap();

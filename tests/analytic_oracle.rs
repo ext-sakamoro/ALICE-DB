@@ -51,7 +51,7 @@ use std::io::Cursor;
 // ───────────────────────── helpers ────────────────────────────────────────
 
 fn segment(model: ModelType, start: i64, end: i64, n: usize) -> DataSegment {
-    DataSegment::new(1, start, end, model, n, n * 4)
+    DataSegment::new(1, start, end, model, n, n * 4, 0)
 }
 
 /// Sample position of `t` (fractional index into the n uniform samples)

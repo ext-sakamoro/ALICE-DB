@@ -279,6 +279,7 @@ fn degenerate_segment_returns_one_point() {
                 ModelType::Constant { value: 42.0 },
                 point_count,
                 4,
+                0,
             );
             let view = SegmentView::from_vec(seg.to_rkyv_bytes().unwrap()).unwrap();
             [

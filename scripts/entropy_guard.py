@@ -58,12 +58,7 @@ ALIASABLE = {
 }
 ALIAS_RE = re.compile(r"\b(Instant|SystemTime)\s+as\s+(\w+)")
 # (file, pattern) -> (count, reason)
-ALLOWED: dict[tuple[str, str], tuple[int, str]] = {
-    ("src/segment.rs", "SystemTime::now"): (
-        1, "created_at is a stored wall-clock metadata timestamp, never read back in any query or compute path",
-    ),
-    ("src/segment.rs", "UNIX_EPOCH"): (1, "the same metadata timestamp, converting SystemTime to Unix millis"),
-}
+ALLOWED: dict[tuple[str, str], tuple[int, str]] = {}
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
 
 

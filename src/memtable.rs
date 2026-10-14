@@ -80,6 +80,12 @@ pub struct MemTable {
     capacity: usize,
     /// Fitting configuration
     config: FitConfig,
+    /// Metadata timestamp (Unix millis) stamped on every segment this
+    /// `MemTable` flushes (see [`crate::segment::SegmentMetadata::created_at`]).
+    /// The crate never reads the wall clock itself (G10): a caller who wants
+    /// a real timestamp supplies it explicitly via
+    /// [`Self::with_config_and_created_at`]; the default is `0`.
+    created_at: u64,
     /// Next segment ID (atomic)
     next_segment_id: AtomicU64,
 }
@@ -88,21 +94,29 @@ impl MemTable {
     /// Create a new `MemTable` with specified capacity
     #[must_use]
     pub fn new(capacity: usize) -> Self {
-        Self {
-            buffer: Mutex::new(Vec::with_capacity(capacity)),
-            capacity,
-            config: FitConfig::default(),
-            next_segment_id: AtomicU64::new(1),
-        }
+        Self::with_config_and_created_at(capacity, FitConfig::default(), 0)
     }
 
     /// Create a new `MemTable` with custom config
     #[must_use]
     pub fn with_config(capacity: usize, config: FitConfig) -> Self {
+        Self::with_config_and_created_at(capacity, config, 0)
+    }
+
+    /// Create a new `MemTable` with custom config and an explicit
+    /// `created_at` (Unix millis) stamped on every segment it flushes
+    ///
+    /// The crate itself never reads the wall clock (G10): pass the value
+    /// your own application sourced, or `0` if the metadata timestamp does
+    /// not matter to you (the default [`Self::new`] / [`Self::with_config`]
+    /// use).
+    #[must_use]
+    pub fn with_config_and_created_at(capacity: usize, config: FitConfig, created_at: u64) -> Self {
         Self {
             buffer: Mutex::new(Vec::with_capacity(capacity)),
             capacity,
             config,
+            created_at,
             next_segment_id: AtomicU64::new(1),
         }
     }
@@ -270,7 +284,15 @@ impl MemTable {
         if data.is_empty() {
             // Edge case: return empty constant segment
             let id = self.next_id();
-            return DataSegment::new(id, 0, 0, ModelType::Constant { value: 0.0 }, 0, 0);
+            return DataSegment::new(
+                id,
+                0,
+                0,
+                ModelType::Constant { value: 0.0 },
+                0,
+                0,
+                self.created_at,
+            );
         }
 
         // Sort by timestamp (O(N) for nearly-sorted data via pdqsort)
@@ -292,6 +314,7 @@ impl MemTable {
             fit_result.model,
             values.len(),
             original_size,
+            self.created_at,
         );
 
         // Compute residuals for lossless reconstruction (LZMA compressed).

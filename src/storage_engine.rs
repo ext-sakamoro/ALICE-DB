@@ -400,6 +400,14 @@ pub struct StorageConfig {
     /// What a read does with a residual pinned to another arithmetic (see
     /// [`ResidualPolicy`]); refuses by default
     pub residual_policy: ResidualPolicy,
+    /// Metadata timestamp (Unix millis) stamped on every segment this engine
+    /// flushes (see [`crate::segment::SegmentMetadata::created_at`])
+    ///
+    /// The crate never reads the wall clock itself (G10: no OS entropy or
+    /// wall clock in production code, so a store written on one machine
+    /// reads back identically on another). Supply the value your own
+    /// application sourced if you want a real timestamp; the default is `0`.
+    pub created_at: u64,
 }
 
 /// What a read does with a lossless residual measured against a different
@@ -441,6 +449,7 @@ impl Default for StorageConfig {
             #[cfg(feature = "crypto")]
             encryption_key: None,
             residual_policy: ResidualPolicy::Refuse,
+            created_at: 0,
         }
     }
 }
@@ -456,7 +465,8 @@ impl std::fmt::Debug for StorageConfig {
             .field("compaction_threshold", &self.compaction_threshold)
             .field("use_mmap", &self.use_mmap)
             .field("enable_background_flush", &self.enable_background_flush)
-            .field("residual_policy", &self.residual_policy);
+            .field("residual_policy", &self.residual_policy)
+            .field("created_at", &self.created_at);
         #[cfg(feature = "crypto")]
         s.field(
             "encryption_key",
@@ -617,7 +627,11 @@ impl StorageEngine {
 
     /// Construct the engine around `store` without touching any stored bytes
     fn build(config: StorageConfig, store: Store) -> io::Result<Self> {
-        let memtable = MemTable::with_config(config.memtable_capacity, config.fit_config.clone());
+        let memtable = MemTable::with_config_and_created_at(
+            config.memtable_capacity,
+            config.fit_config.clone(),
+            config.created_at,
+        );
 
         let shared = Arc::new(SharedState {
             index: RwLock::new(BTreeMap::new()),

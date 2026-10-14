@@ -270,7 +270,7 @@ fn damaged_residual_blobs_are_refused_as_corrupt_without_panicking() {
     let mut seen = 0;
     for (name, blob) in corrupt.into_iter().chain(std::iter::once(foreign_garbage)) {
         let seg =
-            DataSegment::new(3, 0, (n - 1) as i64, model.clone(), n, n * 4).with_residual(blob);
+            DataSegment::new(3, 0, (n - 1) as i64, model.clone(), n, n * 4, 0).with_residual(blob);
         let view = SegmentView::from_vec(seg.to_rkyv_bytes().expect("rkyv")).expect("view");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (

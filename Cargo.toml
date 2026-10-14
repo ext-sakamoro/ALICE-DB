@@ -1,6 +1,6 @@
 [package]
 name = "alice-db"
-version = "0.4.0"
+version = "0.5.0"
 # alice-zip 0.9 は rust-version 1.87、CI の msrv job が 1.87 で実際に compile する
 rust-version = "1.87"
 edition = "2021"
@@ -76,8 +76,6 @@ log = "0.4"
 # crate build for the browser target; native targets are unaffected.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
-# Segment metadata records its creation time; `std` has no clock on this target
-js-sys = "0.3"
 
 [dev-dependencies]
 criterion = "0.5"

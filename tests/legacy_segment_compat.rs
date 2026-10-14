@@ -172,6 +172,7 @@ fn the_fixture_really_carries_the_old_law_values() {
             segment.model.clone(),
             originals.len(),
             originals.len() * 4,
+            0,
         );
         for (i, &old) in model_bits.iter().enumerate() {
             let now = bare
@@ -212,7 +213,7 @@ fn a_freshly_written_residual_names_the_arithmetic_it_was_measured_against() {
         phase: 0.4,
         offset: 0.25,
     };
-    let bare = DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4);
+    let bare = DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4, 0);
 
     // 法則からわずかに外れた原信号 (残差が非零になる)
     let originals: Vec<f32> = (0..n)
@@ -241,7 +242,7 @@ fn a_freshly_written_residual_names_the_arithmetic_it_was_measured_against() {
         "書いた残差が算術の識別子を持っていない"
     );
 
-    let segment = DataSegment::new(1, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
+    let segment = DataSegment::new(1, 0, (n - 1) as i64, model, n, n * 4, 0).with_residual(blob);
     for (i, &want) in originals.iter().enumerate() {
         let got = segment
             .query_point(i as i64)
@@ -288,7 +289,7 @@ fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
         phase: 0.4,
         offset: 0.25,
     };
-    let bare = DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4);
+    let bare = DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4, 0);
 
     // 非零の残差を作る (全部 0 だと「適用しても同じ」で空振りになる)
     let mut raw = Vec::with_capacity(n * 4);
@@ -305,7 +306,7 @@ fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
         "識別子が違うのに適用可と判定された"
     );
 
-    let segment = DataSegment::new(7, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
+    let segment = DataSegment::new(7, 0, (n - 1) as i64, model, n, n * 4, 0).with_residual(blob);
     assert_eq!(
         segment.residual_status(),
         ResidualStatus::Mismatch {
@@ -393,7 +394,7 @@ fn the_zero_copy_path_checks_the_identifier_too() {
         phase: 0.4,
         offset: 0.25,
     };
-    let bare = DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4);
+    let bare = DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4, 0);
 
     let mut raw = Vec::with_capacity(n * 4);
     for _ in 0..n {
@@ -403,7 +404,7 @@ fn the_zero_copy_path_checks_the_identifier_too() {
     other[0] ^= 0x01;
     let blob = alice_db::segment::compress_residual_xor(&raw, &other);
 
-    let segment = DataSegment::new(7, 0, (n - 1) as i64, model, n, n * 4).with_residual(blob);
+    let segment = DataSegment::new(7, 0, (n - 1) as i64, model, n, n * 4, 0).with_residual(blob);
     let view = alice_db::segment::SegmentView::from_vec(segment.to_rkyv_bytes().expect("rkyv"))
         .expect("rkyv view");
     assert_eq!(
@@ -447,7 +448,7 @@ fn the_zero_copy_path_checks_the_identifier_too() {
     // 「残差を一切適用しない」「常に断る」で通る空振りでないことを示す)
     let good = alice_db::segment::compress_residual_xor(&raw, &alice_core::law::SEMANTICS_ID);
     let ok_segment =
-        DataSegment::new(1, 0, (n - 1) as i64, bare.model.clone(), n, n * 4).with_residual(good);
+        DataSegment::new(1, 0, (n - 1) as i64, bare.model.clone(), n, n * 4, 0).with_residual(good);
     let ok_view = alice_db::segment::SegmentView::from_vec(
         ok_segment.to_rkyv_bytes().expect("rkyv serialise"),
     )
@@ -547,6 +548,7 @@ fn the_linear_law_divides_rather_than_multiplying_by_a_reciprocal() {
             },
             n,
             n * 4,
+            0,
         );
         let all = segment.generate_all();
         assert_eq!(all.len(), n);

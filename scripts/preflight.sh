@@ -54,6 +54,8 @@ python3 scripts/workflow_concurrency.py
 python3 scripts/test_entropy_guard.py
 python3 scripts/entropy_guard.py
 python3 scripts/test_fuzz_reach.py
+python3 scripts/test_tracked_binaries.py
+python3 scripts/tracked_binaries.py
 
 step "ci.yml / docs-lint: changed_paths tests + sync (fuzz.yml / security-audit.yml trigger and pattern files)"
 python3 scripts/test_changed_paths.py

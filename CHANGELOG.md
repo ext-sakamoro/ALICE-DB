@@ -17,6 +17,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 
+- CI: build した library と実行形式を tracked にしない検査 (`scripts/tracked_binaries.py`) を追加 例外は `.github/tracked-binaries.txt` に理由付きで書いた path だけ、読めない file と走査 0 件でも失敗する CI と preflight で走る
 - CI / `scripts/preflight.sh`: python feature を build + test する `python` job を追加 (`maturin build` → wheel install → import smoke → `pytest python/tests`、collected 0 件で fail) これまで CI は python を一切 build しておらず (`cargo hack` も `--exclude-features python`)、binding と README の例が壊れても気付けなかった
 - CI: `scripts/changed_paths.py sync` が各 workflow の Gate job の `needs` に他の全 job が入っているかを確かめる (入れ忘れた job は Gate を通らずに失敗や skip が見えなくなるため) `changed_paths.py` と試験は ALICE-DetMath と byte 一致
 - **Behavior change:** `alice-det-math` を 0.4 から 0.5 に、`alice-zip` (`alice_core`) を 0.9 から 0.10 に、`analytics` feature の `alice-analytics` を 0.4 から 0.5 に上げた 算術の識別子 `alice_db::SEMANTICS_ID` が `d2209b30…` から `135c407d…` に変わる 法則の評価値は変わらない (determinism golden の `law_id and evaluate` は旧識別子で計算すると記録済の `94bf9625…` のまま、変わったのは識別子だけ) `law_id` は識別子を混ぜるので値が変わる

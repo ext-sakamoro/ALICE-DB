@@ -206,6 +206,10 @@ jobs:
         run: python scripts/entropy_guard.py
       - name: Fuzz reach gate (tests)
         run: python scripts/test_fuzz_reach.py
+      - name: Tracked binaries (tests)
+        run: python scripts/test_tracked_binaries.py
+      - name: No built binary is tracked (0 files read fails)
+        run: python scripts/tracked_binaries.py
       - name: changed_paths oracle (path filter decision, gate and trigger lint)
         run: python scripts/test_changed_paths.py
       - name: changed_paths sync (no on.push paths off main, pull_request paths = pattern file, 0 compared fails)

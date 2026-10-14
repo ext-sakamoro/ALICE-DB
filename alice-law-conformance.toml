@@ -1,0 +1,89 @@
+# ALICE-Law conformance manifest for this crate (alice-db). One entry per
+# gate defined in ALICE-Law's conformance/gates.toml. Schema (status /
+# evidence / mutant / note / reference_repo) is docs/CONFORMANCE.md's
+# "Manifest" section in that repository.
+#
+# Written from what this repository's own tree, CI workflows and tests show,
+# checked directly rather than assumed. A gate checked and unmet is
+# `fail-known` (with the location), a gate not checked is `unverified`, and a
+# `pass` names its evidence and the mutant that was run. File and line
+# references are to the commit this manifest was written against.
+
+[G1]
+status = "fail-known"
+evidence = ["clippy.toml", ".github/workflows/ci.yml"]
+note = "unmet: (1) clippy.toml lists 24 of the 25 banned method names for both f32 and f64 plus powi, but not sin_cos (f32::sin_cos and f64::sin_cos are absent). Measured: `x.sin()` added to src/lib.rs fails `cargo clippy --lib -- -D warnings` with `use of a disallowed method f32::sin`, and `x.sin_cos()` in the same place passes (reverted). The library has no sin_cos call today. (2) the clippy jobs of .github/workflows/ci.yml (default, NATIVE_FEATURES = ffi,sdf,analytics,crypto, no-default-features, wasm32) never build the `python` feature, so the `mod python` block of src/lib.rs (line 722 on) is not linted; it contains no floating-point math today. (3) no canary test injects a banned call into a crate to show the lint still fires (see G11). powi is banned in clippy.toml (the G1 default), and the library does not call it. Transcendentals in test code (src/lib.rs:1100 and :1140, src/memtable.rs:730-755, src/ffi.rs:759) are lint-exempted test fixtures"
+reference_repo = "ALICE-Zip"
+
+[G2]
+status = "fail-known"
+note = "unmet: the clippy list does not ban f32::max / f32::min / f64::max / f64::min, there is no Law max/min helper and no default-deny manifest of raw sites. Float max/min in library code: src/query_engine.rs:255 and :261 (`fold(f64::INFINITY, f64::min)` / `fold(f64::NEG_INFINITY, f64::max)` for the Min and Max aggregations over stored values), src/query_engine.rs:345-346 (running min / max of f32 values), src/memtable.rs:416 (fit error maximum), src/compaction.rs:312, :315, :322 (scores), src/bloom.rs:92 and :94 (`ceil().max(1.0)` on the filter size), src/segment.rs:249 (`round().max(0.0)`). The aggregations at src/query_engine.rs:255-261 and :345-346 reach query results and take stored values, which may include signed zeros. SIMD: src/segment.rs uses wide::f64x4 (line 36, the Horner loop at :572 and :1252) with multiply and add only, no lane-wise max or min"
+reference_repo = "ALICE-SDF"
+
+[G3]
+status = "fail-known"
+note = "unmet as a gate: there is no checker for the outer negation of a fused multiply-add and no CI step for it. The claim itself holds on a one-off scan: ALICE-LOL's scripts/no_outer_fneg_of_fma.py run over src, tests, examples and benches of this tree reported `files 56, mul_add calls 10, outer-fneg sites 0` (exit 0). The library's mul_add calls are src/memtable.rs:377 and :378 (model score); the others are in test code (src/memtable.rs:731 and :755)"
+reference_repo = "ALICE-LOL"
+
+[G4]
+status = "fail-known"
+note = "unmet: no test checks signed-zero or exact-cancellation cases against fixed bit patterns, and no CI job runs the tests under the release profile (see G5). tests/determinism_golden.rs pins model selection, query, aggregate, bloom sizing and law id bits and runs on the four-OS test matrix of .github/workflows/ci.yml (aarch64: macos-latest, ubuntu-24.04-arm; x86_64: ubuntu-latest, windows-latest), in the debug profile only"
+reference_repo = "ALICE-LOL"
+
+[G5]
+status = "fail-known"
+note = "unmet: .github/workflows/ci.yml runs every `cargo test` step without --release (lines 50-70), on macos-latest and ubuntu-24.04-arm among others, so the aarch64 legs are debug only. The only `--release` text in the workflows is `--release-type patch` in security-audit.yml:265, an argument of cargo-semver-checks (ALICE-Law's measure_conformance.py counts it as a release test: a false positive for this repository)"
+reference_repo = "ALICE-LOL"
+
+[G6]
+status = "fail-known"
+evidence = ["tests/determinism_golden.rs", "tests/residual_arithmetic.rs"]
+note = "unmet: src/lib.rs:248 is `pub use alice_core::law::SEMANTICS_ID`, a re-export of alice-zip's identifier (tests/determinism_golden.rs:284 semantics_id_is_the_recorded_value asserts it equals alice_det_math::SEMANTICS_ID and its hex, 135c407d...ef000). It is not a fold of this crate's own pins: the arithmetic this crate decides itself (bloom filter sizing, src/bloom.rs:72-94; model selection error, src/memtable.rs:377 and :416) is pinned only by recorded-bit tests (tests/determinism_golden.rs: model_selection_is_the_recorded_bits, bloom_sizing_is_the_recorded_bits), so a change there does not move the identifier. The hex test exists; a test that changing a pin changes the identifier does not, because there is no pin of this crate in the identifier"
+reference_repo = "ALICE-LOL"
+
+[G7]
+status = "fail-known"
+evidence = ["src/segment.rs", "tests/legacy_segment_compat.rs", "tests/residual_arithmetic.rs"]
+note = "unmet at one boundary. Compliant: the lossless residual of a segment (bytes, file, zero-copy mapped read) carries the writer's identifier (src/segment.rs:795-856, :1064-1090) and a mismatch is the distinct error ResidualMismatch with both identifiers (src/segment.rs:876-900); tests/legacy_segment_compat.rs a_residual_from_different_arithmetic_is_refused_not_skipped (:282) and the_zero_copy_path_checks_the_identifier_too (:387). Mutant, measured and reverted: `if false &&` in front of the identifier comparison in decode_residual (src/segment.rs:1064) turned both of those tests red. Unmet: law records (src/law_store.rs, `decode_law_record` :553, `AliceDB::load_version` :713) are alice-zip SignalLaw values read back from bytes; a read by name (`get_law`, `evaluate_law`) compares no identifier, the identifier exists only in the law id index key (:331) and is checked only when a caller looks a law up by an identifier it computed itself. The list of other type-erasing entry points (src/ffi.rs extern C functions, the `mod python` block of src/lib.rs, AliceDB::from_bytes, StorageEngine::from_snapshot_files, wasm-bindgen: none) was not audited for completeness"
+reference_repo = "ALICE-LOL"
+
+[G8]
+status = "fail-known"
+evidence = ["src/segment.rs", "src/law_store.rs", "tests/legacy_segment_compat.rs"]
+note = "unmet for law records. Durable forms and writers: segment lossless residual (compress_residual_xor, src/segment.rs:1206; magic bytes 6 and 7 carry a 32-byte identifier, round trip and mismatch in tests/legacy_segment_compat.rs:207, :282, :477) is compliant; the law record (encode_law_record, src/law_store.rs:510, LAW_RECORD_FORMAT 1: coefficients, domain, evidence, residual statistics, no identifier field) is not: its reader restores the law through SignalLaw::from_parts under the reader's own arithmetic. Residuals written before the identifier existed (`Unpinned`) are still applied (src/segment.rs:853-857) by design, and lossy segments (model only, no residual) carry no identifier either"
+reference_repo = "ALICE-LOL"
+
+[G9]
+status = "fail-known"
+evidence = ["CHANGELOG.md"]
+note = "history audit done, one point unmet. `git log -S` over the identifier: the residual identifier was introduced in 179ef23 (released as 0.3.0-beta.2, 2026-10-08, with alice-det-math 0.4, identifier d2209b30...) and moved once, in 065e618 (alice-det-math 0.5, identifier 135c407d...), released as 0.4.0 (tag v0.4.0, crates.io 2026-10-12): a minor bump of a 0.x crate, which is the breaking one. The move is not a cross-architecture fix. alice-zip 0.9 and 0.10 bumps did not move it (the CHANGELOG says so at the 0.3.0 entry). Unmet: the entry naming both identifiers is CHANGELOG.md:21, under `[Unreleased]`; the file has no `## [0.4.0]` heading, so the release the move shipped in is not recorded where the move is described"
+reference_repo = "ALICE-LOL"
+
+[G10]
+status = "fail-known"
+note = "unmet on this commit: no lint bans a wall clock, a UUID or an unseeded random source (clippy.toml has none). A lexical scan of src/ finds 3 matches: src/segment.rs:292 (a doc comment), src/segment.rs:297 (`std::time::SystemTime::now()` in `unix_millis_now`, stored as SegmentMetadata::created_at, part of the stored segment format; the wasm32 build reads Date.now() instead), src/storage_engine.rs:1936 (`Instant::now()` inside a unit test). No rand, getrandom or Uuid use in src/. A lint with a canary is being prepared on the branch ci/20261015-db-g10-entropy-guard and is not part of this commit; this entry changes when that branch lands"
+reference_repo = "ALICE-Physics"
+
+[G11]
+status = "fail-known"
+evidence = ["scripts/test_public_text.py", "scripts/test_docs_lint.py", "scripts/run_tests.sh"]
+note = "unmet: of the gates this crate carries, only G12 has a self-check here (scripts/test_public_text.py: a malformed pin or a base that is not a commit exits 2; ALICE-Law's checker exits 2 when it compared nothing). The clippy ban of G1 has no canary and no zero-compared check, and G2-G5, G13 and G14 have no checker at all. scripts/run_tests.sh fails when no test ran or a named test binary ran none, which protects the test legs, not a gate of this document. No checker or helper here is a shared copy that needs a byte-identity check"
+reference_repo = "ALICE-LOL"
+
+[G12]
+status = "pass"
+evidence = [".github/workflows/public-text.yml", "scripts/public_text.sh", ".github/public-text-pin", "scripts/test_public_text.py", ".public-text.toml"]
+mutant = "added one sentence naming a role of the development process (a word of the checker's `agent process` class) to CONTRIBUTING.md in a local commit and ran scripts/public_text.sh against its parent: `found: CONTRIBUTING.md:76: agent process`, `public text: 1 findings in 132 files at HEAD`, exit 1 (measured, commit discarded). The unmodified tree reports `public text: 0 findings in 132 files at HEAD`"
+since = "f1847df"
+note = "scripts/public_text.sh fetches ALICE-Law's scripts/public_text_check.py at the revision named in .github/public-text-pin (ca96d9214ffe...) and refuses it unless its SHA-256 equals the one written there, then checks the tree at HEAD and every pushed commit; it exits 2 when it compared nothing. The workflow runs on pushes to main and ci/** and on pull requests to main. The exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests)"
+reference_repo = "ALICE-Law"
+
+[G13]
+status = "fail-known"
+note = "unmet: no lint bans HashMap / HashSet iteration and there is no allowlist of membership-only sites with reasons. Sites in src/ (36 lines naming HashMap or HashSet, 5 files): src/transaction.rs (22: MVCC version table, transaction status and write sets, lock table and the wait-for graph of the deadlock detector at :403-436, whose traversal order can decide which transaction is chosen), src/replication.rs:9, :158-179 (next_index / match_index per node), src/storage_engine.rs:1624-1655 and src/lib.rs:1000 (model_distribution statistics map, public field), src/fs_audit.rs:33-45 (test-only open-file audit). Not audited per site whether any iteration order reaches a stored or returned value. Parallel reductions: src/memtable.rs:363 `rayon::join` returns both fit results to the caller, which compares them in a fixed order (no reduction over partial results); no other rayon use in src/"
+reference_repo = "ALICE-LOL"
+
+[G14]
+status = "fail-known"
+note = "unmet as a gate, clean on inspection. Every place a flag can come from was read: there is no .cargo/config*, no build.rs, no Cargo.toml profile flag (the release profile sets lto, codegen-units, opt-level and strip only), pyproject.toml sets none, and the workflows' RUSTFLAGS is `-Dwarnings`; no target-cpu=native or fast-math-style flag is present. Missing: a CI scan step over those files, and tests that assert round-to-nearest-even and that subnormals are not flushed to zero (tests/exact_series.rs:151 special_values_keep_their_bits stores subnormal bit patterns in the exact series, which checks storage, not arithmetic)"
+reference_repo = "ALICE-LOL"

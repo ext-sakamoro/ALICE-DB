@@ -1632,6 +1632,14 @@ impl SegmentView {
         self.archived.residual_blob.is_some()
     }
 
+    /// The segment's `created_at` metadata (Unix millis, or whatever the
+    /// writer passed to [`DataSegment::new`] -- this crate itself never
+    /// reads the wall clock, see G10)
+    #[must_use]
+    pub fn created_at(&self) -> u64 {
+        self.archived.metadata.created_at
+    }
+
     /// First point of the segment's even grid at or after `timestamp`, or
     /// `None` when `timestamp` is past the last point
     ///
@@ -2531,6 +2539,11 @@ mod tests {
             )
         };
         let a = make().to_bytes().expect("serialize a");
+        // A real clock read-back would very likely differ across a gap this
+        // size (unlike two calls a few microseconds apart, which could
+        // coincidentally land in the same millisecond and pass even with
+        // the bug this test exists to catch).
+        std::thread::sleep(std::time::Duration::from_millis(5));
         let b = make().to_bytes().expect("serialize b");
         assert_eq!(a, b, "same inputs must give identical bytes (G10)");
     }

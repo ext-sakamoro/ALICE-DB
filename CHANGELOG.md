@@ -659,7 +659,7 @@ Adds write-ahead log (WAL) persistence to the blob key-value store shipped in al
 
 ### Downstream
 
-- **ALICE-CodeTracker v0.5.0** — the durability floor cleared here is the prerequisite for the `alice-tracker-alicedb` backend planned in `~/ALICE-CodeTracker/CHANGELOG.md#040`. Once alpha-2 stabilises we can wire the tracker against it.
+- **ALICE-CodeTracker v0.5.0** — the durability floor cleared here is the prerequisite for the `alice-tracker-alicedb` backend planned in ALICE-CodeTracker's CHANGELOG (0.4.0). Once alpha-2 stabilises we can wire the tracker against it.
 
 ## [0.2.0-alpha.1] - 2026-07-08
 

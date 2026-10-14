@@ -252,13 +252,13 @@ impl<'a> QueryBuilder<'a> {
                 points
                     .iter()
                     .map(|&(_, v)| v as f64)
-                    .fold(f64::INFINITY, f64::min),
+                    .fold(f64::INFINITY, alice_det_math::min64),
             )),
             Aggregation::Max => Ok(QueryResult::Scalar(
                 points
                     .iter()
                     .map(|&(_, v)| v as f64)
-                    .fold(f64::NEG_INFINITY, f64::max),
+                    .fold(f64::NEG_INFINITY, alice_det_math::max64),
             )),
             Aggregation::Count => Ok(QueryResult::Scalar(points.len() as f64)),
             Aggregation::First => {
@@ -342,8 +342,8 @@ impl<'a> QueryBuilder<'a> {
                 let v = value as f64;
                 self.sum += v;
                 self.count += 1;
-                self.min = self.min.min(value);
-                self.max = self.max.max(value);
+                self.min = alice_det_math::min(self.min, value);
+                self.max = alice_det_math::max(self.max, value);
                 self.last = value;
 
                 // Welford's online algorithm for variance

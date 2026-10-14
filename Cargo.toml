@@ -43,7 +43,7 @@ alice_core = { package = "alice-zip", version = "0.10" }
 # The same major as alice-zip 0.9 uses, so `alice_det_math::SEMANTICS_ID` and
 # `alice_core::law::SEMANTICS_ID` name the same arithmetic (pinned in
 # tests/determinism_golden.rs). This crate always builds with `std`.
-alice-det-math = { version = "0.5", default-features = false, features = ["std"] }
+alice-det-math = { version = "0.5.1", default-features = false, features = ["std"] }
 
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.7", features = ["validation", "std"] }

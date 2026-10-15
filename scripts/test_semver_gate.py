@@ -349,12 +349,84 @@ class Cli(unittest.TestCase):
             (num / "Cargo.toml").write_text('[package]\nname = "num"\nversion = "0.1.0"\nedition = "2021"\n',
                                             encoding="utf-8")
             (num / "src" / "lib.rs").write_text("", encoding="utf-8")
-            config = 'consumer-features = [["num"]]\nconsumer-features-why = "w"\n'
+            config = 'consumer-features = [["num"], ["a", "py"]]\nconsumer-features-why = "w"\n'
             code, out = self.cli(config, "0.5.0",
                                  lambda *a: (0, semver_output("minor", 9, 0, from_v="0.5.0", to_v="0.5.1")),
                                  manifest=manifest.replace('path = "num"', f'path = "{num}"'))
         self.assertEqual(code, 0, out)
         self.assertIn("feature universe (cargo metadata, without default): a, num, py", out)
+
+
+class Coverage(unittest.TestCase):
+    """the CLI's feature coverage: with declared sets, a feature added to the manifest later
+    (`zz`) is in no set; it must be refused, not listed and passed"""
+
+    MANIFEST = Cli.MANIFEST + 'zz = []\n'
+    CONFIG = 'consumer-features = [["a"]]\nconsumer-features-why = "w"\nconsumer-check-features = [["py"]]\n'
+    PASS = staticmethod(lambda *a: (0, semver_output("minor", 9, 0, from_v="0.5.0", to_v="0.5.1")))
+
+    def cli(self, config, manifest=MANIFEST, run=None):
+        return Cli.cli(self, config, "0.5.0", run or self.PASS, manifest=manifest)
+
+    # the zz case as a function, so the mutant below can be run through it
+    def zz_case(self) -> None:
+        code, out = self.cli(self.CONFIG, run=lambda *a: self.fail("ran"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("refused: feature zz is in no consumer-features / consumer-check-features set "
+                      "and not in exclude-features\n", out)
+        self.assertIn("feature universe (cargo metadata, without default): a, py, zz", out)
+
+    def test_an_uncovered_feature_of_a_declared_set_config_is_refused(self):
+        self.zz_case()
+
+    def test_each_uncovered_feature_is_named(self):
+        code, out = self.cli('consumer-features = [["a"]]\nconsumer-features-why = "w"\n',
+                             run=lambda *a: self.fail("ran"))
+        self.assertEqual(code, 1, out)
+        for f in ("py", "zz"):
+            self.assertIn(f"refused: feature {f} is in no consumer-features", out)
+        self.assertNotIn("refused: feature a ", out)
+
+    def test_an_excluded_feature_with_a_reason_passes(self):
+        code, out = self.cli(self.CONFIG + 'exclude-features = { zz = "needs a board" }\n')
+        self.assertEqual(code, 0, out)
+        self.assertIn("excluded feature: zz (needs a board)", out)
+        self.assertIn("feature coverage: every feature of the universe is reached by a declared set or excluded "
+                      "(3 compared)", out)
+        self.assertIn("semver gate: pass", out)
+
+    def test_a_feature_reached_through_the_closure_is_covered(self):
+        code, out = self.cli(self.CONFIG.replace('[["a"]]', '[["b"]]'),
+                             manifest=Cli.MANIFEST.replace("a = []", 'a = []\nb = ["a", "zz"]\nzz = []'))
+        self.assertEqual(code, 0, out)
+        self.assertIn("feature coverage: every feature", out)
+
+    def test_bad_exclude_features_are_a_config_error(self):
+        never = lambda *a: self.fail("ran")  # noqa: E731
+        for ex in ('exclude-features = { zz = "" }\n', 'exclude-features = { zz = "  " }\n',
+                   'exclude-features = ["zz"]\n', 'exclude-features = {}\n',
+                   'exclude-features = { nope = "why" }\n', 'exclude-features = { default = "why" }\n',
+                   'exclude-features = { a = "why" }\n'):
+            code, out = self.cli(self.CONFIG + ex, run=never)
+            self.assertEqual(code, 2, ex + out)
+        # no declared set: nothing to exclude from
+        code, out = self.cli('exclude-features = { zz = "why" }\n', run=never)
+        self.assertEqual(code, 2, out)
+        self.assertIn("`exclude-features` without `consumer-features`", out)
+        code, out = self.cli(self.CONFIG + 'exclude-features = { nope = "why" }\n', run=never)
+        self.assertIn("`exclude-features` names feature(s) ['nope'] that are not in the feature universe", out)
+
+    def test_with_no_declared_set_the_check_is_not_applicable(self):
+        code, out = self.cli(None)
+        self.assertEqual(code, 0, out)
+        self.assertIn("feature coverage: not applicable (no consumer set is declared: "
+                      "the all-features set is the universe)", out)
+        self.assertIn("feature set: all features ['a', 'py', 'zz']", out)
+
+    def test_mutant_without_the_coverage_call_is_red(self):
+        import unittest.mock as um
+        with um.patch.object(sg, "coverage_refusals", lambda *a: []), self.assertRaises(AssertionError):
+            self.zz_case()
 
 
 class SemverEndToEnd(unittest.TestCase):

@@ -67,6 +67,7 @@ same set of names):
   feature_closure(feats, names)                      # names plus all they enable
   uncovered_features(universe, feats, sets, excluded)   # universe - closure - excluded
   unknown_features(feats, names)                     # names the package does not define
+  coverage_refusals(universe, feats, entry)          # the CLI's coverage check (below)
 
 `package` selects the package by name in a workspace (needed when the manifest is a
 virtual workspace); without it the package whose manifest is `manifest_path` is taken.
@@ -77,10 +78,21 @@ CLI (exit 0 pass, 1 refused, 2 the gate could not decide; every failure path is 
 
   --config FILE   TOML with the keys of a release-train roster entry that this gate reads:
                   `consumer-features` (cargo build sets), `consumer-check-features`
-                  (cargo check sets), `consumer-features-why` (required with either), and
-                  `equal-version` ("refuse", the default, or "next-smallest-step");
-                  any other key is an error; a set may name only features of the
-                  universe (implicit ones included) or `default`
+                  (cargo check sets), `consumer-features-why` (required with either),
+                  `exclude-features` (a table `feature = "why it is not built"`, a
+                  non-empty reason each, only with declared sets; the shape of the
+                  ALICE-Law roster key of the same name) and `equal-version` ("refuse",
+                  the default, or "next-smallest-step"); any other key is an error; a set
+                  may name only features of the universe (implicit ones included) or
+                  `default`; `exclude-features` may name only features of the universe
+                  (not `default`) and none that a declared set names
+  Feature coverage: a declared set does not grow with the manifest, so when the config
+  declares sets, every feature of the universe must be in the closure of one of them
+  (`feature_closure`) or in `exclude-features`; each one that is not is refused with
+  "feature <name> is in no consumer-features / consumer-check-features set and not in
+  exclude-features" and the gate exits 1 before any run. With no declared set the
+  all-features set is the universe, nothing is left out, and the check prints that it is
+  not applicable.
   In the "next-smallest-step" mode an equal version is announced with the version that is
   checked ("x 0.5.1 equals the latest release 0.5.1: checking it as the next release 0.5.2
   (minor step)"): cargo-semver-checks 0.50 has no option to name the current version, so
@@ -412,11 +424,13 @@ def semver_problems(repo: Path, manifest_path: str, crate: str, version: str, ma
 
 # ---------------------------------------------------------------- the CLI
 
-CONFIG_KEYS = {"consumer-features", "consumer-check-features", "consumer-features-why", "equal-version"}
+CONFIG_KEYS = {"consumer-features", "consumer-check-features", "consumer-features-why", "exclude-features",
+               "equal-version"}
 
 
 def load_config(text: str) -> dict:
-    """the --config file: the consumer feature sets and the equal-version mode"""
+    """the --config file: the consumer feature sets, the features excluded from them and the
+    equal-version mode"""
     c = tomllib.loads(text)
     unknown = sorted(set(c) - CONFIG_KEYS)
     if unknown:
@@ -431,6 +445,20 @@ def load_config(text: str) -> dict:
         raise ConfigError("`consumer-features` needs `consumer-features-why` (how the sets were chosen)")
     if not declared and "consumer-features-why" in c:
         raise ConfigError("`consumer-features-why` without `consumer-features`")
+    if "exclude-features" in c:
+        ex = c["exclude-features"]
+        if not declared:
+            raise ConfigError("`exclude-features` without `consumer-features` (with no declared set every feature "
+                              "is built at once, so there is nothing to exclude from)")
+        if not isinstance(ex, dict) or not ex or not all(
+                isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip() for k, v in ex.items()):
+            raise ConfigError("`exclude-features` must be a table of feature = \"why it is not built\"")
+        if "default" in ex:
+            raise ConfigError("`exclude-features` may not name `default` (it is not in the feature universe)")
+        in_sets = set().union(*(set(s) for s in c.get("consumer-features", []) + c.get("consumer-check-features", [])))
+        both = sorted(set(ex) & in_sets)
+        if both:
+            raise ConfigError(f"{both} are both in `exclude-features` and in a declared set")
     if c.get("equal-version", "refuse") not in EQUAL_VERSION_MODES:
         raise ConfigError(f"`equal-version` must be one of {EQUAL_VERSION_MODES}")
     return c
@@ -438,12 +466,27 @@ def load_config(text: str) -> dict:
 
 def check_features_exist(features: dict, entry: dict) -> None:
     """every name of a declared set is a feature of the package (`features`, the map of
-    `features_from_metadata`, so an implicit optional-dependency feature counts)"""
+    `features_from_metadata`, so an implicit optional-dependency feature counts), and every
+    name of `exclude-features` is in the feature universe"""
     for key in ("consumer-features", "consumer-check-features"):
         for s in entry.get(key, []):
             missing = unknown_features(features, s)
             if missing:
                 raise ConfigError(f"`{key}` names feature(s) {missing} that the manifest does not define")
+    missing = unknown_features({f: [] for f in universe_from_features(features)}, entry.get("exclude-features", {}))
+    if missing:
+        raise ConfigError(f"`exclude-features` names feature(s) {missing} that are not in the feature universe")
+
+
+def coverage_refusals(universe: list[str], features: dict, entry: dict) -> list[str] | None:
+    """None when the entry declares no consumer set (the all-features set is the universe, so
+    there is nothing to check); otherwise one refusal per feature of the universe that no
+    declared set reaches (`uncovered_features`) and that is not in `exclude-features`"""
+    sets = entry.get("consumer-features", []) + entry.get("consumer-check-features", [])
+    if not sets:
+        return None
+    return [f"feature {f} is in no consumer-features / consumer-check-features set and not in exclude-features"
+            for f in uncovered_features(universe, features, sets, entry.get("exclude-features", {}))]
 
 
 def echo_run(run):
@@ -485,6 +528,18 @@ def main(argv: list[str] | None = None, fetch: Fetch = http_fetch, run=run_semve
     print(f"  feature universe (cargo metadata, without default): {', '.join(universe) or '(none)'}")
     for label, _, fs, _ in feature_specs(manifest, entry, universe):
         print(f"  feature set: {label}" + (f" {fs}" if label == "all features" else ""))
+    for f, why in sorted(entry.get("exclude-features", {}).items()):
+        print(f"  excluded feature: {f} ({why})")
+    uncovered = coverage_refusals(universe, features, entry)
+    if uncovered is None:
+        print("  feature coverage: not applicable (no consumer set is declared: the all-features set is the universe)")
+    elif uncovered:
+        for p in uncovered:
+            print(f"refused: {p}")
+        return 1
+    else:
+        print(f"  feature coverage: every feature of the universe is reached by a declared set or excluded "
+              f"({len(universe)} compared)")
     answers: dict[str, dict] = {}
 
     def fetch_once(path: str) -> dict:

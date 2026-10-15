@@ -4,6 +4,8 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-15
+
 ### Added
 
 - CI: release profile で bit 一致 golden を走らせる `release-profile.yml` (ubuntu / macOS、`scripts/run_tests.sh` で 0 件と未実行の file を fail、preflight の full にも同じ step) と、公開 API の符号付きゼロと桁落ちの結果を `to_bits()` で固定する `tests/float_edge_golden.rs` (15 件: `aggregate` / `downsample` の Sum・Avg・Variance・StdDev、flush 後の constant / linear model と lossless 残差の `get` / `scan`) を追加
@@ -15,6 +17,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - CI: libm を直接依存に足した時に G1 の禁止 (clippy.toml の `libm::` path と `scripts/libm_ban_check.py`) が無ければ失敗する検査 `scripts/libm_dependency_guard.py` (試験 `scripts/test_libm_dependency_guard.py`) を docs-lint job (3 OS) と preflight に追加 (ALICE-DetMath と byte 一致)
 
 ### Changed
+- 版を 0.5.1 にした (公開済みの alice-edge 0.3.0 などが要求する `^0.5` の範囲で、`analytics` feature の alice-analytics 0.6 を受ける) determinism golden で既存の pin が変わったのは 2 つだけ: 算術の識別子 (`135c407d…` → `85e08846…`) と `law_id and evaluate` (`f18a2a53…` → `703f17b1…`) 旧い 2 つの値は PREVIOUS の pin として残り、0.5.0 の識別子を渡すと bit 単位で同じ値を再現する (`law_id_under_the_previous_identifier_is_unchanged`) 他の digest (model selection / 読み戻し / 集計 / bloom) は不変 識別子が動いたのは alice-det-math 0.5.1 によるもので、公開済みの alice-db 0.5.0 も alice-det-math を `^0.5` で要求するので、新しく解決すれば 0.5.0 でも既に 0.5.1 と新しい識別子になる 符号違いのゼロに対する `Aggregation::Min`/`Max` の変更 (下の Fixed) は 呼び出し元に返す集計値だけに効き、保存される bit は変わらない (0.5.0 からの src の変更は `query_engine.rs` の 4 行と `storage_engine.rs` の試験用 lint の許可の削除のみ)
 - CI: 公開する文面の検査の pin を ALICE-Law 5de698e (checker sha256 4b3d9542…) に進めた 新しい版で HEAD の全 file に指摘 0 件
 
 - CI: `scripts/clippy_canary.py` の説明を直した canary は repository の clippy job の flag に依らず決まった flag (`-W clippy::pedantic -D warnings`) で試す (以前は「CI の clippy job と同じ flag」と書いていたが、job によって flag は違う) 動作は変わらない (ALICE-Analytics / ALICE-DB / ALICE-Zip / ALICE-Edge と byte 一致)

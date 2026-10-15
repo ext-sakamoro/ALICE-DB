@@ -296,7 +296,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 | G1 no-libm-direct | 適合 | every banned method of the G1 list is in clippy.toml, every feature is linted with -D warnings (python included, without pedantic: the pyo3 binding trips … |
 | G2 ieee-max-min | 未達 | unmet: there is no Law max / min helper, clippy.toml does not ban f32::max / f32::min / f64::max / f64::min, and there is no default-deny manifest of raw … |
 | G3 no-outer-fneg-of-fma | 未確認 | unverified: no violation is known, but there is no syntax-tree checker for the outer negation of a fused multiply-add and no CI step for it. A one-off run of … |
-| G4 debug-release-arch-goldens | 未達 | unmet, with the test now present. (1) A signed-zero case is known and not pinned: Aggregation::Min and Max fold with f64::min / f64::max (src/query_engine.rs … |
+| G4 debug-release-arch-goldens | 未達 | unmet, with the test now present. (1) The signed-zero case of Aggregation::Min / Max is now fixed and pinned: the folds use alice_det_math::min64 / max64 … |
 | G5 release-profile-test-leg | 未達 | unmet: the release leg exists, on aarch64 (macos-latest), but runs only two test binaries: .github/workflows/release-profile.yml line 52 is `cargo test … |
 | G6 semantics-id | 未達 | unmet: src/lib.rs line 248 re-exports alice-zip's identifier (the alice-det-math arithmetic identifier) instead of computing one that folds this crate's own … |
 | G7 handshake-carries-id | 未達 | unmet at one type-erasing boundary. AliceDB::from_bytes (src/lib.rs line 447, snapshot::decode at src/snapshot.rs line 119) takes serialized bytes that carry … |

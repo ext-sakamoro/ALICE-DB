@@ -277,6 +277,21 @@ class Cli(unittest.TestCase):
         self.assertIn("version equals the published 0.5.1: checking the next release as the smallest step, 0.5.2", out)
         self.assertIn("4 feature set(s) compared", out)
 
+    def test_an_equal_version_prints_the_version_checked(self):
+        for version, upcoming, step in (("0.5.1", "0.5.2", "minor"), ("1.2.3", "1.2.4", "patch")):
+            manifest = self.MANIFEST.replace('version = "0.5.1"', f'version = "{version}"')
+            code, out = self.cli(self.CONFIG, version, lambda *a, step=step: (
+                0, semver_output(step, 9, 0, from_v=version, to_v=version, assume=True)), manifest=manifest)
+            self.assertEqual(code, 0, out)
+            self.assertIn(f"semver gate: x {version} equals the latest release {version}: "
+                          f"checking it as the next release {upcoming} ({step} step)\n", out)
+            self.assertEqual(sg.smallest_next_release(version, version), (upcoming, step))
+        # a newer version, a pre-release and the strict mode print no target
+        self.assertIsNone(sg.smallest_next_release("0.5.1", "0.5.2"))
+        self.assertIsNone(sg.smallest_next_release("1.0.0-rc.1", "1.0.0-rc.1"))
+        code, out = self.cli(None, "0.5.1", lambda *a: self.fail("ran"))
+        self.assertNotIn("checking it as the next release", out)
+
     def test_a_break_exits_1(self):
         code, out = self.cli(self.CONFIG, "0.5.1", lambda *a: (
             1, semver_output("minor", 9, 1, ["function_missing"], "0.5.1", "0.5.1", assume=True)))

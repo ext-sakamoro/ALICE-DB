@@ -53,6 +53,10 @@ CLI (exit 0 pass, 1 refused, 2 the gate could not decide; every failure path is 
                   (cargo check sets), `consumer-features-why` (required with either), and
                   `equal-version` ("refuse", the default, or "next-smallest-step");
                   any other key is an error
+  In the "next-smallest-step" mode an equal version is announced with the version that is
+  checked ("x 0.5.1 equals the latest release 0.5.1: checking it as the next release 0.5.2
+  (minor step)"): cargo-semver-checks 0.50 has no option to name the current version, so
+  its own line still reads "v0.5.1 -> v0.5.1 (assume minor change)".
   The crate name and version are read from [package] of the manifest; the latest release
   from the crates.io API (`max_stable_version`, else `max_version`). A network error, an
   HTTP answer other than 200 / 404, or a body without a version exits 2.
@@ -225,6 +229,17 @@ def next_patch(version: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def smallest_next_release(previous: str, version: str) -> tuple[str, str] | None:
+    """(version checked, step) when `version` equals the release `previous` (SemVer
+    precedence) and is not a pre-release: the smallest release after it and the step
+    Cargo's compatibility names for it (0.5.1 -> 0.5.2 minor, 1.2.3 -> 1.2.4 patch,
+    0.0.3 -> 0.0.4 major); None otherwise"""
+    if version_precedence(previous) != version_precedence(version) or "-" in version.split("+")[0]:
+        return None
+    upcoming = next_patch(version.split("+")[0])
+    return upcoming, version_step(previous, upcoming)
+
+
 def semver_problems(repo: Path, manifest_path: str, crate: str, version: str, manifest: dict, entry: dict | None,
                     fetch: Fetch, run=run_semver_checks, target_dir: Path | None = None,
                     equal_version: str = "refuse") -> tuple[list[str], int, str]:
@@ -241,8 +256,7 @@ def semver_problems(repo: Path, manifest_path: str, crate: str, version: str, ma
         if "-" in version.split("+")[0]:
             return [f"{crate}: the version {version} equals the latest release, a pre-release: "
                     f"no smallest next release is defined, set the next version in Cargo.toml"], 0, ""
-        upcoming = next_patch(version.split("+")[0])
-        step = version_step(previous, upcoming)
+        upcoming, step = smallest_next_release(previous, version)
         note = (f"version equals the published {previous}: checking the next release as the smallest step, "
                 f"{upcoming} ({step}); ")
         if step == "major":
@@ -337,9 +351,21 @@ def main(argv: list[str] | None = None, fetch: Fetch = http_fetch, run=run_semve
              else " (a version equal to the latest release is checked as the smallest next release)"))
     for label, _, features, _ in feature_specs(manifest, entry):
         print(f"  feature set: {label}")
+    answers: dict[str, dict] = {}
+
+    def fetch_once(path: str) -> dict:
+        # the registry is asked once: the target printed here is the one semver_problems checks
+        if path not in answers:
+            answers[path] = fetch(path)
+        return answers[path]
     try:
+        previous = previous_release(fetch_once, crate)
+        target = smallest_next_release(previous, version) if previous and mode == "next-smallest-step" else None
+        if target:
+            print(f"semver gate: {crate} {version} equals the latest release {previous}: "
+                  f"checking it as the next release {target[0]} ({target[1]} step)")
         problems, compared, note = semver_problems(
-            manifest_path.parent, manifest_path.name, crate, version, manifest, entry, fetch,
+            manifest_path.parent, manifest_path.name, crate, version, manifest, entry, fetch_once,
             run=echo_run(run), target_dir=Path(a.target_dir).resolve() if a.target_dir else None,
             equal_version=mode)
     except (urllib.error.URLError, TimeoutError, RegistryError, json.JSONDecodeError) as e:

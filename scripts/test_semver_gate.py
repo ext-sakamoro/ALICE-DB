@@ -4,7 +4,7 @@
 No network: crates.io is replaced by a fixture. The recorded outputs are the lines
 cargo-semver-checks 0.50 prints; SemverEndToEnd runs the real tool on two small crates
 (it fails when cargo-semver-checks is not installed, so the fixtures cannot drift from
-the tool unseen). The cases of class Semver are those of ALICE-Law
+the tool unseen). FeatureUniverse runs the real `cargo metadata` on small crates. The cases of class Semver are those of ALICE-Law
 scripts/test_release_train.py (main eb0779d) for the same functions.
 
 Shared file: holds no repository-specific name; keep every copy byte-identical.
@@ -50,16 +50,22 @@ def latest_fixture(crate: str, version: str | None):
     return fetch
 
 
-def problems(version: str, latest_v: str | None, run, equal_version: str = "refuse", manifest=None, entry=None):
+def problems(version: str, latest_v: str | None, run, equal_version: str = "refuse", manifest=None, entry=None,
+             universe=()):
     return sg.semver_problems(Path("."), "Cargo.toml", "x", version, manifest or {}, entry, latest_fixture("x", latest_v),
-                              run=run, equal_version=equal_version)
+                              run=run, equal_version=equal_version, universe=list(universe))
 
 
 class Semver(unittest.TestCase):
     def test_feature_specs(self):
-        self.assertEqual([l for l, *_ in sg.feature_specs({}, None)], ["default features", "no default features"])
-        self.assertEqual([l for l, *_ in sg.feature_specs({"features": {"default": [], "x": []}}, None)][-1],
+        self.assertEqual([l for l, *_ in sg.feature_specs({}, None, [])], ["default features", "no default features"])
+        self.assertEqual([l for l, *_ in sg.feature_specs({"features": {"default": [], "x": []}}, None, ["x"])][-1],
                          "all features")
+        # the all-features set is the universe, not the [features] keys
+        self.assertEqual(sg.feature_specs({"features": {"x": []}}, None, ["depx", "x"])[-1][2], ["depx", "x"])
+        # with no declared set the universe is required: no fallback to the [features] keys
+        with self.assertRaises(ValueError):
+            sg.feature_specs({"features": {"x": []}}, None)
         specs = sg.feature_specs({"features": {"x": []}}, {"consumer-features": [["x"], []],
                                                            "consumer-check-features": [["py"]]})
         self.assertEqual([(fs, cmd) for _, _, fs, cmd in specs][2:], [(["x"], "build"), ([], "build"), (["py"], "check")])
@@ -257,6 +263,8 @@ class Cli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             m = Path(d, "Cargo.toml")
             m.write_text(manifest, encoding="utf-8")
+            Path(d, "src").mkdir()
+            Path(d, "src", "lib.rs").write_text("", encoding="utf-8")
             argv = ["--manifest", str(m)]
             if config is not None:
                 Path(d, "c.toml").write_text(config, encoding="utf-8")
@@ -329,6 +337,24 @@ class Cli(unittest.TestCase):
                        'consumer-features = [["nope"]]\nconsumer-features-why = "w"\n'):
             self.assertEqual(self.cli(config, "0.5.1", never)[0], 2, config)
         self.assertEqual(self.cli(None, "0.5.1", never, manifest='[package]\nname = "x"\nversion.workspace = true\n')[0], 2)
+        # a manifest cargo metadata cannot read exits 2 (no fallback to the [features] keys)
+        self.assertEqual(self.cli(None, "0.5.1", never, manifest=self.MANIFEST + 'a = []\n')[0], 2)
+
+    def test_the_universe_is_printed_and_a_set_may_name_an_implicit_feature(self):
+        manifest = (self.MANIFEST.replace("[features]", '[dependencies]\nnum = { path = "num", optional = true }\n\n'
+                                          "[features]"))
+        with tempfile.TemporaryDirectory() as d:
+            num = Path(d, "num")
+            (num / "src").mkdir(parents=True)
+            (num / "Cargo.toml").write_text('[package]\nname = "num"\nversion = "0.1.0"\nedition = "2021"\n',
+                                            encoding="utf-8")
+            (num / "src" / "lib.rs").write_text("", encoding="utf-8")
+            config = 'consumer-features = [["num"]]\nconsumer-features-why = "w"\n'
+            code, out = self.cli(config, "0.5.0",
+                                 lambda *a: (0, semver_output("minor", 9, 0, from_v="0.5.0", to_v="0.5.1")),
+                                 manifest=manifest.replace('path = "num"', f'path = "{num}"'))
+        self.assertEqual(code, 0, out)
+        self.assertIn("feature universe (cargo metadata, without default): a, num, py", out)
 
 
 class SemverEndToEnd(unittest.TestCase):
@@ -357,7 +383,8 @@ class SemverEndToEnd(unittest.TestCase):
                 new, "Cargo.toml", "semverprobe", version, {}, None, latest_fixture("semverprobe", "1.0.0"),
                 run=lambda repo, mp, baseline, features, td: sg.run_semver_checks(
                     repo, mp, ["--baseline-root", str(base), *baseline[2:]], features, td),
-                target_dir=root / "target", equal_version=equal_version)
+                target_dir=root / "target", equal_version=equal_version,
+                universe=sg.feature_universe(new / "Cargo.toml"))
 
     def test_a_field_variant_under_a_minor_version_is_refused(self):
         src = self.BASE.replace("    B,\n", "    B,\n    C { id: [u8; 32] },\n")
@@ -389,6 +416,142 @@ class SemverEndToEnd(unittest.TestCase):
         self.assertEqual(n, 0)
         self.assertEqual(len(p), 2, p)
         self.assertIn("a patch version does not allow function_missing", p[0])
+
+
+def write_crate(root: Path, name: str, version: str = "1.0.0", deps: str = "", features: str = "",
+                src: str = "") -> Path:
+    d = root / name
+    (d / "src").mkdir(parents=True)
+    (d / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion = "{version}"\nedition = "2021"\n'
+                                  f'publish = false\n\n[workspace]\n\n[dependencies]\n{deps}\n[features]\n{features}',
+                                  encoding="utf-8")
+    (d / "src" / "lib.rs").write_text(src, encoding="utf-8")
+    return d
+
+
+class FeatureUniverse(unittest.TestCase):
+    """the real `cargo metadata` on small crates with an optional path dependency"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        write_crate(self.root, "depx", deps="", features="")
+        self.dep = f'depx = {{ path = "{self.root / "depx"}", optional = true }}\n'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def pkg(self, features: str, name: str = "pkg") -> Path:
+        return write_crate(self.root, name, deps=self.dep, features=features) / "Cargo.toml"
+
+    # the checks of each case, as functions of the helpers, so a mutant can be run through them
+    def implicit_case(self, universe_of) -> None:
+        m = self.pkg('py = []\n')
+        universe = universe_of(m)
+        self.assertIn("depx", universe)
+        self.assertEqual(sg.feature_specs({"features": {"py": []}}, None, universe)[-1][2], ["depx", "py"])
+
+    def closure_case(self, closure) -> None:
+        feats = sg.features_from_metadata(sg.cargo_metadata(self.pkg('py = ["depx"]\n')), "pkg")
+        self.assertEqual(closure(feats, {"py"}), {"py", "depx"})
+        universe = sg.universe_from_features(feats)
+        self.assertEqual(sg.uncovered_features(universe, feats, [["py"]], {}), [])
+
+    def test_an_optional_dep_no_feature_names_is_in_the_universe_and_the_all_features_set(self):
+        self.implicit_case(sg.feature_universe)
+
+    def test_a_dep_named_by_a_feature_is_covered_through_the_closure(self):
+        self.closure_case(sg.feature_closure)
+
+    def test_a_dep_named_with_dep_is_not_a_feature(self):
+        m = self.pkg('py = ["dep:depx"]\n')
+        self.assertEqual(sg.feature_universe(m), ["py"])
+        feats = sg.features_from_metadata(sg.cargo_metadata(m), "pkg")
+        self.assertEqual(sg.feature_closure(feats, {"py"}), {"py"})
+        self.assertEqual(sg.unknown_features(feats, ["depx"]), ["depx"])
+
+    def test_the_closure_follows_slash_forms(self):
+        feats = {"default": ["a"], "a": ["b", "dep:z"], "b": [], "depx": ["dep:depx"], "s": ["depx/f"],
+                 "w": ["depx?/f"], "n": ["serde/derive"]}
+        self.assertEqual(sg.feature_closure(feats, {"a"}), {"a", "b"})
+        self.assertEqual(sg.feature_closure(feats, {"s"}), {"s", "depx"})
+        self.assertEqual(sg.feature_closure(feats, {"w"}), {"w"})
+        self.assertEqual(sg.feature_closure(feats, {"n"}), {"n"})
+        universe = sg.universe_from_features(feats)
+        self.assertEqual(sg.uncovered_features(universe, feats, [["s", "a"]], {"w": "why"}), ["n"])
+        self.assertEqual(sg.uncovered_features(universe, feats, [], {}), sorted(set(feats) - {"default"}))
+        self.assertEqual(sg.unknown_features(feats, ["default", "depx", "nope"]), ["nope"])
+
+    def test_a_workspace_selects_the_package_by_name(self):
+        ws = self.root / "ws"
+        (ws / "m" / "src").mkdir(parents=True)
+        (ws / "Cargo.toml").write_text('[workspace]\nmembers = ["m"]\nresolver = "2"\n', encoding="utf-8")
+        (ws / "m" / "Cargo.toml").write_text(f'[package]\nname = "m"\nversion = "0.1.0"\nedition = "2021"\n\n'
+                                             f'[dependencies]\n{self.dep}', encoding="utf-8")
+        (ws / "m" / "src" / "lib.rs").write_text("", encoding="utf-8")
+        self.assertEqual(sg.feature_universe(ws / "Cargo.toml", "m"), ["depx"])
+        self.assertEqual(sg.feature_universe(ws / "m" / "Cargo.toml"), ["depx"])
+        with self.assertRaises(sg.MetadataError):  # a virtual workspace with no name
+            sg.feature_universe(ws / "Cargo.toml")
+        with self.assertRaises(sg.MetadataError):
+            sg.feature_universe(ws / "Cargo.toml", "absent")
+
+    def test_a_metadata_failure_is_an_error(self):
+        broken = self.root / "broken"
+        broken.mkdir()
+        (broken / "Cargo.toml").write_text("[package\n", encoding="utf-8")
+        for m in (broken / "Cargo.toml", self.root / "none" / "Cargo.toml"):
+            with self.assertRaises(sg.MetadataError):
+                sg.feature_universe(m)
+        with self.assertRaises(sg.MetadataError):
+            sg.features_from_metadata({"packages": [{"name": "pkg"}]}, "pkg")
+
+    def test_non_json_output_is_an_error(self):
+        import unittest.mock as um
+        done = sg.subprocess.CompletedProcess([], 0, stdout="warning: not json", stderr="")
+        with um.patch.object(sg.subprocess, "run", return_value=done), self.assertRaises(sg.MetadataError):
+            sg.cargo_metadata(self.pkg(""))
+
+    def test_mutant_universe_from_the_features_table_is_red(self):
+        def keys_only(m):
+            return sorted(f for f in sg.tomllib.loads(Path(m).read_text())["features"] if f != "default")
+        with self.assertRaises(AssertionError):
+            self.implicit_case(keys_only)
+
+    def test_mutant_closure_of_raw_names_is_red(self):
+        with self.assertRaises(AssertionError):
+            self.closure_case(lambda feats, names: set(names))
+
+
+class ImplicitFeatureEndToEnd(unittest.TestCase):
+    """the real tool: the only public item is behind an optional dependency no feature names"""
+
+    def test_removing_it_under_a_minor_step_is_refused_in_the_all_features_set(self):
+        if shutil.which("cargo-semver-checks") is None:
+            self.fail("cargo-semver-checks is not installed (CI installs it; locally: cargo install cargo-semver-checks)")
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write_crate(root, "depx")
+            dep = f'depx = {{ path = "{root / "depx"}", optional = true }}\n'
+            item = '#[cfg(feature = "depx")]\npub fn only() -> u32 {\n    1\n}\n'
+            base = write_crate(root / "b", "semverprobe", "1.0.0", dep, "", item)
+            new = write_crate(root / "n", "semverprobe", "1.1.0", dep, "", "")
+            universe = sg.feature_universe(new / "Cargo.toml")
+            self.assertEqual(universe, ["depx"])
+
+            def gate(universe):
+                return sg.semver_problems(
+                    new, "Cargo.toml", "semverprobe", "1.1.0", {}, None, latest_fixture("semverprobe", "1.0.0"),
+                    run=lambda repo, mp, baseline, features, td: sg.run_semver_checks(
+                        repo, mp, ["--baseline-root", str(base), *baseline[2:]], features, td),
+                    target_dir=root / "target", universe=universe)
+            p, n, _ = gate(universe)
+            self.assertEqual(n, 2, p)  # default features and none: the item is not there
+            self.assertEqual(len(p), 1, p)
+            self.assertIn("(all features)", p[0])
+            self.assertIn("function_missing", p[0])
+            # the [features] keys (none here) would compare no all-features set and pass
+            self.assertEqual(gate([])[:2], ([], 2))
 
 
 if __name__ == "__main__":

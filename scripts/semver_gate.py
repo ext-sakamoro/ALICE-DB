@@ -10,6 +10,14 @@ measured from the latest release on crates.io:
   - `cargo semver-checks check-release --baseline-version <release>` runs once per feature
     set of the consumer build (default features, none, and the declared consumer sets, or
     every feature at once when none are declared), see `feature_specs`
+  - "every feature" is the feature universe of the package as Cargo defines it, read from
+    `cargo metadata --no-deps`: the [features] table and the implicit feature of each
+    optional dependency that no feature names as `dep:<name>` (an item behind
+    `#[cfg(feature = "<optional dependency>")]` that no named feature enables is compared
+    too), `default` left out; a metadata failure is an error, never a fallback to the
+    [features] keys, see `feature_universe`. The same universe, with `feature_closure`
+    (what a set of features enables), gives a coverage check the features no declared set
+    reaches, see `uncovered_features` and `unknown_features`
   - a run is refused when the tool did not run, names a different step than the two
     versions make, prints no count of checks, compared 0 checks, or found a change the
     step does not allow (or exited non-zero), see `semver_verdict`
@@ -21,7 +29,7 @@ measured from the latest release on crates.io:
 Shared module. The functions `feature_specs`, `version_step`, `version_precedence`,
 `semver_feature_args`, `run_semver_checks`, `semver_verdict`, `previous_release` and
 `semver_problems` are those of ALICE-Law scripts/release_train.py (main eb0779d), with the
-same names, signatures and results, so that file can import them from here. This file and
+same names and results (except as listed below), so that file can import them from here. This file and
 scripts/test_semver_gate.py hold no repository-specific name or path; the data of a
 repository (its consumer feature sets, the equal-version mode) is a small TOML file
 passed with --config. Keep every copy byte-identical and change them together.
@@ -43,6 +51,25 @@ Differences from release_train.py eb0779d (behaviour, not code layout):
     fails until Cargo.toml carries that bump. A pre-release that equals the latest release
     has no defined smallest next release and is refused in this mode too
   - `http_fetch` does not retry an HTTP 4xx answer (a 404 is the answer "no such crate")
+  - `feature_specs` and `semver_problems` take one more keyword argument, `universe` (the
+    list `feature_universe` returns). With no declared consumer set the all-features set
+    is that universe; without it they raise ValueError (eb0779d used the [features] keys,
+    which miss the implicit feature of an optional dependency no feature names). With a
+    declared set the universe is not used
+
+The feature universe (shared with a coverage check, so "covered" and "checked" are the
+same set of names):
+
+  meta = cargo_metadata(manifest_path)               # fail-closed, MetadataError
+  feats = features_from_metadata(meta, package, manifest_path)   # the package's map
+  universe = universe_from_features(feats)           # sorted, `default` left out
+  feature_universe(manifest_path, package=None)      # the three steps above
+  feature_closure(feats, names)                      # names plus all they enable
+  uncovered_features(universe, feats, sets, excluded)   # universe - closure - excluded
+  unknown_features(feats, names)                     # names the package does not define
+
+`package` selects the package by name in a workspace (needed when the manifest is a
+virtual workspace); without it the package whose manifest is `manifest_path` is taken.
 
 CLI (exit 0 pass, 1 refused, 2 the gate could not decide; every failure path is closed):
 
@@ -52,12 +79,14 @@ CLI (exit 0 pass, 1 refused, 2 the gate could not decide; every failure path is 
                   `consumer-features` (cargo build sets), `consumer-check-features`
                   (cargo check sets), `consumer-features-why` (required with either), and
                   `equal-version` ("refuse", the default, or "next-smallest-step");
-                  any other key is an error
+                  any other key is an error; a set may name only features of the
+                  universe (implicit ones included) or `default`
   In the "next-smallest-step" mode an equal version is announced with the version that is
   checked ("x 0.5.1 equals the latest release 0.5.1: checking it as the next release 0.5.2
   (minor step)"): cargo-semver-checks 0.50 has no option to name the current version, so
   its own line still reads "v0.5.1 -> v0.5.1 (assume minor change)".
-  The crate name and version are read from [package] of the manifest; the latest release
+  The crate name and version are read from [package] of the manifest, the feature universe
+  from `cargo metadata --no-deps` (a failure exits 2); the latest release
   from the crates.io API (`max_stable_version`, else `max_version`). A network error, an
   HTTP answer other than 200 / 404, or a body without a version exits 2.
 """
@@ -115,11 +144,108 @@ def latest_release(fetch: Fetch, crate: str) -> str:
     return c.get("max_stable_version") or c["max_version"]
 
 
-def feature_specs(manifest: dict, entry: dict | None) -> list[tuple[str, str, list[str] | None, str]]:
+class MetadataError(ConfigError):
+    """`cargo metadata` failed, printed no JSON, or has no such package"""
+
+
+def cargo_metadata(manifest_path: str | Path) -> dict:
+    """`cargo metadata --no-deps --format-version 1 --manifest-path <manifest>`, parsed;
+    MetadataError on any failure (there is no fallback to the manifest's [features])"""
+    cmd = ["cargo", "metadata", "--no-deps", "--format-version", "1", "--manifest-path", str(manifest_path)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "CARGO_TERM_COLOR": "never"})
+    except OSError as e:
+        raise MetadataError(f"cargo metadata could not run: {e}") from None
+    if r.returncode != 0:
+        tail = " / ".join(line.strip() for line in r.stderr.strip().splitlines()[-3:])
+        raise MetadataError(f"cargo metadata failed for {manifest_path} (exit {r.returncode}): {tail}")
+    try:
+        meta = json.loads(r.stdout)
+    except json.JSONDecodeError as e:
+        raise MetadataError(f"cargo metadata printed no JSON for {manifest_path}: {e}") from None
+    if not isinstance(meta, dict) or not isinstance(meta.get("packages"), list):
+        raise MetadataError(f"cargo metadata for {manifest_path} has no package list")
+    return meta
+
+
+def features_from_metadata(metadata: dict, package: str | None, manifest_path: str | Path | None = None) -> dict:
+    """the `features` map of one package of `cargo metadata` output: the package named
+    `package`, or (with no name) the one whose manifest is `manifest_path`; MetadataError when
+    there is not exactly one"""
+    pkgs = metadata.get("packages") or []
+    if package is not None:
+        found = [p for p in pkgs if p.get("name") == package]
+        what = f"named {package}"
+    elif manifest_path is not None:
+        want = Path(manifest_path).resolve()
+        found = [p for p in pkgs if p.get("manifest_path") and Path(p["manifest_path"]).resolve() == want]
+        what = f"with the manifest {want}"
+    else:
+        raise MetadataError("features_from_metadata needs a package name or a manifest path")
+    if len(found) != 1:
+        raise MetadataError(f"cargo metadata has {len(found)} package(s) {what} (expected 1)")
+    feats = found[0].get("features")
+    if not isinstance(feats, dict) or not all(isinstance(k, str) and isinstance(v, list) for k, v in feats.items()):
+        raise MetadataError(f"cargo metadata has no features map for the package {what}")
+    return feats
+
+
+def universe_from_features(features: dict) -> list[str]:
+    """every feature of the map but `default`, sorted"""
+    return sorted(f for f in features if f != "default")
+
+
+def feature_universe(manifest_path: str | Path, package: str | None = None) -> list[str]:
+    """every feature Cargo defines for the package (the [features] table and the implicit
+    feature of each optional dependency no feature names as `dep:`), `default` left out,
+    from `cargo metadata --no-deps`; MetadataError on any failure"""
+    return universe_from_features(features_from_metadata(cargo_metadata(manifest_path), package, manifest_path))
+
+
+def feature_closure(features: dict, names) -> set[str]:
+    """`names` and every feature of this package they enable, through the `features` map of
+    `cargo metadata`: `x` enables the feature x; `dep:x` enables the dependency only (no
+    feature x exists when `dep:` names it); `x/y` enables the feature x when x is a feature of
+    this package (an optional dependency's implicit feature); `x?/y` does not enable x"""
+    seen, todo = set(), list(names)
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        for item in features.get(f, []):
+            if item.startswith("dep:"):
+                continue
+            if "/" in item:
+                x = item.split("/", 1)[0]
+                if x.endswith("?") or x not in features:
+                    continue
+                todo.append(x)
+            else:
+                todo.append(item)
+    return seen
+
+
+def uncovered_features(universe: list[str], features: dict, sets, excluded) -> list[str]:
+    """the features of the universe that no declared set enables (through `feature_closure`)
+    and that are not excluded, sorted"""
+    declared = set().union(*(set(s) for s in sets)) if sets else set()
+    return sorted(set(universe) - feature_closure(features, declared) - set(excluded))
+
+
+def unknown_features(features: dict, names) -> list[str]:
+    """the names that are not features of the package (implicit ones and `default`, when it
+    is defined, are features), sorted"""
+    return sorted(set(names) - set(features))
+
+
+def feature_specs(manifest: dict, entry: dict | None,
+                  universe: list[str] | None = None) -> list[tuple[str, str, list[str] | None, str]]:
     """(label, dependency spec, features, cargo command) of each build: the default features,
     none, and either the roster's `consumer-features` sets (`cargo build`) and
     `consumer-check-features` sets (`cargo check`: compiled but not linked, for a feature whose
-    library another tool links, such as a Python extension) or every feature at once"""
+    library another tool links, such as a Python extension) or every feature of `universe`
+    (from `feature_universe`; required when no set is declared) at once"""
     entry = entry or {}
     specs = [("default features", "", None, "build"), ("no default features", ", default-features = false", [], "build")]
     declared = [(fs, "build") for fs in entry.get("consumer-features", [])] + \
@@ -128,9 +254,13 @@ def feature_specs(manifest: dict, entry: dict | None) -> list[tuple[str, str, li
         for fs, cmd in declared:
             specs.append((f"features {fs}" + (" (cargo check)" if cmd == "check" else ""),
                           ", default-features = false, features = " + json.dumps(fs), fs, cmd))
-    elif [f for f in manifest.get("features", {}) if f != "default"]:
-        every = sorted(f for f in manifest["features"] if f != "default")
-        specs.append(("all features", ", features = " + json.dumps(every), every, "build"))
+    else:
+        if universe is None:
+            raise ValueError("feature_specs needs the feature universe (feature_universe) when no consumer set "
+                             "is declared: the [features] keys miss implicit optional-dependency features")
+        every = sorted(f for f in universe if f != "default")
+        if every:
+            specs.append(("all features", ", features = " + json.dumps(every), every, "build"))
     return specs
 
 
@@ -242,7 +372,7 @@ def smallest_next_release(previous: str, version: str) -> tuple[str, str] | None
 
 def semver_problems(repo: Path, manifest_path: str, crate: str, version: str, manifest: dict, entry: dict | None,
                     fetch: Fetch, run=run_semver_checks, target_dir: Path | None = None,
-                    equal_version: str = "refuse") -> tuple[list[str], int, str]:
+                    equal_version: str = "refuse", universe: list[str] | None = None) -> tuple[list[str], int, str]:
     """(problems, runs compared, what was compared) of cargo semver-checks against the latest
     release, once per feature set of the consumer build"""
     if equal_version not in EQUAL_VERSION_MODES:
@@ -270,7 +400,7 @@ def semver_problems(repo: Path, manifest_path: str, crate: str, version: str, ma
             return [], 0, f"{previous} -> {version} is a major step: any change is allowed, not compared"
     problems, compared = [], 0
     with tempfile.TemporaryDirectory() as tmp:
-        for label, _, features, _ in feature_specs(manifest, entry):
+        for label, _, features, _ in feature_specs(manifest, entry, universe):
             code, out = run(repo, manifest_path, baseline, features, target_dir or Path(tmp))
             p, n = semver_verdict(code, out, step, f"{crate} {version} ({label})")
             if p:
@@ -306,11 +436,12 @@ def load_config(text: str) -> dict:
     return c
 
 
-def check_features_exist(manifest: dict, entry: dict) -> None:
-    known = set(manifest.get("features", {}))
+def check_features_exist(features: dict, entry: dict) -> None:
+    """every name of a declared set is a feature of the package (`features`, the map of
+    `features_from_metadata`, so an implicit optional-dependency feature counts)"""
     for key in ("consumer-features", "consumer-check-features"):
         for s in entry.get(key, []):
-            missing = sorted(set(s) - known)
+            missing = unknown_features(features, s)
             if missing:
                 raise ConfigError(f"`{key}` names feature(s) {missing} that the manifest does not define")
 
@@ -341,7 +472,9 @@ def main(argv: list[str] | None = None, fetch: Fetch = http_fetch, run=run_semve
         if not isinstance(crate, str) or not isinstance(version, str):
             raise ConfigError(f"{manifest_path}: [package] needs a literal name and version")
         entry = load_config(Path(a.config).read_text(encoding="utf-8")) if a.config else {}
-        check_features_exist(manifest, entry)
+        features = features_from_metadata(cargo_metadata(manifest_path), crate, manifest_path)
+        universe = universe_from_features(features)
+        check_features_exist(features, entry)
     except (OSError, tomllib.TOMLDecodeError, ConfigError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -349,8 +482,9 @@ def main(argv: list[str] | None = None, fetch: Fetch = http_fetch, run=run_semve
     print(f"semver gate: {crate} {version}, equal-version mode: {mode}"
           + (" (a version equal to the latest release is refused)" if mode == "refuse"
              else " (a version equal to the latest release is checked as the smallest next release)"))
-    for label, _, features, _ in feature_specs(manifest, entry):
-        print(f"  feature set: {label}")
+    print(f"  feature universe (cargo metadata, without default): {', '.join(universe) or '(none)'}")
+    for label, _, fs, _ in feature_specs(manifest, entry, universe):
+        print(f"  feature set: {label}" + (f" {fs}" if label == "all features" else ""))
     answers: dict[str, dict] = {}
 
     def fetch_once(path: str) -> dict:
@@ -367,7 +501,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = http_fetch, run=run_semve
         problems, compared, note = semver_problems(
             manifest_path.parent, manifest_path.name, crate, version, manifest, entry, fetch_once,
             run=echo_run(run), target_dir=Path(a.target_dir).resolve() if a.target_dir else None,
-            equal_version=mode)
+            equal_version=mode, universe=universe)
     except (urllib.error.URLError, TimeoutError, RegistryError, json.JSONDecodeError) as e:
         print(f"error: the latest release of {crate} could not be read from crates.io: {e}", file=sys.stderr)
         return 2

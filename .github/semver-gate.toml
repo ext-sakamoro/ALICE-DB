@@ -1,0 +1,14 @@
+# scripts/semver_gate.py: the consumer feature sets of alice-db and the equal-version mode
+#
+# The sets are the `consumer-features` / `consumer-check-features` of [crate.alice-db] in
+# ALICE-Law release-train.toml, the roster its publish gate builds the packaged crate with;
+# keep them equal. The gate also runs the default features and no default features
+consumer-features = [["analytics", "crypto", "ffi", "fs", "open-file-audit", "sdf"]]
+consumer-features-why = "python は cargo check で見る (PyO3 の extension module で link は maturin が行う、cargo build の cdylib link は -undefined dynamic_lookup が無く macOS で失敗する)"
+consumer-check-features = [["python"]]
+
+# Cargo.toml keeps the released version while changes accumulate under [Unreleased]; the
+# version is raised when the release is cut. An equal version is checked as the smallest
+# next release (0.5.1 -> 0.5.2, a minor step under Cargo's 0.x rules), so a change that
+# needs a larger step fails on every push until Cargo.toml carries that bump
+equal-version = "next-smallest-step"

@@ -257,63 +257,17 @@ jobs:
           path: coverage-summary.txt
           retention-days: 30
 
-  semver-checks:
-    needs: changes
-    if: needs.changes.outputs.run == 'true'
-    name: cargo-semver-checks (API compat、informational)
-    runs-on: ubuntu-latest
-    # informational only (計画的 API 変更を block しない)
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-          fetch-depth: 0  # baseline-rev 比較のため full history 必要
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      # version 明示 pin: `@latest` は rustc MSRV を追いかける (0.50.0 = 1.93+) ので、
-      # rust-toolchain.toml の pin が遅れると赤になる (2026-09-14 事案) toolchain と
-      # 一緒に月次で bump する
-      - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
-        with:
-          tool: cargo-semver-checks@0.50.0
-
-      # HEAD~1 と比較 API の変更そのものは informational (計画的な break を block しない)
-      # が、**何も比較しなかった場合は落とす**
-      #
-      # cargo-semver-checks は lint を「その lint が要求する bump が既に満たされて
-      # いるか」で選別するので、Cargo.toml の版が baseline より先行していると全 lint が
-      # 不要判定になり、`0 checks: 0 pass, 254 skip` / `no semver update required` /
-      # exit 0 を返す。文面は「問題なし」と読めるが、実際には 1 件も比較していない。
-      # `--release-type patch` を明示すると major / minor の lint 系統が両方走る
-      # (実測: 0 checks → 223 checks、うち 1 件が本物の破壊的変更を指した)。
-      - name: Run cargo semver-checks
-        run: |
-          set -o pipefail
-          cargo semver-checks check-release \
-            --package alice-db \
-            --baseline-rev "HEAD~1" \
-            --release-type patch 2>&1 | tee semver.log || true
-          ran=$(grep -oE '[0-9]+ checks:' semver.log | grep -oE '[0-9]+' | tail -1)
-          echo "semver-checks ran ${ran:-0} checks"
-          if [ "${ran:-0}" -eq 0 ]; then
-            echo "::error::cargo-semver-checks compared nothing (see the comment above this step)"
-            exit 1
-          fi
-
   # one result for the workflow: run=true needs every job above to succeed, run=false
   # needs them skipped (a skipped, cancelled or failed job after run=true is red)
-  # coverage and semver-checks are informational: a job-level continue-on-error failure
-  # reaches needs as `success`, so their failure stays non-blocking, but a skip or a
-  # cancel after run=true is red like any other job
+  # coverage is informational: a job-level continue-on-error failure reaches needs as
+  # `success`, so its failure stays non-blocking, but a skip or a cancel after run=true is
+  # red like any other job (the API check is semver-checks.yml, which gates)
   # not a required status check: pull_request keeps its paths, so a pull request that
   # touches none of them has no run and a required check would stay pending
   gate:
     name: Gate
     if: always()
-    needs: [changes, audit, deny, unused-deps, stub-guard, package-integrity, coverage, semver-checks]
+    needs: [changes, audit, deny, unused-deps, stub-guard, package-integrity, coverage]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -1,0 +1,19 @@
+# the paths that run .github/workflows/semver-checks.yml (scripts/changed_paths.py decide)
+# on.pull_request.paths of the workflow must list the same patterns in the same order
+# (scripts/changed_paths.py sync)
+# every file a job of the workflow executes or reads is listed: a missing one skips the
+# check on a change that alters it
+# the public API and the version the step is measured to
+src/**
+Cargo.toml
+Cargo.lock
+# cargo semver-checks runs at the repository root, where this file picks the toolchain
+rust-toolchain.toml
+# the gate, its tests and the consumer feature sets
+scripts/semver_gate.py
+scripts/test_semver_gate.py
+.github/semver-gate.toml
+# the changes and gate jobs
+scripts/changed_paths.py
+.github/workflows/semver-checks.yml
+.github/paths/semver-checks.txt

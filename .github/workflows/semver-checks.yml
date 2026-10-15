@@ -1,0 +1,141 @@
+name: Semver checks
+
+# The public API may change only as far as the version in Cargo.toml allows,
+# measured from the latest alice-db release on crates.io (scripts/semver_gate.py):
+# cargo-semver-checks runs once per consumer feature set (.github/semver-gate.toml),
+# and the job fails when a change needs a larger step than the two versions make,
+# when the tool did not run or names another step, or when a run compared 0 checks.
+# A major step (0.x: a minor bump) is not compared. Cargo.toml keeps the released
+# version until the next release is cut, and an equal version is checked as the
+# smallest next release (`equal-version` in .github/semver-gate.toml).
+#
+# Not on every push: only on a change to the files in .github/paths/semver-checks.txt,
+# and weekly (a release on crates.io can change the baseline without a commit here).
+#
+# scripts/preflight.sh (full run) runs the same command.
+
+on:
+  push:
+    # no paths here: a branch created at a SHA another ref already has gets an empty
+    # diff from GitHub's filter and the run is skipped; the changes job below compares
+    # with merge-base(origin/main) instead (patterns: .github/paths/semver-checks.txt)
+    # ci/**: the same checks on a branch before it is fast-forwarded to main
+    branches: [main, 'ci/**']
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/semver_gate.py'
+      - 'scripts/test_semver_gate.py'
+      - '.github/semver-gate.toml'
+      - 'scripts/changed_paths.py'
+      - '.github/workflows/semver-checks.yml'
+      - '.github/paths/semver-checks.txt'
+  schedule:
+    # every Monday 11:00 UTC (two hours after security-audit.yml)
+    - cron: '0 11 * * 1'
+  workflow_dispatch:
+
+# on main each commit has a group of its own and a run there is never
+# cancelled; a newer run cancels an older one only off main
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "5"
+  CARGO_HTTP_MULTIPLEXING: "false"
+
+# The token only reads the repository; a job that needs more raises it for
+# that job alone, with the reason next to it
+permissions:
+  contents: read
+
+jobs:
+  # which files changed: a new or force-pushed branch is compared with merge-base(origin/main),
+  # another push with before..after, a pull request with base...head; schedule and manual
+  # runs always run; any error runs (fail-closed) — scripts/changed_paths.py
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after || github.sha }}
+          CREATED: ${{ github.event.created }}
+          FORCED: ${{ github.event.forced }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 scripts/changed_paths.py decide --event "$EVENT"
+          --before "$BEFORE" --after "$AFTER" --created "$CREATED" --forced "$FORCED"
+          --base "$PR_BASE" --head "$PR_HEAD"
+          --patterns-file .github/paths/semver-checks.txt
+
+  semver-checks:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    name: cargo-semver-checks (latest crates.io release, consumer feature sets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # the python feature set builds pyo3, whose build script reads the interpreter
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # version 明示 pin: `@latest` は rustc MSRV を追いかける (0.50.0 = 1.93+) ので、
+      # rust-toolchain.toml の pin が遅れると赤になる (2026-09-14 事案) toolchain と
+      # 一緒に月次で bump する
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-semver-checks@0.50.0
+
+      # recorded tool outputs, and the real tool on two small crates (fails when the
+      # tool is missing, so the recorded lines cannot drift from the tool unseen)
+      - name: semver gate (tests)
+        run: python scripts/test_semver_gate.py
+
+      # exit 1: a change the step does not allow, a run that compared nothing or named
+      # another step; exit 2: crates.io or the configuration could not be read
+      - name: semver gate (latest crates.io release, every consumer feature set)
+        run: python scripts/semver_gate.py --config .github/semver-gate.toml --target-dir target/semver
+
+  # one result for the workflow: run=true needs every job above to succeed, run=false
+  # needs them skipped (a skipped, cancelled or failed job after run=true is red)
+  # not a required status check: pull_request keeps its paths, so a pull request that
+  # touches none of them has no run and a required check would stay pending
+  gate:
+    name: Gate
+    if: always()
+    needs: [changes, semver-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: gate
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/changed_paths.py gate --needs-json "$NEEDS"

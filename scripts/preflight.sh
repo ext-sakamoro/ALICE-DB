@@ -15,8 +15,8 @@
 #            skips the full suites, example, benches, MSRV, powerset, fuzz
 #            build and the security jobs
 #
-# Not reproduced here (runner only): the time-boxed fuzz runs, the coverage and
-# semver-checks jobs (informational in CI) and package-integrity.
+# Not reproduced here (runner only): the time-boxed fuzz runs, the coverage job
+# (informational in CI) and package-integrity.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -182,5 +182,10 @@ cargo audit --db "${CARGO_TARGET_DIR:-target}/advisory-db" --deny yanked \
   --ignore RUSTSEC-2024-0320
 cargo deny --all-features check all
 cargo machete
+
+step "semver-checks.yml: semver gate tests + cargo semver-checks against the latest crates.io release"
+need cargo-semver-checks "cargo install cargo-semver-checks --version 0.50.0 --locked"
+python3 scripts/test_semver_gate.py
+python3 scripts/semver_gate.py --config .github/semver-gate.toml --target-dir "${CARGO_TARGET_DIR:-target}/semver"
 
 echo; echo "preflight OK"

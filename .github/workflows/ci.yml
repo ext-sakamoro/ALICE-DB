@@ -7,7 +7,8 @@ name: CI
 #   feature set (ffi, sdf), and on no default features (memory backend only)
 # - alice-analytics and alice-crypto are plain registry dependencies, so the
 #   `analytics` / `crypto` bridges build and test against the released crates
-#   (both are in NATIVE_FEATURES). Only `python` is not built here
+#   (both are in NATIVE_FEATURES). Only `python` is not built here (clippy
+#   lints it, lib only)
 
 on:
   push:
@@ -55,13 +56,13 @@ jobs:
       # same on every OS and in every feature set, so it is named in each step.
       - name: Test (default = file backend)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor -- cargo test
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden -- cargo test
       - name: Test (full native feature set)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact -- cargo test --features "$NATIVE_FEATURES"
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact,float_edge_golden -- cargo test --features "$NATIVE_FEATURES"
       - name: Test (no default features = memory backend only)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor -- cargo test --no-default-features
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden -- cargo test --no-default-features
       - name: Test (law store oracles, memory backend only)
         shell: bash
         run: scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
@@ -118,6 +119,19 @@ jobs:
         run: cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -W clippy::pedantic -D warnings
       - name: Clippy (no default features, all targets, pedantic)
         run: cargo clippy --no-default-features --all-targets -- -W clippy::pedantic -D warnings
+      # python is the one feature the sets above leave out; checking it does
+      # not link, so the interpreter is not needed. Not pedantic: the binding's
+      # pyo3 signatures trip pedantic lints, while the disallowed lists of
+      # clippy.toml (G1 / G10) are on by default and denied by -D warnings
+      - name: Clippy (python bindings, lib)
+        run: cargo clippy --lib --features python -- -D warnings
+      # the lists in clippy.toml only gate anything if clippy flags a call to
+      # them: a throwaway crate with the same clippy.toml plants one banned call
+      # per row of scripts/clippy_canary_calls.tsv (0 rows fail)
+      - name: Clippy canary (tests)
+        run: python3 scripts/test_clippy_canary.py
+      - name: Clippy canary (every planted banned call is flagged)
+        run: python3 scripts/clippy_canary.py
 
   # The declared `rust-version` compiled with exactly that toolchain. Bump
   # `rust-version` in Cargo.toml and the version below in the same commit.
@@ -200,6 +214,10 @@ jobs:
           python scripts/workflow_concurrency.py
       - name: Python package license == crate license
         run: python scripts/check_py_license.py
+      # the zero-test guard shared with ALICE-Analytics / ALICE-Edge, on each
+      # OS's own bash
+      - name: run_tests.sh (tests)
+        run: python scripts/test_run_tests.py
       - name: Entropy guard (tests)
         run: python scripts/test_entropy_guard.py
       - name: Entropy guard (no OS entropy / wall clock in production code)

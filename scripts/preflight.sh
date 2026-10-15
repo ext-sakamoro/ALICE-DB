@@ -55,6 +55,7 @@ python3 scripts/test_workflow_concurrency.py
 python3 scripts/workflow_concurrency.py
 python3 scripts/test_entropy_guard.py
 python3 scripts/entropy_guard.py
+python3 scripts/test_run_tests.py
 python3 scripts/test_fuzz_reach.py
 python3 scripts/test_tracked_binaries.py
 python3 scripts/tracked_binaries.py
@@ -69,16 +70,21 @@ python3 scripts/test_workflow_pin_check.py
 python3 scripts/workflow_pin_check.py --online --base origin/main
 python3 scripts/test_workflow_pin_update.py
 
+step "ci.yml / clippy: clippy canary tests (parser and zero logic, no cargo)"
+python3 scripts/test_clippy_canary.py
+
 step "security-audit.yml / stub-guard"
 scripts/stub_guard.sh
 
-step "ci.yml / clippy: default, full native feature set, no default features (pedantic)"
+step "ci.yml / clippy: default, full native feature set, no default features (pedantic), python (lib)"
 relint
 cargo clippy --all-targets -- -W clippy::pedantic -D warnings
 relint
 cargo clippy --features "$NATIVE_FEATURES" --all-targets -- -W clippy::pedantic -D warnings
 relint
 cargo clippy --no-default-features --all-targets -- -W clippy::pedantic -D warnings
+relint
+cargo clippy --lib --features python -- -D warnings
 
 step "ci.yml / wasm: wasm32-unknown-unknown build + clippy (no default features)"
 add_target wasm32-unknown-unknown
@@ -100,10 +106,13 @@ if [[ $quick -eq 1 ]]; then
   echo; echo "preflight --quick OK (full test suites, example, benches, MSRV, powerset, fuzz build and security jobs skipped)"; exit 0
 fi
 
+step "ci.yml / clippy: clippy canary (every planted banned call is flagged)"
+python3 scripts/clippy_canary.py
+
 step "ci.yml / test: default, full native feature set, no default features, law_store (memory)"
-scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor -- cargo test
-scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact -- cargo test --features "$NATIVE_FEATURES"
-scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor -- cargo test --no-default-features
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden -- cargo test
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact,float_edge_golden -- cargo test --features "$NATIVE_FEATURES"
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden -- cargo test --no-default-features
 scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
 
 step "release-profile.yml / release: goldens under the release profile (fail on 0 tests)"

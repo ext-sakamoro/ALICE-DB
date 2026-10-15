@@ -8,11 +8,17 @@ All notable changes to ALICE-DB will be documented in this file.
 
 - CI: release profile で bit 一致 golden を走らせる `release-profile.yml` (ubuntu / macOS、`scripts/run_tests.sh` で 0 件と未実行の file を fail、preflight の full にも同じ step) と、公開 API の符号付きゼロと桁落ちの結果を `to_bits()` で固定する `tests/float_edge_golden.rs` (15 件: `aggregate` / `downsample` の Sum・Avg・Variance・StdDev、flush 後の constant / linear model と lossless 残差の `get` / `scan`) を追加
 - `alice-law-conformance.toml` を追加し、ALICE-Law の G1〜G14 を現在の main で 1 件ずつ判定した (pass は G12 のみ、G1 / G3 / G9 / G10 / G13 / G14 は unverified、ほかは fail-known で該当の file と行を記載) README / README_JP の ALICE-Law 節を同じ revision の生成器で再生成した
+- CI (G11、検査器自身の試験): clippy の禁止一覧 (G1 の超越関数、G10 の wall clock / OS 乱数) に canary を追加 `scripts/clippy_canary.py` が repo の `clippy.toml` / `rust-toolchain.toml` / `[lints]` を写した使い捨て crate に `scripts/clippy_canary_calls.tsv` の 1 行ごとに禁止呼び出しを 1 つ置き (`f64::sin` / `f64::sin_cos` / `Instant::now` / `SystemTime::now` / `RandomState`)、行ごとにその path を名指す `disallowed_*` 診断がちょうど 1 件出ること・対照の関数に 1 件も出ないこと・各行の path が `clippy.toml` にあることを確かめる data file が 0 行、または `clippy.toml` が 0 件の時は「比較 0 件」で失敗する 試験 `scripts/test_clippy_canary.py` と共に clippy job と preflight で走る 3 file は ALICE-Analytics と byte 一致
+- CI (G11): `scripts/run_tests.sh` の試験 `scripts/test_run_tests.py` (ALICE-Analytics と byte 一致) を docs-lint job (3 OS) と preflight に追加
+- CI: clippy job に `python` feature の step (`cargo clippy --lib --features python -- -D warnings`) を追加 これまで python の module は lint されていなかった
+- 試験 (G11): `tests/determinism_golden.rs` に `assert_golden` 自身の canary を 4 本追加 (外部で計算した SHA-256 を受け入れる対照、下限より短い出力で panic、何も hash しない出力で panic、異なる hash で panic) 記録済みの golden 値は変えていない
 
 ### Changed
 
 - CI: 公開する文面の検査の pin を ALICE-Law f9b9000 (checker sha256 84226ec7…) に進めた 新しい版で HEAD の全 file に指摘 0 件
 - CI: clippy の禁止一覧に `f32::sin_cos` / `f64::sin_cos` を足した (ALICE-Law G1 の一覧と揃える)
+- CI: debug profile の test step 3 本 (既定 / 全 native feature / 既定 feature 無し) の `scripts/run_tests.sh` の必須一覧に `float_edge_golden` を足し、この file が 1 件も走らない時に失敗させる (preflight も同じ)
+- `alice-law-conformance.toml`: G1 を pass に (python を含む全 feature を lint、canary あり、libm への直接依存なし) G11 は fail-known のまま証跡と変異と note を更新 (未達は共有の写しの照合) README の ALICE-Law 節を作り直した
 
 ## [0.5.0] - 2026-10-14
 

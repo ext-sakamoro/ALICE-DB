@@ -479,3 +479,45 @@ fn law_id_and_evaluation_are_the_recorded_bits() {
         "f18a2a53ad6a8bdeb4feb7f80a6c12b814f26c49b69d6e461568efcf8fdc650e",
     );
 }
+
+// ---------------------------------------------------------------------------
+// The checker's own canaries: `assert_golden` must reject a scenario that
+// hashed fewer bytes than its floor (none at all included) and a digest that
+// differs from the recorded one. The accepting case comes first, so the
+// rejections cannot pass by panicking for another reason.
+// ---------------------------------------------------------------------------
+
+/// SHA-256 of eight zero bytes (`Bits::u64(0)` hashes `0u64.to_le_bytes()`),
+/// computed outside this crate with `head -c 8 /dev/zero | shasum -a 256`.
+const SHA256_OF_8_ZERO_BYTES: &str =
+    "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc";
+
+fn eight_zero_bytes() -> Bits {
+    let mut bits = Bits::default();
+    bits.u64(0);
+    bits
+}
+
+#[test]
+fn checker_accepts_the_reference_bits() {
+    assert_golden("canary", eight_zero_bytes(), 8, SHA256_OF_8_ZERO_BYTES);
+}
+
+#[test]
+#[should_panic(expected = "canary: hashed 8 bytes, expected at least 9")]
+fn checker_rejects_too_few_bytes() {
+    assert_golden("canary", eight_zero_bytes(), 9, SHA256_OF_8_ZERO_BYTES);
+}
+
+#[test]
+#[should_panic(expected = "the scenario stopped producing values")]
+fn checker_rejects_a_scenario_that_hashed_nothing() {
+    assert_golden("canary", Bits::default(), 1, SHA256_OF_8_ZERO_BYTES);
+}
+
+#[test]
+#[should_panic(expected = "canary: 8 bytes hashed to af5570f5")]
+fn checker_rejects_a_wrong_digest() {
+    let wrong = "0".repeat(64);
+    assert_golden("canary", eight_zero_bytes(), 8, &wrong);
+}

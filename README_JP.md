@@ -293,7 +293,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 
 | gate | 状態 | 注記 |
 |---|---|---|
-| G1 no-libm-direct | 未確認 | unverified: no banned call is known (a scan of src/ for the banned method names finds only test code: src/lib.rs lines 1100 and 1140, src/memtable.rs lines 753 … |
+| G1 no-libm-direct | 適合 | every banned method of the G1 list is in clippy.toml, every feature is linted with -D warnings (python included, without pedantic: the pyo3 binding trips … |
 | G2 ieee-max-min | 未達 | unmet: there is no Law max / min helper, clippy.toml does not ban f32::max / f32::min / f64::max / f64::min, and there is no default-deny manifest of raw … |
 | G3 no-outer-fneg-of-fma | 未確認 | unverified: no violation is known, but there is no syntax-tree checker for the outer negation of a fused multiply-add and no CI step for it. A one-off run of … |
 | G4 debug-release-arch-goldens | 未達 | unmet, with the test now present. (1) A signed-zero case is known and not pinned: Aggregation::Min and Max fold with f64::min / f64::max (src/query_engine.rs … |
@@ -303,7 +303,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 | G8 persisted-semantics-id | 未達 | unmet for law records. Compliant: the lossless segment residual carries the writer's identifier (src/segment.rs line 1203) and the reader accepts its own or a … |
 | G9 persisted-meaning-change-is-major | 未確認 | unverified: the audit covers the one identifier this crate persists and finds no violation, but the law record has no identifier (see G8), so its history … |
 | G10 no-run-varying-artifacts | 未確認 | unverified: no use is known (the guard reports `23 files, 10 patterns, 0 problems`; created_at is an explicit input since 0008049) and the RandomState and … |
-| G11 gate-self-tests | 未達 | unmet: the clippy bans that carry G1 and part of G10 (clippy.toml lines 43 to 108, disallowed-methods and disallowed-types, run by .github/workflows/ci.yml … |
+| G11 gate-self-tests | 未達 | unmet: clause (c). scripts/clippy_canary.py, scripts/test_clippy_canary.py, scripts/clippy_canary_calls.tsv and scripts/test_run_tests.py are byte-identical … |
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
 | G13 no-unspecified-order | 未確認 | unverified: no order-dependent output is known. The two sites found earlier are fixed with an oracle each (mutants above): model_distribution, which the Python … |
 | G14 float-environment-invariants | 未確認 | unverified: no flag is known; every place a flag can come from was read at this commit: there is no .cargo/config* and no build.rs, Cargo.toml's release … |

@@ -14,14 +14,16 @@
 # entry it would change.
 
 [G1]
-status = "unverified"
+status = "pass"
 evidence = [
-    "clippy.toml disallowed-methods (lines 43 to 92: every f32 and f64 method gates.toml marks banned, sin_cos included, plus powi, the pending default, banned for both)",
-    ".github/workflows/ci.yml clippy job (lines 115 to 120: default, full native feature set, no default features, all targets, -D warnings) and wasm job (line 102, wasm32 no default features)",
+    "clippy.toml disallowed-methods (lines 43 to 94: every f32 and f64 method gates.toml marks banned, sin_cos at lines 45 and 71, plus powi, the pending default, banned for both)",
+    ".github/workflows/ci.yml clippy job: default, all targets (line 117); full native feature set, all targets (line 119); no default features, all targets (line 121); python, lib (line 127); wasm job line 103 (wasm32, no default features); every run -D warnings; scripts/preflight.sh lines 81 to 93 run the same sets",
+    "scripts/clippy_canary.py with scripts/clippy_canary_calls.tsv lines 6 and 7 (f64::sin and f64::sin_cos planted in a throwaway crate that copies clippy.toml: each must get exactly one disallowed-methods diagnostic naming it and must be listed in clippy.toml; 0 rows or 0 entries fail) and scripts/test_clippy_canary.py; run by .github/workflows/ci.yml lines 132 and 134 and scripts/preflight.sh lines 74 and 110",
+    "Cargo.toml has no libm dependency (libm reaches Cargo.lock only through alice-zip), so no libm free function can be named from this crate's source; every float transcendental is a method on f32 / f64, which the list covers",
 ]
-mutant = "x.sin() and, separately, x.sin_cos() on f64 added to a library function in src/lib.rs: cargo clippy --lib -- -D warnings fails with `use of a disallowed method f64::sin` and `use of a disallowed method f64::sin_cos`; reverted"
+mutant = "measured 2026-10-15, each reverted: deleting the f64::sin_cos entry (line 71) from clippy.toml makes scripts/clippy_canary.py exit 1 with 'data line 7: `f64::sin_cos` is not listed under disallowed-methods in clippy.toml'; adding `let _ = core::hint::black_box(0.5_f64).sin();` to PyStats::__repr__ in src/lib.rs (the python module) passes the full native feature set clippy step (rc 0) and fails the python step (rc 101, disallowed method `f64::sin` at src/lib.rs:1006)"
 since = ""
-note = "unverified: no banned call is known (a scan of src/ for the banned method names finds only test code: src/lib.rs lines 1100 and 1140, src/memtable.rs lines 753 to 778, src/ffi.rs line 759, all under #[cfg(test)]), but the machine check is incomplete in two ways. (1) no clippy run builds the `python` feature (Cargo.toml [features]; ci.yml clippy and wasm jobs use default, ffi,sdf,analytics,crypto and no default features only), so the `mod python` block at src/lib.rs line 722 is not linted. (2) there is no canary test that the lint still fires (see G11)."
+note = "every banned method of the G1 list is in clippy.toml, every feature is linted with -D warnings (python included, without pedantic: the pyo3 binding trips pedantic lints that are not part of this gate), and the canary plants f64::sin and f64::sin_cos to confirm the lint still fires. The banned names in src/ are test code under scoped allows (src/memtable.rs line 621, src/lib.rs line 1045, src/ffi.rs line 516). The form a method list cannot reach, a call of a libm free function such as libm::sin, is not available here because the crate does not depend on libm directly."
 reference_repo = "ALICE-Zip"
 
 [G2]
@@ -117,13 +119,16 @@ reference_repo = "ALICE-Physics"
 [G11]
 status = "fail-known"
 evidence = [
-    "scripts/test_entropy_guard.py (canaries lines 47 to 172, zero-scan lines 193 and 205)",
-    "scripts/test_public_text.py (a base that is not a commit and a malformed pin exit 2, lines 53 and 62)",
-    "scripts/test_tracked_binaries.py (test_nothing_tracked_is_not_a_pass, line 60)",
-    "scripts/test_workflow_concurrency.py (test_no_workflow_fails, line 90)",
+    "scripts/clippy_canary.py with scripts/clippy_canary_calls.tsv and scripts/test_clippy_canary.py (the clippy lists of G1 and G10: one planted banned call per row must get exactly one disallowed diagnostic naming it, a clean control none; 0 rows or 0 clippy.toml entries fail as compared nothing; .github/workflows/ci.yml lines 132 and 134, scripts/preflight.sh lines 74 and 110)",
+    "scripts/run_tests.sh and scripts/test_run_tests.py (ci.yml line 220, preflight line 58; every debug leg of the CI test job, lines 59, 62 and 65, names determinism_golden and float_edge_golden and fails when either ran no test, as does the release leg in release-profile.yml)",
+    "tests/determinism_golden.rs (checker_accepts_the_reference_bits, checker_rejects_too_few_bytes, checker_rejects_a_scenario_that_hashed_nothing, checker_rejects_a_wrong_digest: the canaries of assert_golden against a SHA-256 computed outside the crate)",
+    "scripts/test_entropy_guard.py (canaries and zero-scan failures)",
+    "scripts/test_public_text.py and .github/public-text-pin (the pinned SHA-256 of ALICE-Law's checker is its cross-repository identity check)",
+    "scripts/test_tracked_binaries.py (test_nothing_tracked_is_not_a_pass) and scripts/test_workflow_concurrency.py (test_no_workflow_fails)",
 ]
+mutant = "measured 2026-10-15, each reverted: dropping the 0-row check or the exactly-one-diagnostic check in scripts/clippy_canary.py fails scripts/test_clippy_canary.py; an empty scripts/clippy_canary_calls.tsv makes the canary exit 1 with 'compared nothing: the data file has no rows'; deleting f64::sin_cos (or the RandomState type) from clippy.toml makes it exit 1 naming that row; with every test of tests/float_edge_golden.rs cfg'd out, the no-default-features leg exits 1 ('float_edge_golden did not run any test') where the previous list exited 0, and a golden leg filtered to 0 tests exits 1; removing the min_bytes check or the digest comparison in assert_golden fails the matching should_panic canaries"
 since = ""
-note = "unmet: the clippy bans that carry G1 and part of G10 (clippy.toml lines 43 to 108, disallowed-methods and disallowed-types, run by .github/workflows/ci.yml lines 116 to 120) have no canary that injects a banned call and confirms the lint fires, and no compared-nothing check; G2, G3, G13 and G14 have no checker here at all. Present: the entropy guard has canaries and a zero-scan failure, and ALICE-Law's public_text_check.py is fetched at a pinned revision with its SHA-256 checked (.github/public-text-pin), which is its cross-repository identity check. scripts/entropy_guard.py was ported from ALICE-Physics and changed here, so it is not a byte-identical shared copy."
+note = "unmet: clause (c). scripts/clippy_canary.py, scripts/test_clippy_canary.py, scripts/clippy_canary_calls.tsv and scripts/test_run_tests.py are byte-identical copies of ALICE-Analytics' files, and scripts/run_tests.sh is byte-identical to theirs, but nothing in this repository or its CI compares them with their source, so a drift would pass. G2, G3, G13 and G14 have no checker here. Met: (a) and (b) for the clippy lists, for assert_golden and the golden legs' zero-test guard, for the entropy guard (ported and changed here, so not a shared copy), for tracked_binaries and workflow_concurrency; G12's checker is fetched at a pinned revision with its SHA-256 checked."
 reference_repo = "ALICE-LOL"
 
 [G12]

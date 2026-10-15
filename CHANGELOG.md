@@ -15,6 +15,8 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 
+- **Behavior change:** `alice-det-math` の要求を 0.5 から 0.5.1 に上げ、Cargo.lock も 0.5.1 に進めた `analytics` feature の `alice-analytics` 0.6 が `alice-det-math` 0.5.1 を要求するので、DB の要求が 0.5 のままだと 0.6 を解決した時だけ 0.5.1 が入り、`tests/determinism_golden.rs` の識別子と法則の pin が落ちていた 0.5.1 で算術の識別子 `alice_db::SEMANTICS_ID` が `135c407d…` から `85e08846…` に変わる 旧い `135c407d…` は `alice_det_math::PREVIOUS_SEMANTICS_IDS` に残るので、それで stamp した残差と、その識別子で索引した法則は読み取り時に引き続き受理される `law_id` は識別子を混ぜるので値が変わる 旧い識別子を渡すと以前の `law_id` がそのまま出るので、変わったのは識別子だけで、法則の評価値と保存される bit (model selection / 読み戻し / 集計 / bloom) は変わらない
+- `analytics` feature の `alice-analytics` の要求を `0.5` から `>=0.5, <0.7` に広げ、0.6 も解決できるようにした
 - CI: 公開する文面の検査の pin を ALICE-Law f9b9000 (checker sha256 84226ec7…) に進めた 新しい版で HEAD の全 file に指摘 0 件
 - CI: clippy の禁止一覧に `f32::sin_cos` / `f64::sin_cos` を足した (ALICE-Law G1 の一覧と揃える)
 - CI: debug profile の test step 3 本 (既定 / 全 native feature / 既定 feature 無し) の `scripts/run_tests.sh` の必須一覧に `float_edge_golden` を足し、この file が 1 件も走らない時に失敗させる (preflight も同じ)

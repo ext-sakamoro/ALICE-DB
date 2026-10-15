@@ -289,7 +289,9 @@ fn semantics_id_is_the_recorded_value() {
     );
     assert_eq!(
         hex(&alice_db::SEMANTICS_ID),
-        "135c407d4249c1c200e4d1be79a12e848ce5c355fc3a918da965849e697ef000",
+        // alice-det-math 0.5.1; 0.5.0's 135c407d… stays readable through
+        // `alice_det_math::PREVIOUS_SEMANTICS_IDS`
+        "85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315",
         "the numeric semantics changed: every residual pinned under the old \
          value is no longer applied on read"
     );
@@ -443,14 +445,68 @@ fn bloom_sizing_is_the_recorded_bits() {
 // 5. Law identifiers
 // ---------------------------------------------------------------------------
 
-#[test]
-fn law_id_and_evaluation_are_the_recorded_bits() {
-    let fits: [LawFixture; 3] = [
+/// The law identifiers of the three fits under alice-det-math 0.5.1's
+/// identifier (`85e08846…`), in fixture order
+///
+/// Each one was computed outside this toolchain from the encoding of
+/// `SignalLaw::law_id` (length-prefixed domain tag and kind tag, the
+/// identifier, the domain bounds and the coefficients as big-endian bits)
+/// over the coefficient bits the fit produces, and agrees with the code
+const GOLDEN_LAW_IDS: [(&str, &str); 3] = [
+    (
+        "line",
+        "99c89049846fd219094625cb9b151f3fbf059a11e3d27e958bc621cf0db56764",
+    ),
+    (
+        "parabola",
+        "80dea1c7e7e75e369848cc3195e7505df07011eb702feb2387913aa287c5b558",
+    ),
+    (
+        "cubic",
+        "5260e55a0814f1cf5f4ee489b6241d9bf18ad021cfde35c999d14f136aff8f14",
+    ),
+];
+
+/// The same identifiers under alice-det-math 0.5.0's identifier
+/// (`135c407d…`), kept to show that re-recording for 0.5.1 moved the
+/// identifier input only: under that identifier (taken from
+/// `alice_det_math::PREVIOUS_SEMANTICS_IDS`) the fits still give these values,
+/// which were also computed outside this toolchain from the same encoding
+const PREVIOUS_GOLDEN_LAW_IDS: [(&str, &str); 3] = [
+    (
+        "line",
+        "715a00ec9397378c7e06b82bdfa0d5d4717c72f1f9f9fc7345eb497d56300b34",
+    ),
+    (
+        "parabola",
+        "63feee7e0033b9481c1e2eba5de63690dcf112465ca94609708b484e7810bdc5",
+    ),
+    (
+        "cubic",
+        "bdf874eda15af19c27cbe1356aa85cebf290c6c96fc19bfb7ddb84406a993cb0",
+    ),
+];
+
+/// The digest of the law scenario recorded under alice-det-math 0.5.0: it
+/// folds the evaluations in as well, so reproducing it under that identifier
+/// shows that `evaluate` returns the same bits as before
+const PREVIOUS_GOLDEN_LAW_DIGEST: &str =
+    "f18a2a53ad6a8bdeb4feb7f80a6c12b814f26c49b69d6e461568efcf8fdc650e";
+
+/// alice-det-math 0.5.0's identifier
+const PREVIOUS_SEMANTICS_ID: &str =
+    "135c407d4249c1c200e4d1be79a12e848ce5c355fc3a918da965849e697ef000";
+
+/// Fits the three fixtures, hashes each law identifier under `semantics_id`
+/// followed by 41 evaluations, and returns the bits with the identifiers
+fn law_scenario(semantics_id: &[u8; 32]) -> (Bits, Vec<(&'static str, String)>) {
+    let fits: [LawFixture<'static>; 3] = [
         ("line", 1, &|x| 2.0f64.mul_add(x, 1.0)),
         ("parabola", 2, &|x| 0.5 * x * x - x + 3.0),
         ("cubic", 3, &|x| x * x * x - 2.0 * x),
     ];
     let mut bits = Bits::default();
+    let mut ids = Vec::with_capacity(fits.len());
     for (name, degree, f) in fits {
         let points: Vec<(f64, f64)> = (0..=8)
             .map(|i| {
@@ -460,8 +516,10 @@ fn law_id_and_evaluation_are_the_recorded_bits() {
             .collect();
         let law = SignalLaw::fit_polynomial(&points, degree, Provenance::new("golden", name))
             .expect("the fixture satisfies every fit precondition");
+        let id = law.law_id(semantics_id);
         bits.tag(name);
-        bits.raw(&law.law_id(&alice_db::SEMANTICS_ID));
+        bits.raw(&id);
+        ids.push((name, hex(&id)));
         for i in 0..=40 {
             bits.f64(
                 law.evaluate(f64::from(i) / 10.0)
@@ -469,14 +527,58 @@ fn law_id_and_evaluation_are_the_recorded_bits() {
             );
         }
     }
+    (bits, ids)
+}
+
+/// The recorded `(name, identifier)` pairs as owned strings
+fn recorded(ids: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
+    ids.iter()
+        .map(|&(name, id)| (name, id.to_owned()))
+        .collect()
+}
+
+#[test]
+fn law_id_and_evaluation_are_the_recorded_bits() {
+    let (bits, ids) = law_scenario(&alice_db::SEMANTICS_ID);
+    assert_eq!(
+        ids,
+        recorded(&GOLDEN_LAW_IDS),
+        "the law identifiers under 0.5.1's identifier"
+    );
     assert_golden(
         "law_id and evaluate",
         bits,
         3 * (32 + 41 * 8),
-        // re-recorded for alice-det-math 0.5: with the 0.4 identifier
-        // (d2209b30…) in place of `alice_db::SEMANTICS_ID` the same scenario
-        // still hashes to the previous 94bf9625…, so only the identifier moved
-        "f18a2a53ad6a8bdeb4feb7f80a6c12b814f26c49b69d6e461568efcf8fdc650e",
+        // re-recorded for alice-det-math 0.5.1: with 0.5.0's identifier
+        // (135c407d…) in place of `alice_db::SEMANTICS_ID` the same scenario
+        // still hashes to the previous f18a2a53…, so only the identifier moved
+        // (`law_id_under_the_previous_identifier_is_unchanged`)
+        "703f17b165de1699421256302a23582a65cf3904f7ddc14e4c37365b0e444127",
+    );
+}
+
+#[test]
+fn law_id_under_the_previous_identifier_is_unchanged() {
+    let previous = alice_det_math::PREVIOUS_SEMANTICS_IDS
+        .iter()
+        .find(|id| hex(id.as_slice()) == PREVIOUS_SEMANTICS_ID)
+        .expect("alice-det-math keeps the identifier of 0.5.0 as a previous one");
+    assert_ne!(
+        previous,
+        &alice_db::SEMANTICS_ID,
+        "the previous identifier is not the current one"
+    );
+    let (bits, ids) = law_scenario(previous);
+    assert_eq!(
+        ids,
+        recorded(&PREVIOUS_GOLDEN_LAW_IDS),
+        "the law identifiers under 0.5.0's identifier"
+    );
+    assert_golden(
+        "law_id and evaluate under 0.5.0's identifier",
+        bits,
+        3 * (32 + 41 * 8),
+        PREVIOUS_GOLDEN_LAW_DIGEST,
     );
 }
 

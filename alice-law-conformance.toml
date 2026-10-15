@@ -63,10 +63,10 @@ reference_repo = "ALICE-LOL"
 status = "fail-known"
 evidence = [
     "src/lib.rs line 248 (pub use alice_core::law::SEMANTICS_ID)",
-    "tests/determinism_golden.rs semantics_id_is_the_recorded_value (line 284, hex 135c407d... at line 292)",
+    "tests/determinism_golden.rs semantics_id_is_the_recorded_value (line 284, hex 85e08846... at line 294)",
 ]
 since = ""
-note = "unmet: src/lib.rs line 248 re-exports alice-zip's identifier (the alice-det-math arithmetic identifier) instead of computing one that folds this crate's own pins with its Law-bearing dependencies' identifiers. The arithmetic this crate decides itself (bloom filter sizing, src/bloom.rs lines 72 to 94; model selection score, src/memtable.rs lines 400 and 401; fit error, src/memtable.rs line 439) is pinned only by recorded-bit tests (tests/determinism_golden.rs model_selection_is_the_recorded_bits line 303, bloom_sizing_is_the_recorded_bits line 418), so changing it does not move the identifier, and there is no tie to this crate's version or toolchain."
+note = "unmet: src/lib.rs line 248 re-exports alice-zip's identifier (the alice-det-math arithmetic identifier) instead of computing one that folds this crate's own pins with its Law-bearing dependencies' identifiers. The arithmetic this crate decides itself (bloom filter sizing, src/bloom.rs lines 72 to 94; model selection score, src/memtable.rs lines 400 and 401; fit error, src/memtable.rs line 439) is pinned only by recorded-bit tests (tests/determinism_golden.rs model_selection_is_the_recorded_bits line 305, bloom_sizing_is_the_recorded_bits line 420), so changing it does not move the identifier, and there is no tie to this crate's version or toolchain."
 reference_repo = "ALICE-LOL"
 
 [G7]
@@ -94,11 +94,13 @@ reference_repo = "ALICE-LOL"
 [G9]
 status = "unverified"
 evidence = [
-    "CHANGELOG.md line 55 (the 0.4.0 entry names d2209b30... and 135c407d...)",
+    "CHANGELOG.md line 71 (the 0.4.0 entry names d2209b30... and 135c407d...)",
+    "CHANGELOG.md line 18 ([Unreleased], the alice-det-math 0.5.1 entry names 135c407d... and 85e08846...)",
+    "tests/determinism_golden.rs law_id_under_the_previous_identifier_is_unchanged (line 561, 135c407d... is in PREVIOUS_SEMANTICS_IDS and reproduces the law identifiers and digest recorded under it)",
     "tests/residual_arithmetic.rs this_build_computes_with_another_arithmetic_than_the_fixture (line 87)",
 ]
 since = ""
-note = "unverified: the audit covers the one identifier this crate persists and finds no violation, but the law record has no identifier (see G8), so its history cannot be audited. History (`git log -S SEMANTICS_ID` over src/segment.rs, src/lib.rs and src/memtable.rs): introduced in 179ef23 (0.3.0-beta.2, alice-det-math 0.4, d2209b30...); moved once, in 065e618 (alice-det-math 0.5, 135c407d...), released as 0.4.0 (tag v0.4.0), a minor bump of a 0.x crate, which Cargo treats as breaking, with both identifiers named at CHANGELOG.md line 55 under the [0.4.0] heading (line 51). The move folds a changed upstream Law, not a cross-architecture fix. 17690fe (CHANGELOG.md line 16, [0.5.0]) changes which stored identifiers are accepted, not the identifier; the law_store lookup under previous identifiers (src/law_store.rs lines 874 and 919) does not move it either. G9 is an audit with no mutant."
+note = "unverified: the audit covers the one identifier this crate persists and finds no violation, but the law record has no identifier (see G8), so its history cannot be audited. History (`git log -S SEMANTICS_ID` over src/segment.rs, src/lib.rs and src/memtable.rs): introduced in 179ef23 (0.3.0-beta.2, alice-det-math 0.4, d2209b30...); moved in 065e618 (alice-det-math 0.5, 135c407d...), released as 0.4.0 (tag v0.4.0), a minor bump of a 0.x crate, which Cargo treats as breaking, with both identifiers named at CHANGELOG.md line 71 under the [0.4.0] heading (line 67). The move folds a changed upstream Law, not a cross-architecture fix. Moved again by the alice-det-math 0.5.1 requirement (CHANGELOG.md line 18, [Unreleased], 135c407d... to 85e08846...): 0.5.1 keeps 135c407d... in PREVIOUS_SEMANTICS_IDS, so residuals and law pointers written under it stay accepted on read, and tests/determinism_golden.rs line 561 shows that the law identifiers and evaluations under 135c407d... are the ones recorded before, so only the identifier moved. 17690fe (CHANGELOG.md line 29, [0.5.0] at line 25) changes which stored identifiers are accepted, not the identifier; the law_store lookup under previous identifiers (src/law_store.rs lines 874 and 919) does not move it either. G9 is an audit with no mutant."
 reference_repo = "ALICE-LOL"
 
 [G10]

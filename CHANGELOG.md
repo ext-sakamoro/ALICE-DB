@@ -15,6 +15,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - CI: libm を直接依存に足した時に G1 の禁止 (clippy.toml の `libm::` path と `scripts/libm_ban_check.py`) が無ければ失敗する検査 `scripts/libm_dependency_guard.py` (試験 `scripts/test_libm_dependency_guard.py`) を docs-lint job (3 OS) と preflight に追加 (ALICE-DetMath と byte 一致)
 
 ### Changed
+- CI: 公開する文面の検査の pin を ALICE-Law 5de698e (checker sha256 4b3d9542…) に進めた 新しい版で HEAD の全 file に指摘 0 件
 
 - CI: `scripts/clippy_canary.py` の説明を直した canary は repository の clippy job の flag に依らず決まった flag (`-W clippy::pedantic -D warnings`) で試す (以前は「CI の clippy job と同じ flag」と書いていたが、job によって flag は違う) 動作は変わらない (ALICE-Analytics / ALICE-DB / ALICE-Zip / ALICE-Edge と byte 一致)
 - ALICE-Law 適合 manifest の G2 と G4 の note を現状に合わせた Aggregation::Min / Max と group の min / max は alice-det-math の符号の決まった関数に置き換わり、`tests/minmax_signed_zero_arch.rs` で固定されている (G2 は禁止と manifest が無いので fail-known のまま、G4 は桁落ちの順序と branch の保護が残るので fail-known のまま) G4 の「float_edge_golden が必須の一覧に無い」は既に解消していたので消した

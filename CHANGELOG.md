@@ -12,6 +12,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - CI (G11): `scripts/run_tests.sh` の試験 `scripts/test_run_tests.py` (ALICE-Analytics と byte 一致) を docs-lint job (3 OS) と preflight に追加
 - CI: clippy job に `python` feature の step (`cargo clippy --lib --features python -- -D warnings`) を追加 これまで python の module は lint されていなかった
 - 試験 (G11): `tests/determinism_golden.rs` に `assert_golden` 自身の canary を 4 本追加 (外部で計算した SHA-256 を受け入れる対照、下限より短い出力で panic、何も hash しない出力で panic、異なる hash で panic) 記録済みの golden 値は変えていない
+- CI: libm を直接依存に足した時に G1 の禁止 (clippy.toml の `libm::` path と `scripts/libm_ban_check.py`) が無ければ失敗する検査 `scripts/libm_dependency_guard.py` (試験 `scripts/test_libm_dependency_guard.py`) を docs-lint job (3 OS) と preflight に追加 (ALICE-DetMath と byte 一致)
 
 ### Changed
 

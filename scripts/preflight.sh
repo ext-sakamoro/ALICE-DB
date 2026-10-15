@@ -55,6 +55,8 @@ python3 scripts/test_workflow_concurrency.py
 python3 scripts/workflow_concurrency.py
 python3 scripts/test_entropy_guard.py
 python3 scripts/entropy_guard.py
+python3 scripts/test_libm_dependency_guard.py
+python3 scripts/libm_dependency_guard.py
 python3 scripts/test_run_tests.py
 python3 scripts/test_fuzz_reach.py
 python3 scripts/test_tracked_binaries.py

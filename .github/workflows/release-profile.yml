@@ -46,7 +46,19 @@ jobs:
       # the toolchain itself comes from rust-toolchain.toml
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # fails when no test ran, and when either golden file ran none
+      # fails when no test ran, and when either golden file or the float environment test
+      # (G14: round-to-nearest-even, no flush-to-zero, in the shipped profile) ran none
       - name: Test (release profile, goldens)
         shell: bash
-        run: scripts/run_tests.sh determinism_golden,float_edge_golden -- cargo test --release --test determinism_golden --test float_edge_golden
+        run: scripts/run_tests.sh determinism_golden,float_edge_golden,float_environment -- cargo test --release --test determinism_golden --test float_edge_golden --test float_environment
+      # G14, dynamic half: the flags cargo really passes to rustc, read from `-v` in a
+      # fresh target directory (a reused one prints Fresh without the command line),
+      # for the default, all-features and no-default feature sets; fails on a
+      # native / fast-math / x87 flag, and when no command line for this crate was seen
+      - name: Effective rustc flags (G14)
+        shell: bash
+        run: |
+          python3 scripts/test_build_flags_check.py
+          python3 scripts/build_flags_check.py -- cargo check --release --lib
+          python3 scripts/build_flags_check.py -- cargo check --release --lib --all-features
+          python3 scripts/build_flags_check.py -- cargo check --release --lib --no-default-features

@@ -57,6 +57,9 @@ python3 scripts/test_entropy_guard.py
 python3 scripts/entropy_guard.py
 python3 scripts/test_libm_dependency_guard.py
 python3 scripts/libm_dependency_guard.py
+python3 scripts/test_build_config_guard.py
+python3 scripts/build_config_guard.py
+python3 scripts/test_build_flags_check.py
 python3 scripts/test_run_tests.py
 python3 scripts/test_fuzz_reach.py
 python3 scripts/test_tracked_binaries.py
@@ -116,13 +119,16 @@ step "ci.yml / clippy: clippy canary (every planted banned call is flagged)"
 python3 scripts/clippy_canary.py
 
 step "ci.yml / test: default, full native feature set, no default features, law_store (memory)"
-scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden -- cargo test
-scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact,float_edge_golden -- cargo test --features "$NATIVE_FEATURES"
-scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden -- cargo test --no-default-features
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment -- cargo test
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact,float_edge_golden,float_environment -- cargo test --features "$NATIVE_FEATURES"
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment -- cargo test --no-default-features
 scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
 
 step "release-profile.yml / release: goldens under the release profile (fail on 0 tests)"
-scripts/run_tests.sh determinism_golden,float_edge_golden -- cargo test --release --test determinism_golden --test float_edge_golden
+scripts/run_tests.sh determinism_golden,float_edge_golden,float_environment -- cargo test --release --test determinism_golden --test float_edge_golden --test float_environment
+python3 scripts/build_flags_check.py -- cargo check --release --lib
+python3 scripts/build_flags_check.py -- cargo check --release --lib --all-features
+python3 scripts/build_flags_check.py -- cargo check --release --lib --no-default-features
 
 step "ci.yml / test: law_store example"
 cargo run --example law_store

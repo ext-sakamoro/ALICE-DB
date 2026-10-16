@@ -2,11 +2,13 @@
 """Tests for scripts/build_flags_check.py: the `Running` lines are read with
 and without colour, each rule fires on a rustc command line, the target-feature
 policy passes, a run that shows no command line, none for this crate, or this
-crate as Fresh fails, a failing command fails, and the target directory is
-always a fresh one."""
+crate as Fresh fails, a failing command fails, the target directory is always
+a fresh one and is removed afterwards, and no temporary directory is left
+behind."""
 import contextlib
 import io
 import os
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -77,15 +79,38 @@ FAKE = textwrap.dedent('''
 ''')
 
 
+# every temporary directory of this run, the fake repositories and the target
+# directories build_flags_check.main makes, lives under one base directory, which
+# must be empty again at the end (tearDownModule fails otherwise) and is then removed
+BASE = Path(tempfile.mkdtemp(prefix="build-flags-tests-"))
+
+
+def tearDownModule():
+    left = sorted(p.name for p in BASE.iterdir())
+    shutil.rmtree(BASE, ignore_errors=True)
+    if left:
+        raise AssertionError(f"{len(left)} temporary directories were left behind: {left[:5]}")
+
+
 def run_fake(lines, rc=0, extra_args=()):
-    d = Path(tempfile.mkdtemp(prefix="build-flags-test-"))
-    (d / "Cargo.toml").write_text('[package]\nname = "alice-db"\nversion = "0.1.0"\n', encoding="utf-8")
-    fake = d / "fake_cargo.py"
-    fake.write_text(FAKE.format(lines=list(lines), rc=rc), encoding="utf-8")
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        code = b.main(["--root", str(d), "--", sys.executable, str(fake), *extra_args])
-    return code, out.getvalue()
+    d = Path(tempfile.mkdtemp(prefix="repo-", dir=BASE))
+    targets = BASE / "targets"
+    targets.mkdir(exist_ok=True)
+    saved = tempfile.tempdir
+    tempfile.tempdir = str(targets)  # main() makes its fresh target directory here
+    try:
+        (d / "Cargo.toml").write_text('[package]\nname = "alice-db"\nversion = "0.1.0"\n', encoding="utf-8")
+        fake = d / "fake_cargo.py"
+        fake.write_text(FAKE.format(lines=list(lines), rc=rc), encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = b.main(["--root", str(d), "--", sys.executable, str(fake), *extra_args])
+        left = sorted(p.name for p in targets.iterdir())
+        return code, out.getvalue() + (f"\nTARGET LEFT: {left}" if left else "")
+    finally:
+        tempfile.tempdir = saved
+        shutil.rmtree(d)
+        shutil.rmtree(targets, ignore_errors=True)
 
 
 class Main(unittest.TestCase):
@@ -118,6 +143,12 @@ class Main(unittest.TestCase):
         code, out = run_fake([running(rustc("alice_db"))], rc=101)
         self.assertEqual(code, 1, out)
         self.assertIn("the command failed (exit 101)", out)
+
+    def test_the_fresh_target_dir_is_removed(self):
+        for lines, rc in (([running(rustc("alice_db"))], 0), ([running(rustc("alice_db"))], 101), ([], 0)):
+            with self.subTest(rc=rc, lines=len(lines)):
+                _, out = run_fake(lines, rc=rc)
+                self.assertNotIn("TARGET LEFT", out)
 
     def test_target_dir_is_chosen_here(self):
         code, _ = run_fake([running(rustc("alice_db"))], extra_args=("--target-dir", "target"))

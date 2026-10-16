@@ -10,6 +10,7 @@ with nothing to read (or no root Cargo.toml) is exit 2."""
 import contextlib
 import io
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -22,8 +23,20 @@ PKG = '[package]\nname = "x"\nversion = "0.1.0"\nedition = "2021"\n'
 NATIVE = "-C target-cpu=native"
 
 
+# every temporary tree of this run lives under one base directory, which must be
+# empty again at the end (tearDownModule fails otherwise) and is then removed
+BASE = Path(tempfile.mkdtemp(prefix="build-config-guard-tests-"))
+
+
+def tearDownModule():
+    left = sorted(p.name for p in BASE.iterdir())
+    shutil.rmtree(BASE, ignore_errors=True)
+    if left:
+        raise AssertionError(f"{len(left)} temporary trees were left behind: {left[:5]}")
+
+
 def tree(files: dict[str, str | bytes]) -> Path:
-    root = Path(tempfile.mkdtemp(prefix="build-config-guard-"))
+    root = Path(tempfile.mkdtemp(prefix="tree-", dir=BASE))
     for rel, text in files.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -36,10 +49,13 @@ def tree(files: dict[str, str | bytes]) -> Path:
 
 def run(files: dict[str, str | bytes]) -> tuple[int, str, str]:
     root = tree(files)
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = g.main(["--root", str(root)])
-    return rc, out.getvalue(), err.getvalue()
+    try:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = g.main(["--root", str(root)])
+        return rc, out.getvalue(), err.getvalue()
+    finally:
+        shutil.rmtree(root)
 
 
 def red(test, files, where):

@@ -72,7 +72,11 @@ python3 scripts/test_workflow_pin_check.py
 python3 scripts/workflow_pin_check.py --online --base origin/main
 python3 scripts/test_workflow_pin_update.py
 
-step "ci.yml / clippy: clippy canary tests (parser and zero logic, no cargo)"
+step "ci.yml / clippy: clippy canary data (generator tests, generated from clippy.toml, no drift)"
+python3 scripts/test_gen_clippy_canary_calls.py
+python3 scripts/gen_clippy_canary_calls.py --check
+
+step "ci.yml / clippy: clippy canary tests (parsers, accounting, one end-to-end run)"
 python3 scripts/test_clippy_canary.py
 
 step "security-audit.yml / stub-guard"

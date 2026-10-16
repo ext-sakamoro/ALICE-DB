@@ -50,7 +50,7 @@ jobs:
       # (G14: round-to-nearest-even, no flush-to-zero, in the shipped profile) ran none
       - name: Test (release profile, goldens)
         shell: bash
-        run: scripts/run_tests.sh determinism_golden,float_edge_golden,float_environment -- cargo test --release --test determinism_golden --test float_edge_golden --test float_environment
+        run: scripts/run_tests.sh determinism_golden,float_edge_golden,float_environment=2 -- cargo test --release --test determinism_golden --test float_edge_golden --test float_environment
       # G14, dynamic half: the flags cargo really passes to rustc, read from `-v` in a
       # fresh target directory (a reused one prints Fresh without the command line),
       # for the default, all-features and no-default feature sets; fails on a

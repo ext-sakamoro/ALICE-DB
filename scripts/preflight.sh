@@ -82,6 +82,10 @@ python3 scripts/gen_clippy_canary_calls.py --check
 step "ci.yml / clippy: clippy canary tests (parsers, accounting, one end-to-end run)"
 python3 scripts/test_clippy_canary.py
 
+step "ci.yml / clippy: clippy external coverage (tests, then every public function of a named module is banned or allowed)"
+python3 scripts/test_clippy_external_coverage.py
+python3 scripts/clippy_external_coverage.py
+
 step "security-audit.yml / stub-guard"
 scripts/stub_guard.sh
 

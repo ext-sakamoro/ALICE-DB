@@ -140,7 +140,7 @@ status = "pass"
 evidence = [
     ".github/workflows/public-text.yml (pushes to main and ci/**, pull requests to main)",
     "scripts/public_text.sh (fetches ALICE-Law's scripts/public_text_check.py at the pinned revision, refuses it unless the SHA-256 matches, exits 2 when it compared nothing)",
-    ".github/public-text-pin (rev f9b90004865f..., sha256 84226ec7a693...)",
+    ".github/public-text-pin (rev 779fa443f95b..., sha256 e439fdd7495e...)",
     "scripts/test_public_text.py",
     ".public-text.toml",
 ]

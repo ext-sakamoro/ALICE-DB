@@ -306,7 +306,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 | G11 gate-self-tests | 未達 | unmet: clause (c). scripts/clippy_canary.py, scripts/test_clippy_canary.py, scripts/clippy_canary_calls.tsv and scripts/test_run_tests.py are byte-identical … |
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
 | G13 no-unspecified-order | 未確認 | unverified: no order-dependent output is known. The two sites found earlier are fixed with an oracle each (mutants above): model_distribution, which the Python … |
-| G14 float-environment-invariants | 未確認 | unverified: no flag is known; every place a flag can come from was read at this commit: there is no .cargo/config* and no build.rs, Cargo.toml's release … |
+| G14 float-environment-invariants | 適合 | the scan covers the files a build reads its flags from; a flag passed on the command line of a build outside this repository (a consumer's own RUSTFLAGS) is … |
 
 ### feature と保証の範囲
 

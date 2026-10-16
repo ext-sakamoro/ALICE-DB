@@ -162,7 +162,15 @@ note = "unverified: no order-dependent output is known. The two sites found earl
 reference_repo = "ALICE-LOL"
 
 [G14]
-status = "unverified"
+status = "pass"
+evidence = [
+    "scripts/build_config_guard.py (every .cargo/config*, Cargo.toml, build.rs, pyproject.toml, workflow, action, make / just file, shell script and scripts/*.py with comments blanked, the workflow and script lines that set or pass flags: target-cpu=native, LLVM and C fast-math-style flags, a target-feature list disabling sse / sse2; src/**/*.rs: the fast / algebraic float intrinsics and feature(core_intrinsics); an unreadable file or unparseable TOML fails, nothing read or no root Cargo.toml is exit 2; this repository has no allowlist entry)",
+    "scripts/test_build_config_guard.py (every rule in every file kind, comments against strings, lines that set nothing, the target-feature policy, the src intrinsics, the allowlist going stale, fail-closed cases)",
+    ".github/workflows/ci.yml (docs-lint job, all four OS: Build configuration guard step)",
+    "tests/float_environment.rs round_to_nearest_even and subnormals_are_not_flushed (named in every run_tests.sh step of ci.yml's test job on the four OS, and in release-profile.yml's release-profile step)",
+]
+mutant = "measured 2026-10-16, each reverted: ci.yml's env RUSTFLAGS (line 28) set to `-C target-cpu=native` makes scripts/build_config_guard.py exit 1 with `.github/workflows/ci.yml:28: target-cpu-native: target-cpu=native`; setting FPCR.FZ (flush-to-zero) at the start of both tests in tests/float_environment.rs fails subnormals_are_not_flushed, and setting FPCR.RMode to round-toward-plus-infinity fails round_to_nearest_even (aarch64, macOS)"
 since = ""
-note = "unverified: no flag is known; every place a flag can come from was read at this commit: there is no .cargo/config* and no build.rs, Cargo.toml's release profile sets lto, codegen-units, opt-level and strip only, pyproject.toml sets none, and the workflows' RUSTFLAGS is -Dwarnings (.github/workflows/ci.yml line 27, .github/workflows/release-profile.yml line 25). Missing: a CI scan step over those files, and tests that assert round-to-nearest-even and that subnormals are not flushed to zero (tests/exact_series.rs stores subnormal bit patterns, which checks storage, not arithmetic)."
-reference_repo = "ALICE-LOL"
+note = "the scan covers the files a build reads its flags from; a flag passed on the command line of a build outside this repository (a consumer's own RUSTFLAGS) is outside it. A target-feature that only adds instructions (+avx2, +fma) is allowed: Rust does not contract a * b + c into an fma, and mul_add is correctly rounded either way"
+reference_repo = ""
+

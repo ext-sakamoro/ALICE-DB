@@ -46,7 +46,8 @@ jobs:
       # the toolchain itself comes from rust-toolchain.toml
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # fails when no test ran, and when either golden file ran none
+      # fails when no test ran, and when either golden file or the float environment test
+      # (G14: round-to-nearest-even, no flush-to-zero, in the shipped profile) ran none
       - name: Test (release profile, goldens)
         shell: bash
-        run: scripts/run_tests.sh determinism_golden,float_edge_golden -- cargo test --release --test determinism_golden --test float_edge_golden
+        run: scripts/run_tests.sh determinism_golden,float_edge_golden,float_environment -- cargo test --release --test determinism_golden --test float_edge_golden --test float_environment

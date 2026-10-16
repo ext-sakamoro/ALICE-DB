@@ -4,6 +4,11 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- CI (ALICE-Law G14): build の設定に浮動小数点の結果を変える flag が無いことを検査する `scripts/build_config_guard.py` (+ `scripts/test_build_config_guard.py`) を追加 target/ 以外の `.cargo/config*`・`*.toml`・`build.rs`・`*.rs`・`*.yml`・`*.json`・script 類 (shell / Python / PowerShell / make / Docker / Nix / `.envrc` 等) と rustc wrapper を comment を除いて読み、`target-cpu=native` (`target_cpu` も)、変数で与えた target-cpu / target-feature、LLVM と C の fast-math 系の flag、sse / sse2 を外す target-feature を、前後の文脈によらず検出する `src/` の Rust は `fadd_fast` などの float intrinsic と `#![feature(core_intrinsics)]` も検出する 意図的な出現は `scripts/build_config_allowlist.toml` に理由付きで書く (allow は行を完全一致と件数で指定し、同じ file に新しい出現が増えると失敗、何も覆わない entry も失敗) 読めない file・parse できない TOML は失敗、1 file も読まない時と root の `Cargo.toml` が無い時は exit 2 docs-lint job (ubuntu / macOS / Windows) と preflight で実行
+- `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
+
 ### Changed
 
 - CI: 公開 API の互換性検査を、直前の commit (`HEAD~1`) との比較で結果を問わない informational な job から、crates.io の最新の alice-db との比較で失敗させる `semver-checks.yml` に置き換えた `scripts/semver_gate.py` が consumer の feature の組 (既定 / 既定なし / `.github/semver-gate.toml` の組、ALICE-Law の release-train.toml と同じ) ごとに `cargo semver-checks --baseline-version <最新>` を走らせ、Cargo.toml の版との差 (0.x では minor が major) が許さない変更、tool が走らない、別の step を名乗る、比較 0 件のいずれでも失敗する major の step は比較しない 公開版が無い crate は理由を出して通す Cargo.toml が公開済みの版と同じ時は次の最小の版 (0.5.1 なら 0.5.2) として検査し、`--release-type` を明示する その時は検査する版を `alice-db 0.5.1 equals the latest release 0.5.1: checking it as the next release 0.5.2 (minor step)` の形で出す (cargo-semver-checks 0.50 は現在の版を指定できず、tool 自身の行は `v0.5.1 -> v0.5.1` のまま) 公開版より古い版は拒否する 走るのは `src/**` / `Cargo.toml` / `Cargo.lock` / 検査器と workflow の変更時と週 1 回 試験 `scripts/test_semver_gate.py` は記録した tool の出力と、実物の cargo-semver-checks を 2 つの小さな crate に走らせる試験を含む preflight の full にも同じ step を足した 判定の関数は ALICE-Law `scripts/release_train.py` と同じ名前と結果で、2 file は repository 固有の名前を持たない

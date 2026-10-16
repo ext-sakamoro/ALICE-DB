@@ -6,7 +6,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Added
 
-- CI (ALICE-Law G14): build の設定に浮動小数点の結果を変える flag が無いことを検査する `scripts/build_config_guard.py` (+ `scripts/test_build_config_guard.py`) を追加 `.cargo/config*` / `Cargo.toml` / `build.rs` / `pyproject.toml` / workflow / make・shell・Python の script を comment を除いて読み、`target-cpu=native`、LLVM と C の fast-math 系の flag、sse / sse2 を外す target-feature を検出する (workflow と script では flag を設定・渡す行だけを見る) `src/` の Rust は `fadd_fast` などの float intrinsic と `#![feature(core_intrinsics)]` を検出する 意図的な test leg は repo ごとの `scripts/build_config_allowlist.toml` に理由付きで書く (何も覆わない entry や理由の無い entry は失敗) 読めない file・parse できない TOML は失敗、1 file も読まない時と root の `Cargo.toml` が無い時は exit 2 docs-lint job (4 OS) と preflight で実行
+- CI (ALICE-Law G14): build の設定に浮動小数点の結果を変える flag が無いことを検査する `scripts/build_config_guard.py` (+ `scripts/test_build_config_guard.py`) を追加 `.cargo/config*` / `Cargo.toml` / `build.rs` / `pyproject.toml` / workflow / make・shell・Python の script を comment を除いて読み、`target-cpu=native`、LLVM と C の fast-math 系の flag、sse / sse2 を外す target-feature を検出する (workflow と script では flag を設定・渡す行だけを見る) `src/` の Rust は `fadd_fast` などの float intrinsic と `#![feature(core_intrinsics)]` を検出する 意図的な test leg は repo ごとの `scripts/build_config_allowlist.toml` に理由付きで書く (何も覆わない entry や理由の無い entry は失敗) 読めない file・parse できない TOML は失敗、1 file も読まない時と root の `Cargo.toml` が無い時は exit 2 docs-lint job (ubuntu / macOS / Windows) と preflight で実行
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed

@@ -100,6 +100,27 @@ class Compare(unittest.TestCase):
         self.assertTrue(c.compare(("libm",), set(), {"sin"}, {}))
 
 
+class ResolvedFeatures(unittest.TestCase):
+    META = {"packages": [{"id": "a", "name": "libm", "version": "0.2.16"},
+                         {"id": "b", "name": "libm", "version": "0.2.9"},
+                         {"id": "c", "name": "getrandom", "version": "0.2.17"},
+                         {"id": "d", "name": "getrandom", "version": "0.2.17"}],
+            "resolve": {"nodes": [{"id": "a", "features": ["arch", "default"]},
+                                  {"id": "b", "features": ["unstable-float"]},
+                                  {"id": "c", "features": ["std"]},
+                                  {"id": "d", "features": ["custom"]}]}}
+
+    def test_features_of_the_exact_version(self):
+        self.assertEqual(c.resolved_features(self.META, "libm", "0.2.16"), ["arch", "default"])
+
+    def test_union_over_nodes(self):
+        self.assertEqual(c.resolved_features(self.META, "getrandom", "0.2.17"), ["custom", "std"])
+
+    def test_absent_stops(self):
+        with self.assertRaises(SystemExit):
+            c.resolved_features(self.META, "libm", "9.9.9")
+
+
 class LockedVersion(unittest.TestCase):
     def test_highest_of_several(self):
         lock = {"package": [{"name": "getrandom", "version": "0.2.17"},

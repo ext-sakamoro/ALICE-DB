@@ -14,8 +14,15 @@ root (std, core, alloc, the primitive types), the module is the path without
 its last segment. The crate is documented at the version locked in Cargo.lock
 (the highest one if several are locked) in a throwaway crate that copies
 rust-toolchain.toml, with rustdoc's JSON output (unstable, enabled with
-RUSTC_BOOTSTRAP=1 on the pinned toolchain); `pub use` re-exports, glob or named,
-are followed. The JSON format_version must be one this script was written
+RUSTC_BOOTSTRAP=1 on the pinned toolchain) and --document-hidden-items (a
+#[doc(hidden)] pub function is callable too); `pub use` re-exports, glob or
+named, are followed. The crate is built with exactly the features cargo
+resolves for it in this workspace with every workspace feature on (`cargo
+metadata --all-features`), so a function behind a feature the real build
+enables is listed, and one behind a feature nothing enables is not.
+
+Not covered: associated functions of public types (methods such as
+`libm::Libm::<f64>::sin`); ban the type in disallowed-types for those. The JSON format_version must be one this script was written
 against (SUPPORTED_FORMATS) or it stops and says so: a new toolchain is a
 reason to re-check the resolver, not to guess.
 
@@ -151,18 +158,47 @@ def public_functions(doc: dict, module: tuple[str, ...]) -> set[str]:
             if it is not None and kind(it) == "function"}
 
 
-def rustdoc_json(crate: str, version: str, workdir: Path) -> dict:
+def resolved_features(metadata: dict, crate: str, version: str) -> list[str]:
+    """Features cargo enables for crate@version in this workspace with every
+    feature of the workspace on (the union over its resolve nodes)."""
+    names = {p["id"]: (p["name"], p["version"]) for p in metadata["packages"]}
+    features: set[str] = set()
+    found = False
+    for node in metadata["resolve"]["nodes"]:
+        if names.get(node["id"]) == (crate, version):
+            found = True
+            features.update(node.get("features", []))
+    if not found:
+        raise SystemExit(f"clippy_external_coverage: {crate} {version} is not in the workspace resolve")
+    return sorted(features)
+
+
+def workspace_metadata() -> dict:
+    proc = subprocess.run(["cargo", "metadata", "--format-version", "1", "--all-features", "--locked"],
+                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          encoding="utf-8", check=False)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr[-3000:])
+        raise SystemExit("clippy_external_coverage: cargo metadata failed")
+    return json.loads(proc.stdout)
+
+
+def rustdoc_json(crate: str, version: str, features: list[str], workdir: Path) -> dict:
     (workdir / "src").mkdir(parents=True, exist_ok=True)
     (workdir / "src" / "lib.rs").write_text("", encoding="utf-8")
+    feats = ", ".join(json.dumps(f) for f in features)
     (workdir / "Cargo.toml").write_text(
         f'[package]\nname = "clippy_external_coverage_probe"\nversion = "0.0.0"\nedition = "2021"\n\n'
-        f'[dependencies]\n{crate} = "={version}"\n\n[workspace]\n', encoding="utf-8")
+        f'[dependencies]\n{crate} = {{ version = "={version}", default-features = false, features = [{feats}] }}\n\n'
+        f'[workspace]\n', encoding="utf-8")
     if TOOLCHAIN.exists():
         shutil.copy2(TOOLCHAIN, workdir / TOOLCHAIN.name)
     env = dict(os.environ)
     env["RUSTC_BOOTSTRAP"] = "1"
     env["RUSTDOCFLAGS"] = ""
-    cmd = ["cargo", "rustdoc", "-q", "-p", crate, "--", "-Z", "unstable-options", "--output-format", "json"]
+    # #[doc(hidden)] pub functions are callable entry points too
+    cmd = ["cargo", "rustdoc", "-q", "-p", crate, "--", "-Z", "unstable-options", "--output-format", "json",
+           "--document-hidden-items"]
     proc = subprocess.run(cmd, cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, encoding="utf-8", check=False)
     if proc.returncode != 0:
@@ -204,17 +240,20 @@ def main() -> int:
         print("clippy_external_coverage: 0 external modules in clippy.toml, nothing to compare")
         return 0
     lock = tomllib.loads(CARGO_LOCK.read_text(encoding="utf-8"))
+    metadata = workspace_metadata()
     checked = 0
     with tempfile.TemporaryDirectory(prefix="clippy-ext-") as tmp:
         docs: dict[str, dict] = {}
         for module in sorted(banned):
             crate = module[0]
-            version = locked_version(lock, crate.replace("_", "-")) or locked_version(lock, crate)
+            package = crate.replace("_", "-") if locked_version(lock, crate.replace("_", "-")) else crate
+            version = locked_version(lock, package)
             if version is None:
                 errors.append(f"{crate}: banned in clippy.toml but not in Cargo.lock")
                 continue
             if crate not in docs:
-                docs[crate] = rustdoc_json(crate, version, Path(tmp) / crate)
+                features = resolved_features(metadata, package, version)
+                docs[crate] = rustdoc_json(package, version, features, Path(tmp) / crate)
             public = public_functions(docs[crate], module)
             errors += compare(module, public, banned[module], allowed.get(module, {}))
             checked += len(public)

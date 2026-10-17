@@ -50,7 +50,7 @@ fn reference_crc_is_ieee_not_castagnoli() {
 }
 
 #[test]
-fn sstable_bytes_follow_the_documented_v3_layout() {
+fn sstable_bytes_follow_the_documented_v4_layout() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.sst");
     let raw = BlobValue::Raw(b"v".to_vec());
@@ -59,7 +59,7 @@ fn sstable_bytes_follow_the_documented_v3_layout() {
 
     // Header (24 bytes).
     assert_eq!(&b[0..8], b"ALICEBBS");
-    assert_eq!(u32_at(&b, 8), 3, "header version");
+    assert_eq!(u32_at(&b, 8), 4, "header version");
     assert_eq!(u64_at(&b, 12), 1, "num_records");
     assert_eq!(u32_at(&b, 20), 0, "reserved");
 
@@ -80,14 +80,16 @@ fn sstable_bytes_follow_the_documented_v3_layout() {
         "bloom section fills the gap"
     );
 
-    // Bloom section: num_bits u64, num_hashes u32, bits_len u64, bits, CRC-32.
+    // Bloom section: num_bits u64, num_hashes u32, hash_id 32 bytes, bits_len u64, bits,
+    // CRC-32.
     let bloom = &b[records_end..footer];
-    let bits_len = usize::try_from(u64_at(bloom, 12)).unwrap();
-    assert_eq!(bloom.len(), 20 + bits_len + 4);
+    assert_eq!(&bloom[12..44], &alice_db::bloom::BLOOM_HASH_ID, "hash_id");
+    let bits_len = usize::try_from(u64_at(bloom, 44)).unwrap();
+    assert_eq!(bloom.len(), 52 + bits_len + 4);
     assert!(bits_len > 0 && u64_at(bloom, 0) > 0 && u32_at(bloom, 8) > 0);
     assert_eq!(
-        u32_at(bloom, 20 + bits_len),
-        crc32_ieee(&bloom[..20 + bits_len])
+        u32_at(bloom, 52 + bits_len),
+        crc32_ieee(&bloom[..52 + bits_len])
     );
 }
 
@@ -148,16 +150,17 @@ fn docs_name_the_checksum_that_the_code_computes() {
 fn sstable_doc_states_the_version_the_writer_stamps() {
     let doc = module_doc(SSTABLE_SRC);
     assert!(
-        doc.contains("version        u32 LE (written: 3; read: 1, 2, 3)"),
+        doc.contains("version        u32 LE (written: 4; read: 1 to 4)"),
         "header version line in the module doc"
     );
     for field in [
         "bloom_size",
         "trailer  4             CRC-32 over the entire record above",
         "trailer  4             CRC-32 over the bloom section above",
-        "Footer, v2 and v3 (24 bytes, at end of file)",
+        "Footer, v2 to v4 (24 bytes, at end of file)",
+        "hash_id        the position derivation (crate::bloom::BLOOM_HASH_ID)",
         "Footer, v1 (16 bytes; v1 files have no bloom section)",
-        "Versions 2 and 3 have the same layout and are read the same way",
+        "Versions 2 to 4 have the same layout but for the Bloom section's identifier",
         "value_kind     u8  (0x00 = Raw, 0x01 = Compressed, 0x02 = Tombstone)",
     ] {
         assert!(doc.contains(field), "module doc lacks `{field}`");

@@ -30,7 +30,7 @@
 //! ```text
 //! Header (24 bytes):
 //!   0   8   magic          "ALICEBBS"
-//!   8   4   version        u32 LE (written: 3; read: 1, 2, 3)
+//!   8   4   version        u32 LE (written: 4; read: 1 to 4)
 //!  12   8   num_records    u64 LE (may be zero for an empty snapshot)
 //!  20   4   reserved       u32 LE (written as zero)
 //!
@@ -45,14 +45,17 @@
 //!   9+key_len   value_len  value bytes
 //!   trailer  4             CRC-32 over the entire record above
 //!
-//! Bloom section (v2 and v3):
+//! Bloom section (v4):
 //!   0   8   num_bits       u64 LE
 //!   8   4   num_hashes     u32 LE
-//!  12   8   bits_len       u64 LE
-//!  20   bits_len           filter bits
+//!  12  32   hash_id        the position derivation (crate::bloom::BLOOM_HASH_ID)
+//!  44   8   bits_len       u64 LE
+//!  52   bits_len           filter bits
 //!   trailer  4             CRC-32 over the bloom section above
 //!
-//! Footer, v2 and v3 (24 bytes, at end of file):
+//! Bloom section (v2 and v3): as v4 without `hash_id` (bits_len at 12, bits at 20)
+//!
+//! Footer, v2 to v4 (24 bytes, at end of file):
 //!   ...  8   records_size   u64 LE (byte length of the records section)
 //!   ...  8   bloom_size     u64 LE (byte length of the bloom section)
 //!   ...  8   magic          "ALICEEND"
@@ -62,9 +65,11 @@
 //!   ...  8   magic          "ALICEEND"
 //! ```
 //!
-//! Versions 2 and 3 have the same layout and are read the same way: the
-//! reader accepts tombstone records under every version. The writer stamps
-//! 3; the version history is on the `FORMAT_VERSION_*` constants.
+//! Versions 2 to 4 have the same layout but for the Bloom section's identifier, and the
+//! reader accepts tombstone records under every version. The writer stamps 4; the version
+//! history is on the `FORMAT_VERSION_*` constants. A Bloom filter is used as stored only when
+//! its identifier is this build's; a v2 / v3 filter, or one under another identifier, is
+//! rebuilt from the file's keys and the reader says so (`BloomSource`).
 //!
 //! # Atomic replacement
 //!
@@ -109,8 +114,14 @@ const FORMAT_VERSION_V2: u32 = 2;
 /// deletes survive a process restart. Bloom filter includes every
 /// stored key (tombstones included) so probes still work.
 const FORMAT_VERSION_V3: u32 = 3;
-/// Every new write stamps this. Readers accept v1, v2, and v3.
-const CURRENT_VERSION: u32 = FORMAT_VERSION_V3;
+/// 0.6.0+: same file layout as v3, but the Bloom section carries the 32-byte identifier of
+/// the position derivation ([`crate::bloom::BLOOM_HASH_ID`]) after `num_hashes`. Filters of
+/// v2 and v3 were built with `std::hash::DefaultHasher`, which the standard library does not
+/// fix between releases; they are never probed but rebuilt from the file's keys
+/// ([`BloomSource::Rebuilt`]).
+const FORMAT_VERSION_V4: u32 = 4;
+/// Every new write stamps this. Readers accept v1 to v4.
+const CURRENT_VERSION: u32 = FORMAT_VERSION_V4;
 /// Bytes occupied by the fixed-size header.
 const HEADER_LEN: usize = 24;
 /// Bytes occupied by the v1 footer: `records_size (u64) + magic (8)`.
@@ -125,9 +136,60 @@ const VALUE_KIND_COMPRESSED: u8 = 0x01;
 /// carries a key + CRC; `value_len` is zero.
 const VALUE_KIND_TOMBSTONE: u8 = 0x02;
 
-/// Prelude of the Bloom section:
+/// Prelude of the Bloom section of v2 / v3:
 /// `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + CRC-32 (u32)`.
 const BLOOM_HEADER_LEN: usize = 8 + 4 + 8 + 4;
+/// Prelude of the Bloom section of v4: the v3 prelude plus the 32-byte hash identifier
+const BLOOM_HEADER_LEN_V4: usize = BLOOM_HEADER_LEN + 32;
+
+/// Where the Bloom filter an `SSTable` answers with came from (ALICE-Law G8: the typed status of
+/// a read of a derived structure)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BloomSource {
+    /// The file has no Bloom section (v1): every lookup goes to the records
+    Absent,
+    /// The stored filter, written with this build's position derivation
+    /// ([`crate::bloom::BLOOM_HASH_ID`])
+    Stored,
+    /// The stored filter was not used; the filter was rebuilt from the file's keys
+    Rebuilt(BloomRebuild),
+}
+
+/// Why a stored Bloom filter was rebuilt instead of probed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BloomRebuild {
+    /// A v2 / v3 filter: no identifier, positions from `std::hash::DefaultHasher`
+    NoHashId {
+        /// The file's format version
+        version: u32,
+    },
+    /// A v4 filter under another position derivation
+    ForeignHashId([u8; 32]),
+}
+
+/// The filter a reader uses: the stored one when its identifier is this build's, otherwise
+/// one rebuilt from `keys` (never the stored positions of an unknown derivation)
+fn settle_bloom<'k>(
+    version: u32,
+    parsed: Option<(BloomFilter, Option<[u8; 32]>)>,
+    keys: impl ExactSizeIterator<Item = &'k [u8]>,
+) -> (Option<BloomFilter>, BloomSource) {
+    let reason = match parsed {
+        None => return (None, BloomSource::Absent),
+        Some((filter, Some(id))) if id == crate::bloom::BLOOM_HASH_ID => {
+            return (Some(filter), BloomSource::Stored);
+        }
+        Some((_, Some(id))) => BloomRebuild::ForeignHashId(id),
+        Some((_, None)) => BloomRebuild::NoHashId { version },
+    };
+    let mut rebuilt = BloomFilter::with_capacity(keys.len(), BLOOM_FALSE_POSITIVE_RATE);
+    for key in keys {
+        rebuilt.insert(key);
+    }
+    (Some(rebuilt), BloomSource::Rebuilt(reason))
+}
 
 /// False-positive rate target for the Bloom filter attached to each
 /// `SSTable`. 1% is the classic sweet spot: ~9.6 bits/key, 7 hashes.
@@ -307,9 +369,18 @@ pub struct BlobSstable {
     /// v0.2.0-alpha.2 through v0.2.0-alpha.5 — callers must treat those
     /// as if the Bloom always accepts every key.
     bloom: Option<BloomFilter>,
+    /// Where `bloom` came from
+    bloom_source: BloomSource,
 }
 
 impl BlobSstable {
+    /// Where the Bloom filter came from: the stored one, rebuilt from the keys (a filter of
+    /// another position derivation), or none (v1)
+    #[must_use]
+    pub fn bloom_source(&self) -> BloomSource {
+        self.bloom_source
+    }
+
     /// The on-disk location of the `SSTable`.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -540,7 +611,7 @@ impl BlobSstable {
                 }
                 (records_slice, None)
             }
-            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 => {
+            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 | FORMAT_VERSION_V4 => {
                 // v2 and v3 share the on-disk layout (header + records
                 // + Bloom + 24-byte footer). Only the record encoding
                 // differs: v3 records may carry `value_kind = 0x02`
@@ -601,22 +672,25 @@ impl BlobSstable {
                 }
                 let records_slice = &bytes[HEADER_LEN..records_end];
                 let bloom_slice = &bytes[records_end..bloom_end];
-                let bloom = parse_bloom(bloom_slice)?;
+                let bloom = parse_bloom(bloom_slice, version)?;
                 (records_slice, Some(bloom))
             }
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("unsupported sstable version {other}; expected 1, 2, or 3"),
+                    format!("unsupported sstable version {other}; expected 1 to 4"),
                 ));
             }
         };
 
         let records = parse_records(records_slice, num_records)?;
+        let (bloom, bloom_source) =
+            settle_bloom(version, bloom, records.iter().map(|(k, _)| k.as_slice()));
         Ok(Some(Self {
             path,
             records,
             bloom,
+            bloom_source,
         }))
     }
 }
@@ -661,6 +735,8 @@ pub struct LoadedSstable {
     _file: File,
     mmap: Mmap,
     bloom: Option<BloomFilter>,
+    /// Where `bloom` came from
+    bloom_source: BloomSource,
     /// Key → offset within the mmap. Built once at open time.
     index: BTreeMap<Vec<u8>, RecordOffset>,
 }
@@ -768,7 +844,7 @@ impl LoadedSstable {
                 }
                 (end, None)
             }
-            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 => {
+            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 | FORMAT_VERSION_V4 => {
                 // v2 and v3 share the on-disk layout — see the matching
                 // branch in `BlobSstable::open` for the full rationale.
                 if mmap.len() < HEADER_LEN + FOOTER_LEN_V2 {
@@ -824,18 +900,19 @@ impl LoadedSstable {
                         "sstable v2/v3 section sizes do not add up to file size",
                     ));
                 }
-                let bloom = parse_bloom(&mmap[records_end..bloom_end])?;
+                let bloom = parse_bloom(&mmap[records_end..bloom_end], version)?;
                 (records_end, Some(bloom))
             }
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("unsupported sstable version {other}; expected 1, 2, or 3"),
+                    format!("unsupported sstable version {other}; expected 1 to 4"),
                 ));
             }
         };
 
         let index = build_offset_index(&mmap[HEADER_LEN..records_end], num_records, HEADER_LEN)?;
+        let (bloom, bloom_source) = settle_bloom(version, bloom, index.keys().map(Vec::as_slice));
 
         crate::fs_audit::note_open(&path);
         Ok(Some(Self {
@@ -843,6 +920,7 @@ impl LoadedSstable {
             _file: file,
             mmap,
             bloom,
+            bloom_source,
             index,
         }))
     }
@@ -851,6 +929,12 @@ impl LoadedSstable {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Where the Bloom filter came from (see [`BlobSstable::bloom_source`])
+    #[must_use]
+    pub fn bloom_source(&self) -> BloomSource {
+        self.bloom_source
     }
 
     /// The Bloom filter attached to this file, if any (format v2+).
@@ -1074,16 +1158,18 @@ fn serialise_record(key: &[u8], value_kind: u8, value: &[u8]) -> io::Result<Vec<
     Ok(buf)
 }
 
-/// Encode the Bloom filter as a byte sequence with a CRC-32 (IEEE) trailer.
-/// Layout: `num_bits (u64) + num_hashes (u32) + bloom_bytes_len (u64) + bloom_bits + CRC-32`.
+/// Encode the Bloom filter as a byte sequence with a CRC-32 (IEEE) trailer (format v4).
+/// Layout: `num_bits (u64) + num_hashes (u32) + hash_id (32) + bloom_bytes_len (u64) +
+/// bloom_bits + CRC-32`; `hash_id` is [`crate::bloom::BLOOM_HASH_ID`].
 fn serialise_bloom(bloom: &BloomFilter) -> io::Result<Vec<u8>> {
     let bits = bloom.as_bits();
     let bits_len = u64::try_from(bits.len()).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "bloom bits length exceeds u64")
     })?;
-    let mut buf = Vec::with_capacity(BLOOM_HEADER_LEN + bits.len());
+    let mut buf = Vec::with_capacity(BLOOM_HEADER_LEN_V4 + bits.len());
     buf.extend_from_slice(&bloom.num_bits().to_le_bytes());
     buf.extend_from_slice(&bloom.num_hashes().to_le_bytes());
+    buf.extend_from_slice(&crate::bloom::BLOOM_HASH_ID);
     buf.extend_from_slice(&bits_len.to_le_bytes());
     buf.extend_from_slice(bits);
     let mut hasher = crc32fast::Hasher::new();
@@ -1093,9 +1179,16 @@ fn serialise_bloom(bloom: &BloomFilter) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Decode a Bloom section produced by [`serialise_bloom`].
-fn parse_bloom(bytes: &[u8]) -> io::Result<BloomFilter> {
-    if bytes.len() < BLOOM_HEADER_LEN {
+/// Decode a Bloom section: v4 (with the hash identifier, as [`serialise_bloom`] writes it) or
+/// v2 / v3 (without). Returns the filter and the identifier (`None` for v2 / v3).
+fn parse_bloom(bytes: &[u8], version: u32) -> io::Result<(BloomFilter, Option<[u8; 32]>)> {
+    let with_id = version >= FORMAT_VERSION_V4;
+    let header_len = if with_id {
+        BLOOM_HEADER_LEN_V4
+    } else {
+        BLOOM_HEADER_LEN
+    };
+    if bytes.len() < header_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "sstable bloom section shorter than its header",
@@ -1105,16 +1198,23 @@ fn parse_bloom(bytes: &[u8]) -> io::Result<BloomFilter> {
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ]);
     let num_hashes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    let bits_len = u64::from_le_bytes([
-        bytes[12], bytes[13], bytes[14], bytes[15], bytes[16], bytes[17], bytes[18], bytes[19],
-    ]);
+    let (hash_id, len_at) = if with_id {
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes[12..44]);
+        (Some(id), 44)
+    } else {
+        (None, 12)
+    };
+    let mut len_bytes = [0u8; 8];
+    len_bytes.copy_from_slice(&bytes[len_at..len_at + 8]);
+    let bits_len = u64::from_le_bytes(len_bytes);
     let bits_len_usize = usize::try_from(bits_len).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "sstable bloom bits length exceeds usize",
         )
     })?;
-    let expected_total = BLOOM_HEADER_LEN + bits_len_usize;
+    let expected_total = header_len + bits_len_usize;
     if bytes.len() != expected_total {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1138,10 +1238,10 @@ fn parse_bloom(bytes: &[u8]) -> io::Result<BloomFilter> {
         ));
     }
     // Bits section: after the fixed header, before the CRC.
-    let bits_start = 8 + 4 + 8;
+    let bits_start = len_at + 8;
     let bits_end = bits_start + bits_len_usize;
     let bits = bytes[bits_start..bits_end].to_vec();
-    Ok(BloomFilter::from_raw(bits, num_bits, num_hashes))
+    Ok((BloomFilter::from_raw(bits, num_bits, num_hashes), hash_id))
 }
 
 /// Parse the records section into `(key, value)` pairs, verifying the
@@ -1398,16 +1498,15 @@ mod tests {
         let raw = BlobValue::Raw(b"v".to_vec());
         BlobSstable::write_from_iter(&path, [(b"k".as_slice(), &raw)]).unwrap();
         let size = sstable_size_on_disk(&path).unwrap().unwrap();
-        // Format v2 (α-3.3b-1):
+        // Format v4:
         //   Header (24)
         //   Records = 1 × (9 + key_len=1 + value_len=1 + crc=4) = 15
-        //   Bloom section = 8 + 4 + 8 + bits_len (~2 for n=1) + crc=4 = ~26
+        //   Bloom section = 8 + 4 + hash id 32 + 8 + bits_len (~2 for n=1) + crc=4 = ~58
         //   Footer (24 = records_size + bloom_size + magic)
-        // = 89 bytes. Anchor is loose to survive the Bloom sizing
-        // formula tweaking that may land in α-3.3b-2.
+        // = 121 bytes. Anchor is loose to survive a Bloom sizing change.
         assert!(
-            (80..=100).contains(&size),
-            "expected a v2 file in the 80..=100 byte range; got {size}"
+            (112..=132).contains(&size),
+            "expected a v4 file in the 112..=132 byte range; got {size}"
         );
     }
 

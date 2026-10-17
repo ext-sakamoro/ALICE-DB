@@ -19,21 +19,103 @@
 //!
 //! # Hashing
 //!
-//! We derive the `k` hash positions from a single [`std::hash::SipHasher`]-based
-//! computation via double hashing (Kirsch-Mitzenmacher 2006):
+//! The positions are part of the stored `SSTable`, so the hash is this crate's own and fixed:
+//! SipHash-2-4 (Aumasson and Bernstein, 64-bit output) implemented below, checked against the
+//! reference test vectors. `h1` and `h2` are two SipHash-2-4 values of the key bytes under two
+//! fixed keys, and the `k` positions come from double hashing (Kirsch-Mitzenmacher 2006):
 //!
 //! ```text
-//! h_i(key) = (h1(key) + i · h2(key)) mod m
+//! h_i(key) = (h1(key) + i · h2(key)) mod m      (wrapping u64, h2 = 1 when it is 0)
 //! ```
 //!
-//! where `h1` and `h2` come from a single 128-bit SipHash-2-4 output,
-//! split into two `u64` halves. This gives us `k` independent-looking
-//! positions with just one hash call per key, and keeps the crate
-//! dependency-free (`std::hash::DefaultHasher` is the `SipHasher`
-//! implementation shipped with the standard library).
+//! [`BLOOM_HASH_ID`] names exactly this derivation (the SHA-256 of
+//! [`BLOOM_HASH_DESCRIPTION`]); the `SSTable` stores it next to the filter, and a reader uses
+//! a stored filter only when the identifier is this one. Filters written before 0.6.0 used
+//! `std::hash::DefaultHasher`, whose algorithm the standard library does not fix between
+//! releases: those are not probed but rebuilt from the file's keys (see
+//! `crate::blob_sstable::BloomSource`).
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+/// What [`BLOOM_HASH_ID`] identifies, in words
+pub const BLOOM_HASH_DESCRIPTION: &str = "alice-db bloom positions v1: SipHash-2-4 (64-bit output) of the key bytes alone, h1 with key k0=0x0706050403020100 k1=0x0f0e0d0c0b0a0908, h2 with key k0=0x0f0e0d0c0b0a0908 k1=0x0706050403020100 (0 becomes 1), position i = (h1 + i*h2) mod num_bits, wrapping u64 arithmetic";
+
+/// SHA-256 of [`BLOOM_HASH_DESCRIPTION`]: the identifier of the position derivation, stored
+/// with every filter (checked against the description by `tests::the_hash_id_is_the_description`)
+pub const BLOOM_HASH_ID: [u8; 32] =
+    hex32("75e603a497f7aab2eaea4b500f71269ed0102497b184b1192410a749bf435bdf");
+
+const fn hex32(s: &str) -> [u8; 32] {
+    const fn nibble(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => panic!("not a lower-case hex digit"),
+        }
+    }
+    let b = s.as_bytes();
+    assert!(b.len() == 64, "an identifier is 64 hex digits");
+    let mut out = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        out[i] = nibble(b[2 * i]) * 16 + nibble(b[2 * i + 1]);
+        i += 1;
+    }
+    out
+}
+
+const K_A: (u64, u64) = (0x0706_0504_0302_0100, 0x0f0e_0d0c_0b0a_0908);
+const K_B: (u64, u64) = (0x0f0e_0d0c_0b0a_0908, 0x0706_0504_0302_0100);
+
+/// SipHash-2-4 with a 64-bit output (the reference algorithm: 2 compression rounds per
+/// 8-byte word, 4 finalisation rounds, the message length in the top byte of the last word)
+#[must_use]
+pub fn siphash24(k0: u64, k1: u64, data: &[u8]) -> u64 {
+    #[inline(always)]
+    fn round(v: &mut [u64; 4]) {
+        v[0] = v[0].wrapping_add(v[1]);
+        v[1] = v[1].rotate_left(13);
+        v[1] ^= v[0];
+        v[0] = v[0].rotate_left(32);
+        v[2] = v[2].wrapping_add(v[3]);
+        v[3] = v[3].rotate_left(16);
+        v[3] ^= v[2];
+        v[0] = v[0].wrapping_add(v[3]);
+        v[3] = v[3].rotate_left(21);
+        v[3] ^= v[0];
+        v[2] = v[2].wrapping_add(v[1]);
+        v[1] = v[1].rotate_left(17);
+        v[1] ^= v[2];
+        v[2] = v[2].rotate_left(32);
+    }
+    let mut v = [
+        k0 ^ 0x736f_6d65_7073_6575,
+        k1 ^ 0x646f_7261_6e64_6f6d,
+        k0 ^ 0x6c79_6765_6e65_7261,
+        k1 ^ 0x7465_6462_7974_6573,
+    ];
+    let mut chunks = data.chunks_exact(8);
+    for c in &mut chunks {
+        let m = u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
+        v[3] ^= m;
+        round(&mut v);
+        round(&mut v);
+        v[0] ^= m;
+    }
+    let rest = chunks.remainder();
+    // the length modulo 256 in the top byte, the remaining bytes little-endian below it
+    let mut last = (data.len() as u64 & 0xff) << 56;
+    for (i, &b) in rest.iter().enumerate() {
+        last |= u64::from(b) << (8 * i);
+    }
+    v[3] ^= last;
+    round(&mut v);
+    round(&mut v);
+    v[0] ^= last;
+    v[2] ^= 0xff;
+    for _ in 0..4 {
+        round(&mut v);
+    }
+    v[0] ^ v[1] ^ v[2] ^ v[3]
+}
 
 /// A Bloom filter over byte-string keys.
 ///
@@ -162,28 +244,89 @@ impl BloomFilter {
     }
 }
 
-/// Compute two `u64` hashes for `key` from a single SipHash-2-4 call
-/// per hash. Feeding a differentiating suffix into the second hash is
-/// enough to make the two independent for Kirsch-Mitzenmacher's
-/// derivation to hold in practice.
+/// The two `u64` hashes of `key` (module docs, "Hashing"): SipHash-2-4 under two fixed keys;
+/// `h2` is made non-zero so that `h1 + i · h2` visits distinct positions across `i`
 fn hash_pair(key: &[u8]) -> (u64, u64) {
-    let mut h1 = DefaultHasher::new();
-    key.hash(&mut h1);
-    let a = h1.finish();
-
-    let mut h2 = DefaultHasher::new();
-    key.hash(&mut h2);
-    0x000C_0FFE_EBAD_D005_u64.hash(&mut h2);
-    let b = h2.finish();
-
-    // Guarantee `h2` is non-zero so `h1 + i · h2` visits distinct
-    // positions across `i`.
+    let a = siphash24(K_A.0, K_A.1, key);
+    let b = siphash24(K_B.0, K_B.1, key);
     (a, if b == 0 { 1 } else { b })
+}
+
+/// The bit positions `key` sets in a filter of `num_bits` bits with `num_hashes` probes, in
+/// probe order (what [`BloomFilter::insert`] sets and [`BloomFilter::contains`] reads)
+#[must_use]
+pub fn positions(key: &[u8], num_bits: u64, num_hashes: u32) -> Vec<u64> {
+    let (h1, h2) = hash_pair(key);
+    (0..u64::from(num_hashes))
+        .map(|i| h1.wrapping_add(i.wrapping_mul(h2)) % num_bits)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reference vectors of SipHash-2-4 (64-bit output, key 00 01 .. 0f, message
+    /// 00 01 .. n-1), the first three of the published table
+    #[test]
+    fn siphash24_matches_the_reference_vectors() {
+        let msg: Vec<u8> = (0..3u8).collect();
+        let want = [
+            0x726f_db47_dd0e_0e31_u64,
+            0x74f8_39c5_93dc_67fd,
+            0x0d6c_8009_d9a9_4f5a,
+        ];
+        for (n, w) in want.iter().enumerate() {
+            assert_eq!(siphash24(K_A.0, K_A.1, &msg[..n]), *w, "length {n}");
+        }
+    }
+
+    #[test]
+    fn the_hash_id_is_the_description() {
+        use sha2::{Digest, Sha256};
+        let digest: [u8; 32] = Sha256::digest(BLOOM_HASH_DESCRIPTION.as_bytes()).into();
+        assert_eq!(digest, BLOOM_HASH_ID);
+    }
+
+    /// ALICE-Law G10: the positions a key sets are stored on disk, so they are pinned. The
+    /// empty key's row is h1 = 0x726fdb47dd0e0e31 (the reference vector) and h2 from the
+    /// standard library's `SipHasher` under the second key, reduced independently of this code
+    #[test]
+    fn positions_are_pinned() {
+        let cases: [(&[u8], [u64; 7]); 4] = [
+            (b"", [553, 3130, 5707, 8284, 5693, 8270, 1261]),
+            (b"a", [8276, 7710, 7144, 6578, 6012, 5446, 4880]),
+            (b"key-0000", [7351, 4873, 2395, 4335, 1857, 8965, 6487]),
+            (
+                b"\x00\xff binary",
+                [9340, 8587, 7834, 7081, 1160, 407, 9240],
+            ),
+        ];
+        for (key, want) in cases {
+            assert_eq!(positions(key, 9586, 7), want, "{key:?}");
+        }
+    }
+
+    /// The same algorithm as the standard library's (deprecated, still SipHash-2-4)
+    /// `SipHasher::write` on the raw bytes, over every length up to 64 and both keys
+    #[test]
+    #[allow(deprecated)]
+    fn siphash24_agrees_with_std_siphasher() {
+        use std::hash::Hasher;
+        let data: Vec<u8> = (0..64u8)
+            .map(|i| i.wrapping_mul(37).wrapping_add(11))
+            .collect();
+        let mut compared = 0;
+        for k in [K_A, K_B] {
+            for n in 0..=data.len() {
+                let mut h = std::hash::SipHasher::new_with_keys(k.0, k.1);
+                h.write(&data[..n]);
+                assert_eq!(siphash24(k.0, k.1, &data[..n]), h.finish(), "length {n}");
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 130);
+    }
 
     #[test]
     fn empty_filter_rejects_every_key() {

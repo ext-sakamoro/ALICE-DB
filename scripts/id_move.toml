@@ -15,3 +15,8 @@ path = "alice_db::semantics::DB_SEMANTICS_ID"
 # it or one of alice-det-math's previous identifiers
 path = "alice_db::SEMANTICS_ID"
 previous = "alice_det_math::PREVIOUS_SEMANTICS_IDS"
+
+[[id]]
+# the Bloom filter position derivation stamped in every format v4 SSTable (src/bloom.rs); a
+# reader rebuilds a filter whose identifier is not this one, so a move needs a breaking version
+path = "alice_db::bloom::BLOOM_HASH_ID"

@@ -187,6 +187,10 @@ impl BloomFilter {
     /// `SSTable` reader to restore an on-disk filter without going
     /// through `with_capacity` (which would re-derive the parameters
     /// and might land in a different sizing regime).
+    ///
+    /// The bits mean something only under the position derivation they were built with: a
+    /// caller that stores them itself stores [`BLOOM_HASH_ID`] next to them and rebuilds the
+    /// filter from its keys when the identifier differs (as the `SSTable` reader does).
     #[must_use]
     pub fn from_raw(bits: Vec<u8>, num_bits: u64, num_hashes: u32) -> Self {
         Self {
@@ -196,7 +200,8 @@ impl BloomFilter {
         }
     }
 
-    /// Return the raw bit vector for serialization.
+    /// Return the raw bit vector for serialization. The positions are those of
+    /// [`BLOOM_HASH_ID`]; store the identifier with the bits (see [`Self::from_raw`]).
     #[must_use]
     pub fn as_bits(&self) -> &[u8] {
         &self.bits

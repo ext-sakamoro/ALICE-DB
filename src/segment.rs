@@ -402,7 +402,7 @@ impl DataSegment {
         timestamp: i64,
         unpinned: UnpinnedResiduals,
     ) -> Result<Option<(f32, ReadStatus)>, ResidualError> {
-        let Some(value) = self.query_point_model_only(timestamp) else {
+        let Some(value) = self.model_point(timestamp) else {
             return Ok(None);
         };
         let Some(residual) = checked_residual(
@@ -414,7 +414,8 @@ impl DataSegment {
             unpinned,
         )?
         else {
-            return Ok(Some((value, ReadStatus::Current)));
+            // no residual: the model's value, a computed one
+            return Ok(Some((canon32(value), ReadStatus::Current)));
         };
         let (kind, decompressed, status) = residual;
         let idx = self.timestamp_to_index(timestamp);
@@ -439,7 +440,7 @@ impl DataSegment {
     /// arithmetic (see [`Self::query_point`] and [`Self::residual_status`]).
     #[inline(always)]
     #[must_use]
-    pub fn query_point_model_only(&self, timestamp: i64) -> Option<f32> {
+    pub(crate) fn model_point(&self, timestamp: i64) -> Option<f32> {
         if !self.contains(timestamp) {
             return None;
         }
@@ -450,6 +451,14 @@ impl DataSegment {
             timestamp,
         );
         Some(self.evaluate_model_at(i))
+    }
+
+    /// The model's value at `timestamp` with no residual applied, a NaN as the canonical
+    /// `f32::NAN` (`0x7fc0_0000`): a computed value (ALICE-Law G4). The residual is applied
+    /// to the uncanonicalised value, so a lossless read returns the stored bits
+    #[must_use]
+    pub fn query_point_model_only(&self, timestamp: i64) -> Option<f32> {
+        self.model_point(timestamp).map(canon32)
     }
 
     /// Whether this segment's values come back exactly, and if not why
@@ -497,7 +506,7 @@ impl DataSegment {
             self.end_time,
             unpinned,
         )?;
-        let mut results = self.query_range_model_only(start, end);
+        let mut results = self.model_range(start, end);
         let mut status = ReadStatus::Current;
         if let Some((kind, decompressed, residual_status)) = residual {
             status = residual_status;
@@ -513,6 +522,11 @@ impl DataSegment {
                     )
                 })?;
             }
+        } else {
+            // no residual: the model's values, computed ones
+            for (_, value) in &mut results {
+                *value = canon32(*value);
+            }
         }
         Ok((results, status))
     }
@@ -520,7 +534,7 @@ impl DataSegment {
     /// The model's values over `[start, end]`, with no residual applied (see
     /// [`Self::query_point_model_only`])
     #[must_use]
-    pub fn query_range_model_only(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
+    pub(crate) fn model_range(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
         let query_start = start.max(self.start_time);
         let query_end = end.min(self.end_time);
 
@@ -574,12 +588,22 @@ impl DataSegment {
             }),
             ModelType::PerlinNoise { .. } | ModelType::RawLzma { .. } => {
                 // Non-analytic models: materialise once, then index
-                let all = self.generate_all();
+                let all = self.generate_all_raw();
                 law::fill_range(&mut results, &plan, 0, |i| law::sampled_at(&all, i));
             }
         }
 
         results
+    }
+
+    /// The model's values over `[start, end]` with no residual applied, a NaN as the canonical
+    /// `f32::NAN` (see [`Self::query_point_model_only`])
+    #[must_use]
+    pub fn query_range_model_only(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
+        self.model_range(start, end)
+            .into_iter()
+            .map(|(t, v)| (t, canon32(v)))
+            .collect()
     }
 
     /// Polynomial range loop: 4 sample positions per `f64x4` Horner step, then
@@ -625,7 +649,7 @@ impl DataSegment {
     /// This regenerates the entire dataset from the model.
     /// Used for full segment reads or verification.
     #[must_use]
-    pub fn generate_all(&self) -> Vec<f32> {
+    pub(crate) fn generate_all_raw(&self) -> Vec<f32> {
         let n = self.metadata.point_count;
 
         match &self.model {
@@ -675,6 +699,13 @@ impl DataSegment {
         }
     }
 
+    /// Every value of the model, a NaN as the canonical `f32::NAN` (a computed value; see
+    /// [`Self::query_point_model_only`])
+    #[must_use]
+    pub fn generate_all(&self) -> Vec<f32> {
+        self.generate_all_raw().into_iter().map(canon32).collect()
+    }
+
     /// Evaluate the model at (fractional) sample position `i` — see [`law`]
     #[inline(always)]
     fn evaluate_model_at(&self, i: f64) -> f32 {
@@ -704,7 +735,7 @@ impl DataSegment {
             ModelType::PerlinNoise { .. } | ModelType::RawLzma { .. } => {
                 // Non-analytic models: materialise and index (point queries on
                 // these are O(n); range queries materialise once)
-                law::sampled_at(&self.generate_all(), i)
+                law::sampled_at(&self.generate_all_raw(), i)
             }
         }
     }
@@ -1373,6 +1404,18 @@ pub fn compress_residual_xor(raw: &[u8], semantics_id: &[u8; SEMANTICS_ID_LEN]) 
     }
 }
 
+/// `x`, or the canonical quiet NaN `0x7fc0_0000` when `x` is a NaN: the bits of a computed NaN
+/// (a model value) are not specified (ALICE-Law G4). Written as bits: the standard library does
+/// not fix the bit pattern of `f32::NAN`
+#[inline]
+fn canon32(x: f32) -> f32 {
+    if x.is_nan() {
+        f32::from_bits(0x7fc0_0000)
+    } else {
+        x
+    }
+}
+
 /// SIMD Horner (4 sample positions at once), ascending coefficients — the
 /// vector form of [`law::polynomial_at`].
 #[inline(always)]
@@ -1830,7 +1873,7 @@ impl SegmentView {
         timestamp: i64,
         unpinned: UnpinnedResiduals,
     ) -> Result<Option<(f32, ReadStatus)>, ResidualError> {
-        let Some(value) = self.query_point_model_only(timestamp) else {
+        let Some(value) = self.model_point(timestamp) else {
             return Ok(None);
         };
         // Lossless mode stores per-sample residuals; the in-memory path applied
@@ -1847,7 +1890,8 @@ impl SegmentView {
             unpinned,
         )?
         else {
-            return Ok(Some((value, ReadStatus::Current)));
+            // no residual: the model's value, a computed one
+            return Ok(Some((canon32(value), ReadStatus::Current)));
         };
         let (kind, decompressed, status) = residual;
         let idx = self.archived_timestamp_to_index(timestamp);
@@ -1868,7 +1912,7 @@ impl SegmentView {
     /// [`DataSegment::query_point_model_only`])
     #[inline(always)]
     #[must_use]
-    pub fn query_point_model_only(&self, timestamp: i64) -> Option<f32> {
+    pub(crate) fn model_point(&self, timestamp: i64) -> Option<f32> {
         if !self.contains(timestamp) {
             return None;
         }
@@ -1880,6 +1924,14 @@ impl SegmentView {
             timestamp,
         );
         Some(self.evaluate_archived_model(i))
+    }
+
+    /// The model's value at `timestamp` with no residual applied, a NaN as the canonical
+    /// `f32::NAN` (`0x7fc0_0000`): a computed value (ALICE-Law G4). The residual is applied
+    /// to the uncanonicalised value, so a lossless read returns the stored bits
+    #[must_use]
+    pub fn query_point_model_only(&self, timestamp: i64) -> Option<f32> {
+        self.model_point(timestamp).map(canon32)
     }
 
     /// Whether this segment's values come back exactly, and if not why
@@ -1943,7 +1995,7 @@ impl SegmentView {
             self.archived.end_time,
             unpinned,
         )?;
-        let mut results = self.query_range_model_only(start, end);
+        let mut results = self.model_range(start, end);
         // Lossless residuals (see `query_point`)
         let mut status = ReadStatus::Current;
         if let Some((kind, decompressed, residual_status)) = residual {
@@ -1960,6 +2012,11 @@ impl SegmentView {
                     )
                 })?;
             }
+        } else {
+            // no residual: the model's values, computed ones
+            for (_, value) in &mut results {
+                *value = canon32(*value);
+            }
         }
         Ok((results, status))
     }
@@ -1967,7 +2024,7 @@ impl SegmentView {
     /// The model's values over `[start, end]`, with no residual applied (see
     /// [`DataSegment::query_point_model_only`])
     #[must_use]
-    pub fn query_range_model_only(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
+    pub(crate) fn model_range(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
         let query_start = start.max(self.archived.start_time);
         let query_end = end.min(self.archived.end_time);
 
@@ -2038,6 +2095,16 @@ impl SegmentView {
         }
 
         results
+    }
+
+    /// The model's values over `[start, end]` with no residual applied, a NaN as the canonical
+    /// `f32::NAN` (see [`Self::query_point_model_only`])
+    #[must_use]
+    pub fn query_range_model_only(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
+        self.model_range(start, end)
+            .into_iter()
+            .map(|(t, v)| (t, canon32(v)))
+            .collect()
     }
 
     /// Evaluate the archived model at (fractional) sample position `i` — the

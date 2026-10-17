@@ -56,14 +56,15 @@ pub enum QueryResult {
     Aggregates(Vec<(i64, f64)>),
 }
 
-/// `x`, or the canonical quiet NaN `0x7ff8_0000_0000_0000` (`f64::NAN`) when `x` is a NaN
+/// `x`, or the canonical quiet NaN `0x7ff8_0000_0000_0000` when `x` is a NaN (written as bits:
+/// the standard library does not fix the bit pattern of `f64::NAN`)
 /// (ALICE-Law G4): the sign and payload of a NaN computed from a stored NaN (a sum, a mean, a
 /// spread) are not specified and differ by codegen, so an aggregate that is NaN leaves as one bit
 /// pattern
 #[inline]
 fn canon64(x: f64) -> f64 {
     if x.is_nan() {
-        f64::NAN
+        f64::from_bits(0x7ff8_0000_0000_0000)
     } else {
         x
     }

@@ -258,6 +258,9 @@ jobs:
         run: python scripts/test_tracked_binaries.py
       - name: No built binary is tracked (0 files read fails)
         run: python scripts/tracked_binaries.py
+      # the preflight mirror of law-readme-block.yml (the check itself runs there, here its tests)
+      - name: README ALICE-Law block preflight check (tests)
+        run: python scripts/test_law_readme_block_check.py
       - name: changed_paths oracle (path filter decision, gate and trigger lint)
         run: python scripts/test_changed_paths.py
       - name: changed_paths sync (no on.push paths off main, pull_request paths = pattern file, 0 compared fails)

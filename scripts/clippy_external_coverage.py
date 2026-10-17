@@ -197,14 +197,21 @@ def rustdoc_json(crate: str, version: str, features: list[str], workdir: Path) -
     env["RUSTC_BOOTSTRAP"] = "1"
     env["RUSTDOCFLAGS"] = ""
     # #[doc(hidden)] pub functions are callable entry points too
-    cmd = ["cargo", "rustdoc", "-q", "-p", crate, "--", "-Z", "unstable-options", "--output-format", "json",
-           "--document-hidden-items"]
+    # the output is read from workdir/target below, so the target directory is named here: a
+    # CARGO_TARGET_DIR in the environment (a preflight with its target elsewhere) would send it
+    # somewhere else
+    target = workdir / "target"
+    cmd = ["cargo", "rustdoc", "-q", "-p", crate, "--target-dir", str(target), "--", "-Z", "unstable-options",
+           "--output-format", "json", "--document-hidden-items"]
     proc = subprocess.run(cmd, cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, encoding="utf-8", check=False)
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr[-3000:])
         raise SystemExit(f"clippy_external_coverage: rustdoc of {crate} {version} failed")
-    return json.loads((workdir / "target" / "doc" / f"{crate.replace('-', '_')}.json").read_text(encoding="utf-8"))
+    out = target / "doc" / f"{crate.replace('-', '_')}.json"
+    if not out.is_file():
+        raise SystemExit(f"clippy_external_coverage: rustdoc of {crate} {version} wrote no {out} (compared nothing)")
+    return json.loads(out.read_text(encoding="utf-8"))
 
 
 def compare(module: tuple[str, ...], public: set[str], banned: set[str], allowed: dict[str, str]) -> list[str]:

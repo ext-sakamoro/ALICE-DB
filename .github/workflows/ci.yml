@@ -66,6 +66,15 @@ jobs:
       - name: Test (law store oracles, memory backend only)
         shell: bash
         run: scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
+      # ALICE-Law G3, syntax-tree pre-check (tools/no-outer-fneg-of-fma, byte-identical to
+      # ALICE-LOL's, built with --locked): its own tests, then the check over src/ tests/
+      # examples/ benches/ with the exact fma-call counts of
+      # scripts/no-outer-fneg-of-fma-allowlist.toml (8, 4 of them in src/); the IR half is g3-ir.yml
+      - name: No negated fma result (syntax tree, tests then check)
+        shell: bash
+        run: |
+          cargo test --quiet --locked --manifest-path tools/no-outer-fneg-of-fma/Cargo.toml
+          cargo run --quiet --locked --release --manifest-path tools/no-outer-fneg-of-fma/Cargo.toml -- --root .
       - name: Example (law_store, file + memory backend)
         run: cargo run --example law_store
       # README / README_JP の ```rust block は src/lib.rs の cfg(doctest) で

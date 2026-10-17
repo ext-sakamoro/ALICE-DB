@@ -1,0 +1,36 @@
+# tools/no-outer-fneg-of-fma (syntax-tree pre-check) and scripts/fneg_fma_ir_check.py
+# (optimised-IR gate), ALICE-Law G3. Both read this file (copied byte-identical from
+# ALICE-LOL with the two checks; this file itself is per repository).
+#
+# expected-fma-calls / expected-src-fma-calls: the fma-family calls the syntax-tree
+# check finds in every scanned file / in src/. Both must equal what it finds: update
+# them in the commit that adds or removes a call. src/ has 4 in src/memtable.rs:
+# two in `MemTable::fit_best_model` (the model score of the fit competition,
+# `error.mul_add(100.0, 1.0)` as a divisor) and two in its test module (test inputs);
+# none is negated.
+expected-fma-calls = 8
+expected-src-fma-calls = 4
+
+# [[allow]]: tests/ only; src/ has no exception.
+
+[[allow]]
+path = "tests/determinism_golden.rs"
+line = "vec!["
+count = 1
+reason = "the recorded-bit scenarios' input signals are built inside vec![ ... ]: the linear signal `0.25f32.mul_add(x(i), -3.0)` and the sine signal's `2.0f32.mul_add(..)` are test inputs, neither result negated; the syntax tree cannot see into the macro"
+
+# [[ir]]: per target and package, the floor of fma-family calls in the optimised IR of
+# the library.
+# The floor is the crate's own two calls (the two in `MemTable::fit_best_model`), which every
+# target keeps; the IR holds more (alice-det-math and alice-zip code inlined into the
+# library: 114 on aarch64-apple-darwin), a count that moves with the dependencies.
+
+[[ir]]
+target = "x86_64-unknown-linux-gnu"
+package = "alice-db"
+min-fma-calls = 2
+
+[[ir]]
+target = "aarch64-unknown-linux-gnu"
+package = "alice-db"
+min-fma-calls = 2

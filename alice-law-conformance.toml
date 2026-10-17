@@ -44,9 +44,15 @@ note = "raw f32 / f64 max, min and clamp are a default-deny in clippy.toml, with
 reference_repo = "ALICE-Physics"
 
 [G3]
-status = "unverified"
+status = "pass"
+evidence = [
+    "tools/no-outer-fneg-of-fma (syntax-tree pre-check, byte-identical to the other carriers, built with --locked; ci.yml test job on the four-OS matrix and preflight): src/ tests/ examples/ benches/ with the exact counts of scripts/no-outer-fneg-of-fma-allowlist.toml (8 fma calls, 4 in src/: two in src/memtable.rs MemTable::fit_best_model, the model score, and two test inputs in its test module; one macro mention in tests/determinism_golden.rs allowed with its reason); fma under a negation 0",
+    "scripts/fneg_fma_ir_check.py + scripts/test_fneg_fma_ir_check.py (byte-identical to ALICE-LOL main 8bc6e0e; 17 tests over the 47 shared probes in tools/fneg-fma-ir-probes, each compiled for x86_64 and aarch64 with its expected verdict): .github/workflows/g3-ir.yml builds alice-db's optimised IR with --all-features on a runner native to each target (x86_64-unknown-linux-gnu on ubuntu-latest, aarch64-unknown-linux-gnu on ubuntu-24.04-arm; pyo3 and blake3's C build need a native build) and fails on a negated fma result or on fewer fma calls than the [[ir]] floor (2, the crate's own calls); a changes / gate pair (scripts/changed_paths.py, .github/paths/g3-ir.txt) runs it when a path that can change the IR changed and weekly, the gate red when the IR job was due and did not pass",
+    "measured on aarch64-apple-darwin (preflight, findings-only): 6041 functions, 114 fma calls, 0 negated",
+]
+mutant = "measured 2026-10-17, each reverted: the model score in src/memtable.rs MemTable::fit_best_model written `-(a.error.mul_add(-100.0, -1.0))` fails the syntax tool (1 violation) and the IR check (a negated fma result); expected-src-fma-calls 3 instead of 4 fails the syntax tool"
 since = ""
-note = "unverified: no violation is known, but there is no syntax-tree checker for the outer negation of a fused multiply-add and no CI step for it. A one-off run of ALICE-LOL's scripts/no_outer_fneg_of_fma.py (origin/main f08757c) with --src src tests examples benches over this commit reported `compared: files 57, mul_add calls 10, outer-fneg sites 0` (exit 0). The library's mul_add calls are src/memtable.rs lines 400 and 401 (model score); the others are test code (src/memtable.rs lines 754 and 778)."
+note = "the library's only fma calls are the fit competition's model score (not a stored value); the 114 fma calls in the IR otherwise come from alice-det-math and alice-zip code inlined into the library, and none is negated. The [[ir]] floor is the crate's own two calls, a lower bound on every target; the per-target totals move with the dependencies."
 reference_repo = "ALICE-LOL"
 
 [G4]

@@ -51,3 +51,5 @@ alice_db_data/
 *.key
 credentials.json
 token.json
+# the G3 syntax-tree tool's own build output (the root /target/ pattern does not cover it)
+tools/no-outer-fneg-of-fma/target/

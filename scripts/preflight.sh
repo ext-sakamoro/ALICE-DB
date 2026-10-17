@@ -75,6 +75,14 @@ step "law-readme-block.yml: README ALICE-Law block (tests, then the check the jo
 python3 scripts/test_law_readme_block_check.py
 python3 scripts/law_readme_block_check.py
 
+step "ci.yml / test: No negated fma result (syntax tree, tests then check)"
+cargo test --quiet --locked --manifest-path tools/no-outer-fneg-of-fma/Cargo.toml
+cargo run --quiet --locked --release --manifest-path tools/no-outer-fneg-of-fma/Cargo.toml -- --root .
+
+step "g3-ir.yml / ir: probe tests + no negated fma result in alice-db's release IR (host build; the per-target floors are checked in CI)"
+python3 scripts/test_fneg_fma_ir_check.py
+python3 scripts/fneg_fma_ir_check.py --package alice-db --all-features --findings-only
+
 step "ci.yml / docs-lint: changed_paths tests + sync (fuzz.yml / security-audit.yml trigger and pattern files)"
 python3 scripts/test_changed_paths.py
 python3 scripts/changed_paths.py sync

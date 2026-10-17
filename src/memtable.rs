@@ -88,6 +88,10 @@ pub struct MemTable {
     created_at: u64,
     /// Next segment ID (atomic)
     next_segment_id: AtomicU64,
+    /// The buffer holds a non-finite value (NaN, ±inf): read and written only under the
+    /// `buffer` lock. Such a buffer is stored exactly whatever `config.lossless` says (see
+    /// [`Self::seals_before`])
+    nonfinite: std::sync::atomic::AtomicBool,
 }
 
 impl MemTable {
@@ -118,6 +122,7 @@ impl MemTable {
             config,
             created_at,
             next_segment_id: AtomicU64::new(1),
+            nonfinite: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -133,25 +138,78 @@ impl MemTable {
     #[inline]
     pub fn put(&self, timestamp: i64, value: f32) -> Option<DataSegment> {
         let mut buffer = self.buffer.lock();
-        if self.config.lossless && Self::breaks_spacing(&buffer, timestamp) {
+        if self.seals_before(&buffer, timestamp, value) {
             // The buffer is non-empty, so `capacity >= 2` and the push below
             // cannot fill it again: at most one segment per call.
             let sealed = std::mem::replace(&mut *buffer, Vec::with_capacity(self.capacity));
+            let exact = self.take_exact();
+            self.note(value);
             buffer.push((timestamp, value));
             drop(buffer);
-            return Some(self.flush_internal(sealed));
+            return Some(self.flush_internal(sealed, exact));
         }
+        self.note(value);
         buffer.push((timestamp, value));
 
         if buffer.len() >= self.capacity {
             // Swap out the buffer (O(1) pointer swap)
             let mut flush_data = Vec::with_capacity(self.capacity);
             std::mem::swap(&mut *buffer, &mut flush_data);
+            let exact = self.take_exact();
             drop(buffer); // Release lock before expensive operation
 
-            Some(self.flush_internal(flush_data))
+            Some(self.flush_internal(flush_data, exact))
         } else {
             None
+        }
+    }
+
+    /// Whether the buffer is sealed as a segment before `(timestamp, value)` joins it (called
+    /// under the `buffer` lock)
+    ///
+    /// A buffer stored exactly (lossless mode, or holding a non-finite value) is cut wherever
+    /// the key spacing breaks ([`Self::breaks_spacing`]): its residual reconstructs the stored
+    /// bits only on the segment's even key grid. The first non-finite value of a lossy buffer
+    /// also seals a buffer that is not evenly spaced (stored lossy, all finite), so the
+    /// non-finite value starts or joins an evenly spaced, exactly stored buffer.
+    fn seals_before(&self, buffer: &[(i64, f32)], timestamp: i64, value: f32) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        if self.config.lossless || self.nonfinite.load(Relaxed) {
+            return Self::breaks_spacing(buffer, timestamp);
+        }
+        !value.is_finite()
+            && !buffer.is_empty()
+            && (!Self::evenly_spaced(buffer) || Self::breaks_spacing(buffer, timestamp))
+    }
+
+    /// Record `value` joining the buffer (called under the `buffer` lock)
+    fn note(&self, value: f32) {
+        if !value.is_finite() {
+            self.nonfinite
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the buffer being sealed is stored exactly, and reset the mark for the next
+    /// buffer (called under the `buffer` lock)
+    fn take_exact(&self) -> bool {
+        let nonfinite = self
+            .nonfinite
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        self.config.lossless || nonfinite
+    }
+
+    /// Whether the keys of `buffer` are `start + k·step` for one positive `step`
+    fn evenly_spaced(buffer: &[(i64, f32)]) -> bool {
+        match buffer {
+            [] | [_] => true,
+            [first, second, ..] => {
+                let step = i128::from(second.0) - i128::from(first.0);
+                step > 0
+                    && buffer
+                        .windows(2)
+                        .all(|w| i128::from(w[1].0) - i128::from(w[0].0) == step)
+            }
         }
     }
 
@@ -195,21 +253,24 @@ impl MemTable {
         let mut buffer = self.buffer.lock();
 
         for &(timestamp, value) in data {
-            if self.config.lossless && Self::breaks_spacing(&buffer, timestamp) {
+            if self.seals_before(&buffer, timestamp, value) {
                 let sealed = std::mem::replace(&mut *buffer, Vec::with_capacity(self.capacity));
+                let exact = self.take_exact();
                 drop(buffer);
-                segments.push(self.flush_internal(sealed));
+                segments.push(self.flush_internal(sealed, exact));
                 buffer = self.buffer.lock();
             }
+            self.note(value);
             buffer.push((timestamp, value));
 
             if buffer.len() >= self.capacity {
                 // Swap out the buffer
                 let mut flush_data = Vec::with_capacity(self.capacity);
                 std::mem::swap(&mut *buffer, &mut flush_data);
+                let exact = self.take_exact();
                 drop(buffer); // Release lock
 
-                segments.push(self.flush_internal(flush_data));
+                segments.push(self.flush_internal(flush_data, exact));
 
                 buffer = self.buffer.lock(); // Reacquire lock
             }
@@ -257,9 +318,10 @@ impl MemTable {
         // Swap out the buffer
         let mut flush_data = Vec::with_capacity(self.capacity);
         std::mem::swap(&mut *buffer, &mut flush_data);
+        let exact = self.take_exact();
         drop(buffer);
 
-        Some(self.flush_internal(flush_data))
+        Some(self.flush_internal(flush_data, exact))
     }
 
     /// Get current buffer size
@@ -280,7 +342,7 @@ impl MemTable {
     ///
     /// `sort_unstable_by_key` uses pdqsort which is O(N) for nearly-sorted data.
     /// Time-series data is typically already sorted, so this is fast.
-    fn flush_internal(&self, mut data: Vec<(i64, f32)>) -> DataSegment {
+    fn flush_internal(&self, mut data: Vec<(i64, f32)>, exact: bool) -> DataSegment {
         if data.is_empty() {
             // Edge case: return empty constant segment
             let id = self.next_id();
@@ -320,13 +382,43 @@ impl MemTable {
         // Compute residuals for lossless reconstruction (LZMA compressed).
         // XOR of the bit patterns: `model ^ residual == original` for every
         // f32 (an additive `original − model` rounds — 0.2.0-beta.2 read back
-        // −1.0500007 for −1.0500002, oracle 2026-09-17).
-        if self.config.lossless {
+        // −1.0500007 for −1.0500002, oracle 2026-09-17). Also for a lossy
+        // buffer holding a non-finite value: the model's error bound is for
+        // finite values, and a stored NaN / ±inf reads back as stored.
+        if exact {
+            // The residual base must be the same bits on every machine. A computed NaN is not
+            // (the default NaN is `0x7fc0_0000` on aarch64, `0xffc0_0000` on x86_64), and a
+            // fit over non-finite values can evaluate to one (`Linear { start: inf, .. }` is
+            // `inf - inf`). Such a buffer is stored against the constant 0, so the residual
+            // holds the stored bits themselves. Raw `f32` storage evaluates to the stored bits
+            // (no arithmetic), a base that is the same everywhere.
+            let stored_bits = matches!(
+                segment.model,
+                ModelType::RawLzma {
+                    dtype: crate::model::DataType::Float32,
+                    ..
+                }
+            );
+            if !stored_bits
+                && data
+                    .iter()
+                    .any(|&(t, _)| !segment.model_point(t).unwrap_or(0.0).is_finite())
+            {
+                segment = DataSegment::new(
+                    id,
+                    start_time,
+                    end_time,
+                    ModelType::Constant { value: 0.0 },
+                    values.len(),
+                    original_size,
+                    self.created_at,
+                );
+            }
             let mut residual_bytes = Vec::with_capacity(values.len() * 4);
             for (i, &original) in values.iter().enumerate() {
                 let timestamp = data[i].0;
                 // the residual is measured against the model alone (there is none yet)
-                let reconstructed = segment.query_point_model_only(timestamp).unwrap_or(0.0);
+                let reconstructed = segment.model_point(timestamp).unwrap_or(0.0);
                 let residual = original.to_bits() ^ reconstructed.to_bits();
                 residual_bytes.extend_from_slice(&residual.to_le_bytes());
             }

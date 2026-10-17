@@ -26,6 +26,9 @@ All notable changes to ALICE-DB will be documented in this file.
 - CI: `scripts/run_tests.sh` が名前ごとの最低の件数 (`float_environment=2`) を受け付けるようにし、G14 の `tests/float_environment.rs` を名指す全 step を `float_environment=2` にした 2 つの試験の片方を `#[ignore]` にする・cfg で外す・名前を変えると、その step が失敗する 名前だけの指定は従来どおり 1 件以上 `=0` や数でない値は command を走らせる前に exit 2
 - CI: 公開する文面の検査の pin を ALICE-Law 779fa44 (checker sha256 e439fdd7…) に進めた 新しい版で HEAD の全 file に指摘 0 件
 
+### Fixed
+- 残差と法則の記録の識別子の不一致 (`ResidualMismatch` / `ResidualStatus::Mismatch` / `LawStoreError::LawRecordMismatch`) は、`running` に読みが実際に比べた識別子 (`alice_det_math::SEMANTICS_ID`) を入れる これまでは印に使う `alice-zip` の `law::SEMANTICS_ID` を入れていたので、両者が別の値になる `alice-zip` で build すると `stored` と `running` が同じ値の不一致を報告した 印 (`SEMANTICS_ID`) が `alice_det_math::check_semantics` の受け取る識別子であることは compile 時の assert で固定し、違う `alice-zip` (自分の識別子を持つ 0.11) では build が止まる 試験 `a_mismatch_reports_the_identifier_the_read_compared_with` (`tests/legacy_segment_compat.rs`)
+
 ## [0.5.1] - 2026-10-15
 
 ### Added

@@ -144,7 +144,7 @@ pub const fn semantics_id_for(det_math: &[u8; 32]) -> [u8; 32] {
     panic!("alice-det-math SEMANTICS_ID has no row in DB_SEMANTICS_BY_DET_MATH: add its fold");
 }
 
-const fn same32(a: &[u8; 32], b: &[u8; 32]) -> bool {
+pub(crate) const fn same32(a: &[u8; 32], b: &[u8; 32]) -> bool {
     let mut i = 0;
     while i < 32 {
         if a[i] != b[i] {

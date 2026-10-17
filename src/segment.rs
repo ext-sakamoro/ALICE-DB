@@ -1030,7 +1030,7 @@ pub fn residual_status(blob: Option<&[u8]>, point_count: usize) -> ResidualStatu
         Decoded::None => ResidualStatus::NoResidual,
         Decoded::Mismatch(stored) => ResidualStatus::Mismatch {
             stored,
-            running: alice_core::law::SEMANTICS_ID,
+            running: alice_det_math::SEMANTICS_ID,
         },
         Decoded::Corrupt { needed, found } => ResidualStatus::Corrupt {
             needed_bytes: needed,
@@ -1102,7 +1102,7 @@ fn checked_residual(
             start_time,
             end_time,
             stored,
-            running: alice_core::law::SEMANTICS_ID,
+            running: alice_det_math::SEMANTICS_ID,
             series: None,
         })),
         Decoded::Corrupt { needed, found } => Err(ResidualError::Corrupt(ResidualCorrupt {

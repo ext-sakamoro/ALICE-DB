@@ -311,7 +311,7 @@ fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
         segment.residual_status(),
         ResidualStatus::Mismatch {
             stored: other,
-            running: alice_core::law::SEMANTICS_ID
+            running: alice_det_math::SEMANTICS_ID
         }
     );
     let check = |err: ResidualError, what: &str| {
@@ -326,11 +326,7 @@ fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
             "{what}: key range"
         );
         assert_eq!(err.stored, other, "{what}: stored");
-        assert_eq!(
-            err.running,
-            alice_core::law::SEMANTICS_ID,
-            "{what}: running"
-        );
+        assert_eq!(err.running, alice_det_math::SEMANTICS_ID, "{what}: running");
         assert_eq!(
             err.series, None,
             "{what}: a segment read on its own names no store"
@@ -411,7 +407,7 @@ fn the_zero_copy_path_checks_the_identifier_too() {
         view.residual_status(),
         ResidualStatus::Mismatch {
             stored: other,
-            running: alice_core::law::SEMANTICS_ID
+            running: alice_det_math::SEMANTICS_ID
         }
     );
 
@@ -568,4 +564,44 @@ fn the_linear_law_divides_rather_than_multiplying_by_a_reciprocal() {
     }
     assert!(compared >= 1_000, "比較 {compared} 件 — 空振り");
     assert_eq!(worst, 0, "bit 一致でない");
+}
+
+/// The identifier a residual is stamped with is the one the read accepts, and a
+/// mismatch reports the identifier the read compared with: `running` is never the
+/// stamp itself (with the two taken from different crates, a build where they
+/// differ read every residual it wrote as a mismatch and reported `stored ==
+/// running`, which says nothing about what was checked)
+#[test]
+fn a_mismatch_reports_the_identifier_the_read_compared_with() {
+    use alice_db::segment::ResidualStatus;
+    assert!(
+        alice_det_math::check_semantics(&alice_db::SEMANTICS_ID).is_reproducible(),
+        "the stamp of a fresh residual is not accepted by the read"
+    );
+    let n = 4_usize;
+    let model = alice_db::model::ModelType::Linear {
+        start_value: 0.0,
+        end_value: 3.0,
+    };
+    let raw: Vec<u8> = (0..n).flat_map(|_| 1_u32.to_le_bytes()).collect();
+    for flip in [0_usize, 7, 31] {
+        let mut other = alice_db::SEMANTICS_ID;
+        other[flip] ^= 0x80;
+        let blob = alice_db::segment::compress_residual_xor(&raw, &other);
+        let segment =
+            DataSegment::new(1, 0, (n - 1) as i64, model.clone(), n, n * 4, 0).with_residual(blob);
+        let ResidualStatus::Mismatch { stored, running } = segment.residual_status() else {
+            panic!("byte {flip}: a foreign stamp was not a mismatch");
+        };
+        assert_eq!(stored, other, "byte {flip}: stored");
+        assert_eq!(
+            running,
+            alice_det_math::SEMANTICS_ID,
+            "byte {flip}: running is what was compared"
+        );
+        assert_ne!(
+            stored, running,
+            "byte {flip}: a mismatch reported equal identifiers"
+        );
+    }
 }

@@ -253,6 +253,19 @@ pub mod ffi;
 /// which also covers the decisions it computes itself, is
 /// [`semantics::DB_SEMANTICS_ID`].
 pub use alice_core::law::SEMANTICS_ID;
+
+// Residuals and law records are stamped with [`SEMANTICS_ID`] (alice-zip's
+// `law::SEMANTICS_ID`) and checked on read with `alice_det_math::check_semantics`,
+// which compares with `alice_det_math::SEMANTICS_ID`. That holds only while the two
+// are one identifier (alice-zip up to 0.10 re-exports alice-det-math's). A build
+// against an alice-zip that names its own identifier would read every stamp it wrote
+// as a mismatch (and report the stamp as the running identifier), so it does not
+// compile: its reads must move to alice-zip's own check first.
+const _: () = assert!(
+    semantics::same32(&SEMANTICS_ID, &alice_det_math::SEMANTICS_ID),
+    "alice-zip's law::SEMANTICS_ID is not alice-det-math's: the stamps would not pass \
+     alice_det_math::check_semantics; move the reads to alice-zip's check"
+);
 #[cfg(feature = "analytics")]
 pub use analytics_bridge::{
     flush_metrics_to_db, metric_key, metric_name_hash, read_metric, scan_metric, AnalyticsSink,

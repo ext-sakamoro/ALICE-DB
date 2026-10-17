@@ -276,7 +276,9 @@ fn check_record_semantics(
     stored: Option<[u8; 32]>,
     policy: LawReadPolicy,
 ) -> Result<RecordSemantics, LawStoreError> {
-    let running = crate::SEMANTICS_ID;
+    // the identifier `alice_det_math::check_semantics` below compares with (the
+    // stamp is `crate::SEMANTICS_ID`, which lib.rs asserts is the same one)
+    let running = alice_det_math::SEMANTICS_ID;
     let Some(stored) = stored else {
         return match policy {
             LawReadPolicy::AcceptUnpinned => Ok(RecordSemantics::Unpinned),

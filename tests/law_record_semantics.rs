@@ -71,7 +71,7 @@ fn is_mismatch(err: &LawStoreError) -> bool {
     matches!(
         err,
         LawStoreError::LawRecordMismatch { stored, running }
-            if *stored == FOREIGN && *running == SEMANTICS_ID
+            if *stored == FOREIGN && *running == alice_det_math::SEMANTICS_ID
     )
 }
 

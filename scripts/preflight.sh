@@ -65,6 +65,10 @@ python3 scripts/test_fuzz_reach.py
 python3 scripts/test_tracked_binaries.py
 python3 scripts/tracked_binaries.py
 
+step "law-readme-block.yml: README ALICE-Law block (tests, then the check the job runs, at the block's ALICE-Law pin)"
+python3 scripts/test_law_readme_block_check.py
+python3 scripts/law_readme_block_check.py
+
 step "ci.yml / docs-lint: changed_paths tests + sync (fuzz.yml / security-audit.yml trigger and pattern files)"
 python3 scripts/test_changed_paths.py
 python3 scripts/changed_paths.py sync

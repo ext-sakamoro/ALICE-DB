@@ -21,7 +21,9 @@ Outcomes:
   - the generator reporting 0 blocks compared, or no "<n> blocks compared" line: exit 1 (a check
     that compared nothing is not a pass),
   - a workflow whose `check` command cannot be read: exit 2.
-The generator compares committed content (git HEAD of this repository), as the job does.
+The generator compares committed content (git HEAD of this repository), as the job does; when
+README.md, README_JP.md, alice-law-conformance.toml or Cargo.toml has uncommitted changes, a pass
+says so (those changes are not covered).
 
 usage: scripts/law_readme_block_check.py [--root DIR]
 """
@@ -42,6 +44,8 @@ CHECK_RE = re.compile(
     r'gen-law-readme-block\.py"?\s+check\s+--law\s+\S+\s+--crate\s+(?P<crate>\S+)\s*\\?\s*'
     r"--crate-repo\s+\S+\s+--law-main\s+(?P<law_main>\S+)\s+--lint\s+(?P<lint>\S+)"
 )
+# what the generator reads from this repository (at HEAD)
+INPUTS = ("README.md", "README_JP.md", "alice-law-conformance.toml", "Cargo.toml")
 COMPARED_RE = re.compile(r"(\d+) blocks? compared, (\d+) problems?")
 
 
@@ -70,6 +74,12 @@ def law_clone() -> tuple[Path | None, str]:
     if r.returncode:
         return None, f"cannot fetch {path}: {r.stderr.strip()} (the job reads the current origin/main)"
     return path, ""
+
+
+def uncommitted(root: Path) -> list[str]:
+    """the inputs of the block (READMEs, the manifest, Cargo.toml) with uncommitted changes"""
+    r = git("status", "--porcelain", "--", *INPUTS, cwd=root)
+    return sorted({line[3:].strip() for line in r.stdout.splitlines() if line.strip()}) if r.returncode == 0 else []
 
 
 def main(argv: list[str]) -> int:
@@ -121,6 +131,10 @@ def main(argv: list[str]) -> int:
         return fail(f"the README block differs from ALICE-Law {rev[:12]} (exit {r.returncode}); "
                     f"regenerate: gen-law-readme-block.py write --law-ref {rev[:12]} --crate {m['crate']} ...")
     print(f"law-readme-block-check: {m['crate']} at ALICE-Law {rev[:12]}: {compared} block(s) compared, ok")
+    dirty = uncommitted(root)
+    if dirty:
+        print(f"law-readme-block-check: note: this checked committed HEAD; uncommitted changes to "
+              f"{', '.join(dirty)} are not covered (commit, then run again)")
     return 0
 
 

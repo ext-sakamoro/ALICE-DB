@@ -3,7 +3,7 @@
 //! スナップショット分離によるマルチバージョン並行制御と、
 //! キー粒度の排他/共有ロック管理。
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// トランザクション ID。
@@ -35,13 +35,13 @@ pub struct MvccEntry<T: Clone> {
 #[derive(Debug)]
 pub struct MvccStore<T: Clone> {
     /// キー → バージョンチェーン (新しい順)。
-    versions: HashMap<String, Vec<MvccEntry<T>>>,
+    versions: BTreeMap<String, Vec<MvccEntry<T>>>,
     /// トランザクション状態。
-    txn_status: HashMap<TxnId, TxnStatus>,
+    txn_status: BTreeMap<TxnId, TxnStatus>,
     /// トランザクション開始時刻。
-    txn_start_ts: HashMap<TxnId, u64>,
+    txn_start_ts: BTreeMap<TxnId, u64>,
     /// トランザクションの書き込みセット。
-    txn_write_set: HashMap<TxnId, HashSet<String>>,
+    txn_write_set: BTreeMap<TxnId, BTreeSet<String>>,
     /// 次のトランザクション ID。
     next_txn_id: AtomicU64,
     /// 単調増加タイムスタンプ。
@@ -59,10 +59,10 @@ impl<T: Clone> MvccStore<T> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            versions: HashMap::new(),
-            txn_status: HashMap::new(),
-            txn_start_ts: HashMap::new(),
-            txn_write_set: HashMap::new(),
+            versions: BTreeMap::new(),
+            txn_status: BTreeMap::new(),
+            txn_start_ts: BTreeMap::new(),
+            txn_write_set: BTreeMap::new(),
             next_txn_id: AtomicU64::new(1),
             current_ts: AtomicU64::new(1),
         }
@@ -83,7 +83,7 @@ impl<T: Clone> MvccStore<T> {
         let ts = self.advance_ts();
         self.txn_status.insert(txn_id, TxnStatus::Active);
         self.txn_start_ts.insert(txn_id, ts);
-        self.txn_write_set.insert(txn_id, HashSet::new());
+        self.txn_write_set.insert(txn_id, BTreeSet::new());
     }
 
     /// スナップショット読み取り。
@@ -271,7 +271,7 @@ impl std::fmt::Display for LockMode {
 #[derive(Debug)]
 struct LockEntry {
     /// 保持中のトランザクション。
-    holders: HashSet<TxnId>,
+    holders: BTreeSet<TxnId>,
     /// ロックモード。
     mode: LockMode,
     /// 待機キュー。
@@ -282,9 +282,9 @@ struct LockEntry {
 #[derive(Debug)]
 pub struct LockManager {
     /// キー → ロック情報。
-    locks: HashMap<String, LockEntry>,
+    locks: BTreeMap<String, LockEntry>,
     /// トランザクション → 保持キー。
-    held_locks: HashMap<TxnId, HashSet<String>>,
+    held_locks: BTreeMap<TxnId, BTreeSet<String>>,
 }
 
 impl Default for LockManager {
@@ -298,8 +298,8 @@ impl LockManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            locks: HashMap::new(),
-            held_locks: HashMap::new(),
+            locks: BTreeMap::new(),
+            held_locks: BTreeMap::new(),
         }
     }
 
@@ -313,7 +313,7 @@ impl LockManager {
             .locks
             .entry(key.to_string())
             .or_insert_with(|| LockEntry {
-                holders: HashSet::new(),
+                holders: BTreeSet::new(),
                 mode: LockMode::Shared,
                 waiters: VecDeque::new(),
             });
@@ -671,7 +671,7 @@ mod tests {
     ///
     /// `key -> (holder, waiter)` の対応で 2 本の独立した 2-cycle
     /// (txn 1 <-> txn 2、txn 3 <-> txn 4) を作る。`key_order` は `LockManager::locks`
-    /// (`HashMap`) へ挿入する順序を変えるためのもの。
+    /// (`BTreeMap`、旧実装は `HashMap`) へ挿入する順序を変えるためのもの。
     fn build_two_cycle_lock_manager(key_order: &[&str]) -> LockManager {
         let mut lm = LockManager::new();
         for &k in key_order {
@@ -682,7 +682,7 @@ mod tests {
                 "d" => (4, 3), // txn 3 が txn 4 の保持するロックを待つ (c と合わせて 3<->4 の循環)
                 _ => unreachable!("unknown key in test fixture: {k}"),
             };
-            let mut holders = HashSet::new();
+            let mut holders = BTreeSet::new();
             holders.insert(holder);
             lm.locks.insert(
                 k.to_string(),
@@ -724,7 +724,7 @@ mod tests {
         }
     }
 
-    /// G13: `detect_deadlock()` の結果は `locks` (`HashMap`) への挿入順序にも依らない。
+    /// G13: `detect_deadlock()` の結果は `locks` (`BTreeMap`、旧実装は `HashMap`) への挿入順序にも依らない。
     ///
     /// `locks` 自体は iteration 結果が wait-for グラフの「内容」(集合としてのメンバ
     /// シップ) にしか効かず、順序には効かない (= 集合への insert は可換) ので、この

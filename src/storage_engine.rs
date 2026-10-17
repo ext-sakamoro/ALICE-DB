@@ -522,6 +522,10 @@ pub struct StorageEngine {
     /// Background flush channel sender
     flush_sender: Option<crossbeam_channel::Sender<FlushJob>>,
     /// Background flush thread handle
+    #[allow(
+        clippy::disallowed_types,
+        reason = "ALICE-Law G13: the single flush thread, listed in scripts/order_allowlist.toml (no value is combined across threads)"
+    )]
     flush_handle: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
     /// Lossless mode: the largest key accepted so far (see
     /// [`LosslessKeyOrderError`]); also serialises lossless writes
@@ -658,6 +662,11 @@ impl StorageEngine {
             let (tx, rx) = crossbeam_channel::bounded::<FlushJob>(4);
             let shared_clone = Arc::clone(&shared);
             let cfg = config.clone();
+            #[allow(
+                clippy::disallowed_methods,
+                clippy::disallowed_types,
+                reason = "ALICE-Law G13: the single flush thread taking jobs in send order, listed in scripts/order_allowlist.toml"
+            )]
             let handle = std::thread::Builder::new()
                 .name("alice-db-flush".into())
                 .spawn(move || {

@@ -661,6 +661,11 @@ fn concurrent_ingests_record_every_verdict() {
     let threads: Vec<_> = (0..8)
         .map(|_| {
             let db = std::sync::Arc::clone(&db);
+            #[allow(
+                clippy::disallowed_methods,
+                clippy::disallowed_types,
+                reason = "a concurrency test: the threads exercise the store's locking and are joined; no Law value is combined across them (ALICE-Law G13)"
+            )]
             std::thread::spawn(move || {
                 for _ in 0..50 {
                     db.ingest_evidence("ohm", &[(1.0, 3.0)], &POLICY, &SEMANTICS)

@@ -267,6 +267,11 @@ fn concurrent_reads_and_writes_from_multiple_threads() {
     let mut handles = Vec::new();
     for t in 0..4 {
         let db = Arc::clone(&db);
+        #[allow(
+            clippy::disallowed_methods,
+            clippy::disallowed_types,
+            reason = "a concurrency test: the threads exercise the store's locking and are joined; no Law value is combined across them (ALICE-Law G13)"
+        )]
         handles.push(std::thread::spawn(move || {
             for i in 0..128 {
                 let key = format!("seed-{i:03}");
@@ -282,6 +287,11 @@ fn concurrent_reads_and_writes_from_multiple_threads() {
     }
     for t in 0..4 {
         let db = Arc::clone(&db);
+        #[allow(
+            clippy::disallowed_methods,
+            clippy::disallowed_types,
+            reason = "a concurrency test: the threads exercise the store's locking and are joined; no Law value is combined across them (ALICE-Law G13)"
+        )]
         handles.push(std::thread::spawn(move || {
             for i in 0..64 {
                 let key = format!("thread-{t:02}-key-{i:03}");

@@ -83,6 +83,7 @@ python3 scripts/test_law_readme_block_check.py
 python3 scripts/law_readme_block_check.py
 
 step "ci.yml / test: No negated fma result (syntax tree, tests then check)"
+cargo fmt --manifest-path tools/no-outer-fneg-of-fma/Cargo.toml -- --check
 cargo test --quiet --locked --manifest-path tools/no-outer-fneg-of-fma/Cargo.toml
 cargo run --quiet --locked --release --manifest-path tools/no-outer-fneg-of-fma/Cargo.toml -- --root .
 

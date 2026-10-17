@@ -9,7 +9,7 @@
 # `error.mul_add(100.0, 1.0)` as a divisor) and two in its test module (test inputs);
 # none is negated.
 expected-fma-calls = 8
-expected-src-fma-calls = 4
+expected-src-fma-calls = 2
 
 # [[allow]]: tests/ only; src/ has no exception.
 

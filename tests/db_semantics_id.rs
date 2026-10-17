@@ -82,9 +82,18 @@ fn every_entry_is_the_golden_its_scenario_records() {
         compared += 1;
     }
     assert!(
-        compared >= 4,
+        compared >= 5,
         "compared {compared} entries: the table lost its pins"
     );
+    // and the other way: every recorded golden is folded (a scenario added
+    // to tests/determinism_golden.rs without an entry would not move the
+    // identifier)
+    for name in goldens.keys() {
+        assert!(
+            DB_SEMANTICS_PINS.iter().any(|(n, _)| n == name),
+            "the golden {name:?} of tests/determinism_golden.rs is not folded"
+        );
+    }
 }
 
 #[test]
@@ -110,7 +119,7 @@ fn the_identifier_is_the_fold_of_the_table() {
 fn the_identifier_is_the_recorded_value() {
     assert_eq!(
         hex(&DB_SEMANTICS_ID),
-        "39eb7dc05d8a4ea362e894a6456134988a7c4ca274361d02f09b48c7b3cf1c99"
+        "aab1eb3d22da13c75783c8d306feb7fa5dc8135b5d8625f315f19d68e051162f"
     );
 }
 
@@ -167,4 +176,16 @@ fn the_pins_were_checked_on_this_version_and_toolchain() {
         .expect("a channel line")
         .trim_matches('"');
     assert_eq!(DB_SEMANTICS_CHECKED_AT.1, channel, "toolchain channel");
+    // the rustc that runs the test, so an override of the file is caught too
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let out = std::process::Command::new(rustc)
+        .arg("-V")
+        .output()
+        .expect("rustc -V");
+    let version = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(
+        version.starts_with(&format!("rustc {} ", DB_SEMANTICS_CHECKED_AT.1)),
+        "running {version:?}, pins checked on {}",
+        DB_SEMANTICS_CHECKED_AT.1
+    );
 }

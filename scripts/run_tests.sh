@@ -60,6 +60,9 @@ trap 'rm -f "$log"' EXIT
 # Headers are matched only after cargo's indent at the start of a line (cargo
 # right-aligns the verb), so a test printing "Running ..." at the start of a
 # line or in the middle of one does not move the count to another binary.
+# A test that prints a line shaped exactly like cargo's (indent, then
+# `Running tests/<name>.rs`) between its header and its result still does: the
+# text alone cannot tell the two apart.
 total=0
 doctests=0
 required_passed=()

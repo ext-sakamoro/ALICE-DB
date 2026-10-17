@@ -1,0 +1,17 @@
+# scripts/id_move_check.py (ALICE-Law G9): the identifiers whose value may move only with a
+# breaking version, the previous-identifier list that must keep the released value, and the
+# release tags the base is read from (its values come from the published crate)
+package = "alice-db"
+manifest = "Cargo.toml"
+tags = ["v{version}"]
+probe-dependencies = ["alice-det-math"]
+
+[[id]]
+path = "alice_db::semantics::DB_SEMANTICS_ID"
+
+[[id]]
+# the identifier every lossless residual and law record is stamped with (a re-export of
+# alice-zip's law::SEMANTICS_ID, asserted equal to alice-det-math's in lib.rs); readers accept
+# it or one of alice-det-math's previous identifiers
+path = "alice_db::SEMANTICS_ID"
+previous = "alice_det_math::PREVIOUS_SEMANTICS_IDS"

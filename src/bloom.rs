@@ -89,9 +89,9 @@ impl BloomFilter {
         // same bits in both. Filters already on disk are read back with their
         // stored size and are unaffected either way.
         let m_ideal = -n * alice_det_math::ln64(false_positive_rate) / (ln2 * ln2);
-        let num_bits = m_ideal.ceil().max(1.0) as u64;
+        let num_bits = alice_det_math::max64(m_ideal.ceil(), 1.0) as u64;
         let k_ideal = (m_ideal / n) * ln2;
-        let num_hashes = k_ideal.ceil().max(1.0) as u32;
+        let num_hashes = alice_det_math::max64(k_ideal.ceil(), 1.0) as u32;
 
         let num_bytes = usize::try_from(num_bits.div_ceil(8)).unwrap_or(usize::MAX);
         Self {

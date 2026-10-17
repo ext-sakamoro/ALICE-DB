@@ -78,9 +78,9 @@ impl MortonCode {
         let inv_ry = 1.0 / (world_max[1] - world_min[1]);
         let inv_rz = 1.0 / (world_max[2] - world_min[2]);
 
-        let nx = ((wx - world_min[0]) * inv_rx).clamp(0.0, 1.0);
-        let ny = ((wy - world_min[1]) * inv_ry).clamp(0.0, 1.0);
-        let nz = ((wz - world_min[2]) * inv_rz).clamp(0.0, 1.0);
+        let nx = alice_det_math::metric::clamp((wx - world_min[0]) * inv_rx, 0.0, 1.0);
+        let ny = alice_det_math::metric::clamp((wy - world_min[1]) * inv_ry, 0.0, 1.0);
+        let nz = alice_det_math::metric::clamp((wz - world_min[2]) * inv_rz, 0.0, 1.0);
 
         let gx = (nx * 255.0) as u8;
         let gy = (ny * 255.0) as u8;

@@ -246,7 +246,7 @@ mod law {
     /// Materialised (non-analytic) models: nearest stored sample.
     #[inline(always)]
     pub(super) fn sampled_at(data: &[f32], i: f64) -> f32 {
-        let idx = i.round().max(0.0) as usize;
+        let idx = alice_det_math::max64(i.round(), 0.0) as usize;
         data.get(idx.min(data.len().saturating_sub(1)))
             .copied()
             .unwrap_or(0.0)

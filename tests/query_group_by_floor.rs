@@ -141,10 +141,14 @@ fn aggregates_per_bucket_match_the_reference() {
             }),
             (Aggregation::Count, |v| count(v.len())),
             (Aggregation::Min, |v| {
-                f64::from(v.iter().copied().fold(f32::INFINITY, f32::min))
+                f64::from(v.iter().copied().fold(f32::INFINITY, alice_det_math::min))
             }),
             (Aggregation::Max, |v| {
-                f64::from(v.iter().copied().fold(f32::NEG_INFINITY, f32::max))
+                f64::from(
+                    v.iter()
+                        .copied()
+                        .fold(f32::NEG_INFINITY, alice_det_math::max),
+                )
             }),
         ];
         for (agg, fold) in folds {

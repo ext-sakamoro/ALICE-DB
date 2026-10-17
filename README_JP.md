@@ -300,7 +300,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` と
 | G5 release-profile-test-leg | 未達 | unmet: the release leg exists, on aarch64 (macos-latest), but runs only two test binaries: .github/workflows/release-profile.yml line 52 is `cargo test … |
 | G6 semantics-id | 適合 | alice-db computes its own identifier, DB_SEMANTICS_ID (aab1eb3d...51162f with alice-det-math 0.5.1), from the bits of the decisions it computes itself and the … |
 | G7 handshake-carries-id | 適合 | the Law-bearing value that crosses this crate's boundary is the stored law record (alice-zip SignalLaw parts), handed over in AliceDB::to_bytes / from_bytes … |
-| G8 persisted-semantics-id | 未達 | unmet (located 2026-10-17): (1) residuals written before 0.3.0 (ResidualSemantics::Unpinned) are applied by the StorageEngine reads under both ResidualPolicy … |
+| G8 persisted-semantics-id | 適合 | every durable form that carries a value computed under an arithmetic carries that arithmetic's identifier: lossless segment residuals since 0.3.0 (the … |
 | G9 persisted-meaning-change-is-major | 未確認 | unverified: the audit covers the identifier this crate persists and finds no violation. Since 0.6.0 the law record carries the same arithmetic identifier as … |
 | G10 no-run-varying-artifacts | 適合 | no ambient clock or OS-entropy read is known in a Law-bearing path: scripts/entropy_guard.py reports `23 files, 10 patterns, 0 problems`, created_at is an … |
 | G11 gate-self-tests | 未達 | unmet: clause (c). scripts/clippy_canary.py, scripts/test_clippy_canary.py, scripts/gen_clippy_canary_calls.py, scripts/test_gen_clippy_canary_calls.py and … |

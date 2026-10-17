@@ -28,8 +28,10 @@
 //! | `0`/`1` additive, `2`/`3` XOR | **持たない** (`Unpinned`) | 書いた機械でのみ、かつ確認不能 |
 //! | `6`/`7` XOR | `SEMANTICS_ID` 32 byte (`Pinned`) | 識別子が一致する限りどこでも |
 //!
-//! この file が pin するもの — 旧 blob が本機で厳密に戻ること / 新 blob が識別子を持つこと /
-//! 旧 blob が `Unpinned` と報告されること / ⚠️ **識別子が違う blob は適用も model 値の代用も
+//! この file が pin するもの — ⚠️ **既定の読みは旧 blob を `ResidualError::Unpinned` で断ること**
+//! (算術の分からない残差を黙って適用しない、ALICE-Law G8) / 明示の opt-in
+//! (`UnpinnedResiduals::Accept`) で旧 blob が本機で厳密に戻り、状態 `ReadStatus::Unpinned` を
+//! 返すこと / 新 blob が識別子を持つこと / 旧 blob が `Unpinned` と報告されること / ⚠️ **識別子が違う blob は適用も model 値の代用も
 //! せず `ResidualError::Mismatch` で断ること** (原信号でない値を黙って返さない、model は
 //! `*_model_only` で明示した時だけ)
 
@@ -46,7 +48,7 @@
     clippy::too_many_lines,
     clippy::unreadable_literal
 )]
-use alice_db::segment::DataSegment;
+use alice_db::segment::{DataSegment, ReadStatus, ResidualError, UnpinnedResiduals};
 
 fn unhex(s: &str) -> Vec<u8> {
     assert!(s.len().is_multiple_of(2), "hex の長さが奇数");
@@ -101,11 +103,22 @@ fn old_lossless_segments_still_read_back_exactly() {
             "{name}: 残差が無い — lossless でない fixture は互換性を何も測らない"
         );
 
+        // ⚠️ 既定の読みは断る (0.3.0 前の残差は算術の識別子を持たない)
+        assert!(
+            matches!(segment.query_point(0), Err(ResidualError::Unpinned(_))),
+            "{name}: 既定の query_point が識別子の無い残差を適用した"
+        );
+        assert!(
+            matches!(segment.query_range(0, 1), Err(ResidualError::Unpinned(_))),
+            "{name}: 既定の query_range が識別子の無い残差を適用した"
+        );
+
         for (i, &want) in originals.iter().enumerate() {
-            let got = segment
-                .query_point(i as i64)
-                .expect("residual of this arithmetic")
-                .unwrap_or_else(|| panic!("{name} i={i}: query_point が None"));
+            let (got, status) = segment
+                .read_point(i as i64, UnpinnedResiduals::Accept)
+                .expect("明示の opt-in")
+                .unwrap_or_else(|| panic!("{name} i={i}: read_point が None"));
+            assert_eq!(status, ReadStatus::Unpinned, "{name} i={i}: 状態");
             if got.to_bits() != want {
                 wrong.push(format!(
                     "{name} i={i}: {:#010x} (= {got}) を返したが {want:#010x} (= {}) のはず",
@@ -118,9 +131,10 @@ fn old_lossless_segments_still_read_back_exactly() {
 
         // query_range 経路も同じ復元を返す (残差の index 付けが経路で違わないこと)
         let end = (originals.len() - 1) as i64;
-        let range = segment
-            .query_range(0, end)
-            .expect("residual of this arithmetic");
+        let (range, status) = segment
+            .read_range(0, end, UnpinnedResiduals::Accept)
+            .expect("明示の opt-in");
+        assert_eq!(status, ReadStatus::Unpinned, "{name}: query_range の状態");
         assert_eq!(range.len(), originals.len(), "{name}: query_range の件数");
         for (i, (_, got)) in range.iter().enumerate() {
             if got.to_bits() != originals[i] {

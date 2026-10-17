@@ -385,6 +385,23 @@ impl DataSegment {
     /// [`Self::query_point_model_only`] is the explicit way to read the model.
     #[inline(always)]
     pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualError> {
+        self.read_point(timestamp, UnpinnedResiduals::Refuse)
+            .map(|read| read.map(|(value, _)| value))
+    }
+
+    /// [`Self::query_point`] that also says what the value rests on, and whether a residual
+    /// written before residuals carried an identifier ([`ResidualSemantics::Unpinned`]) is
+    /// applied ([`UnpinnedResiduals::Accept`]) or refused with [`ResidualError::Unpinned`]
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::query_point`], and [`ResidualError::Unpinned`] for a residual without an
+    /// identifier under [`UnpinnedResiduals::Refuse`].
+    pub fn read_point(
+        &self,
+        timestamp: i64,
+        unpinned: UnpinnedResiduals,
+    ) -> Result<Option<(f32, ReadStatus)>, ResidualError> {
         let Some(value) = self.query_point_model_only(timestamp) else {
             return Ok(None);
         };
@@ -394,14 +411,15 @@ impl DataSegment {
             self.metadata.id,
             self.start_time,
             self.end_time,
+            unpinned,
         )?
         else {
-            return Ok(Some(value));
+            return Ok(Some((value, ReadStatus::Current)));
         };
-        let (kind, decompressed) = residual;
+        let (kind, decompressed, status) = residual;
         let idx = self.timestamp_to_index(timestamp);
         apply_residual(value, kind, &decompressed, idx)
-            .map(Some)
+            .map(|value| Some((value, status)))
             .ok_or_else(|| {
                 missing_word(
                     self.metadata.id,
@@ -456,15 +474,33 @@ impl DataSegment {
     /// [`ResidualError`], as [`Self::query_point`]: the whole range or
     /// nothing, never a shorter or partly corrected result.
     pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualError> {
+        self.read_range(start, end, UnpinnedResiduals::Refuse)
+            .map(|(points, _)| points)
+    }
+
+    /// [`Self::query_range`] that also says what the values rest on (see [`Self::read_point`])
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read_point`].
+    pub fn read_range(
+        &self,
+        start: i64,
+        end: i64,
+        unpinned: UnpinnedResiduals,
+    ) -> Result<(Vec<(i64, f32)>, ReadStatus), ResidualError> {
         let residual = checked_residual(
             self.residual_blob.as_deref(),
             self.metadata.point_count,
             self.metadata.id,
             self.start_time,
             self.end_time,
+            unpinned,
         )?;
         let mut results = self.query_range_model_only(start, end);
-        if let Some((kind, decompressed)) = residual {
+        let mut status = ReadStatus::Current;
+        if let Some((kind, decompressed, residual_status)) = residual {
+            status = residual_status;
             for (timestamp, value) in &mut results {
                 let idx = self.timestamp_to_index(*timestamp);
                 *value = apply_residual(*value, kind, &decompressed, idx).ok_or_else(|| {
@@ -478,7 +514,7 @@ impl DataSegment {
                 })?;
             }
         }
-        Ok(results)
+        Ok((results, status))
     }
 
     /// The model's values over `[start, end]`, with no residual applied (see
@@ -832,22 +868,22 @@ pub fn residual_semantics(blob: &[u8]) -> ResidualSemantics {
     }
 }
 
-/// Whether applying this residual with the arithmetic in use reconstructs the
-/// original, rather than producing a value that is neither the original nor the
-/// model.
+/// Whether the default read ([`UnpinnedResiduals::Refuse`]) applies this residual:
+/// whether applying it with the arithmetic in use is known to reconstruct the
+/// original, rather than a value that is neither the original nor the model.
 ///
-/// [`ResidualSemantics::Unpinned`] answers `true`: those blobs predate the
-/// identifier and applying them is the established behaviour (exact on the
-/// machine that wrote them). A [`ResidualSemantics::Pinned`] blob answers
-/// `true` when its identifier is [`alice_det_math::SEMANTICS_ID`] **or** one of
+/// A [`ResidualSemantics::Pinned`] blob answers `true` when its identifier is
+/// [`alice_det_math::SEMANTICS_ID`] **or** one of
 /// [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] (`alice_det_math::check_semantics`)
 /// — a release that only adds functions still reconstructs residuals an
-/// earlier release stamped, so those must not be refused — and the query
-/// paths then return the model value on its own rather than a corrupted one.
+/// earlier release stamped. [`ResidualSemantics::Unpinned`] answers `false`:
+/// nothing records the arithmetic it was written under, so the default read
+/// refuses it ([`ResidualError::Unpinned`]); [`UnpinnedResiduals::Accept`]
+/// applies it on request, reporting [`ReadStatus::Unpinned`].
 #[must_use]
 pub fn residual_is_applicable(blob: &[u8]) -> bool {
     match residual_semantics(blob) {
-        ResidualSemantics::Unpinned => true,
+        ResidualSemantics::Unpinned => false,
         ResidualSemantics::Pinned(id) => alice_det_math::check_semantics(&id).is_reproducible(),
     }
 }
@@ -954,6 +990,98 @@ impl std::fmt::Display for ResidualCorrupt {
 impl std::error::Error for ResidualCorrupt {}
 
 /// Why a read refused a segment's lossless residual
+/// A residual written before residuals carried an identifier (`alice-db` before 0.3.0),
+/// met by a read that does not accept one ([`UnpinnedResiduals::Refuse`], the default)
+///
+/// Such a residual stores `original ^ model` (or `original - model`) under an arithmetic
+/// nothing records: applied with this build's arithmetic it may give a value that is
+/// neither the original nor the model. A read that wants it anyway says so with
+/// [`UnpinnedResiduals::Accept`] (`ResidualPolicy::AcceptUnpinned` for a store), and the
+/// result then carries [`ReadStatus::Unpinned`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ResidualUnpinned {
+    /// The segment that holds the residual
+    pub segment_id: u64,
+    /// The first key the segment covers
+    pub start_time: i64,
+    /// The last key the segment covers
+    pub end_time: i64,
+    /// The store the segment belongs to, when the read came through one
+    pub series: Option<std::path::PathBuf>,
+}
+
+impl std::fmt::Display for ResidualUnpinned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "segment {} (keys {}..={}) holds a residual written before residuals carried an \
+             identifier (alice-db before 0.3.0): its arithmetic is not known, so it is not \
+             applied (accept it explicitly with ResidualPolicy::AcceptUnpinned)",
+            self.segment_id, self.start_time, self.end_time
+        )?;
+        if let Some(series) = &self.series {
+            write!(f, " (store {})", series.display())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ResidualUnpinned {}
+
+/// Whether a read applies a residual that carries no identifier
+/// ([`ResidualSemantics::Unpinned`])
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UnpinnedResiduals {
+    /// Refuse it with [`ResidualError::Unpinned`] (the default)
+    #[default]
+    Refuse,
+    /// Apply it, and say so with [`ReadStatus::Unpinned`]
+    Accept,
+}
+
+/// What a value read back rests on (ALICE-Law G8: the typed status of a read)
+///
+/// For a read over several segments, the weakest of theirs ([`ReadStatus::weaker`]):
+/// `Current` < `VerifiedPrevious` < `Unpinned` < `ModelOnly`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReadStatus {
+    /// Exact under this build's arithmetic: no residual, or a residual stamped with
+    /// `alice_det_math::SEMANTICS_ID`
+    Current,
+    /// Exact: the residual is stamped with an earlier identifier that
+    /// `alice_det_math::check_semantics` still accepts as computing the same bits
+    VerifiedPrevious([u8; SEMANTICS_ID_LEN]),
+    /// A residual without an identifier was applied ([`UnpinnedResiduals::Accept`]): exact
+    /// only where the writer's arithmetic was this one
+    Unpinned,
+    /// The model's approximation was returned instead of the stored values
+    /// (`ResidualPolicy::ModelOnly`)
+    ModelOnly,
+}
+
+impl ReadStatus {
+    const fn rank(self) -> u8 {
+        match self {
+            Self::Current => 0,
+            Self::VerifiedPrevious(_) => 1,
+            Self::Unpinned => 2,
+            Self::ModelOnly => 3,
+        }
+    }
+
+    /// The weaker of the two (for a read that touched both)
+    #[must_use]
+    pub const fn weaker(self, other: Self) -> Self {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResidualError {
@@ -961,6 +1089,8 @@ pub enum ResidualError {
     Mismatch(ResidualMismatch),
     /// The residual does not decode to one correction per point
     Corrupt(ResidualCorrupt),
+    /// A residual without an identifier, under [`UnpinnedResiduals::Refuse`]
+    Unpinned(ResidualUnpinned),
 }
 
 impl ResidualError {
@@ -969,6 +1099,7 @@ impl ResidualError {
         match &mut self {
             Self::Mismatch(m) => m.series = Some(dir.to_path_buf()),
             Self::Corrupt(c) => c.series = Some(dir.to_path_buf()),
+            Self::Unpinned(u) => u.series = Some(dir.to_path_buf()),
         }
         self
     }
@@ -979,6 +1110,7 @@ impl std::fmt::Display for ResidualError {
         match self {
             Self::Mismatch(m) => m.fmt(f),
             Self::Corrupt(c) => c.fmt(f),
+            Self::Unpinned(u) => u.fmt(f),
         }
     }
 }
@@ -988,6 +1120,7 @@ impl std::error::Error for ResidualError {
         match self {
             Self::Mismatch(m) => Some(m),
             Self::Corrupt(c) => Some(c),
+            Self::Unpinned(u) => Some(u),
         }
     }
 }
@@ -1036,8 +1169,11 @@ pub fn residual_status(blob: Option<&[u8]>, point_count: usize) -> ResidualStatu
             needed_bytes: needed,
             found_bytes: found,
         },
-        Decoded::Usable { pinned: true, .. } => ResidualStatus::Exact,
-        Decoded::Usable { pinned: false, .. } => ResidualStatus::Unpinned,
+        Decoded::Usable {
+            status: ReadStatus::Unpinned,
+            ..
+        } => ResidualStatus::Unpinned,
+        Decoded::Usable { .. } => ResidualStatus::Exact,
     }
 }
 
@@ -1052,7 +1188,7 @@ enum Decoded {
     Usable {
         kind: ResidualKind,
         bytes: Vec<u8>,
-        pinned: bool,
+        status: ReadStatus,
     },
 }
 
@@ -1060,14 +1196,15 @@ fn decode_residual(blob: Option<&[u8]>, point_count: usize) -> Decoded {
     let Some(blob) = blob else {
         return Decoded::None;
     };
-    let pinned = match residual_semantics(blob) {
-        ResidualSemantics::Pinned(id)
-            if !alice_det_math::check_semantics(&id).is_reproducible() =>
-        {
-            return Decoded::Mismatch(id);
-        }
-        ResidualSemantics::Pinned(_) => true,
-        ResidualSemantics::Unpinned => false,
+    let status = match residual_semantics(blob) {
+        ResidualSemantics::Pinned(id) => match alice_det_math::check_semantics(&id) {
+            alice_det_math::SemanticsCheck::Verified => ReadStatus::Current,
+            alice_det_math::SemanticsCheck::VerifiedPrevious(previous) => {
+                ReadStatus::VerifiedPrevious(previous)
+            }
+            alice_det_math::SemanticsCheck::Mismatch => return Decoded::Mismatch(id),
+        },
+        ResidualSemantics::Unpinned => ReadStatus::Unpinned,
     };
     let bytes = decompress_residual(blob);
     let needed = point_count.saturating_mul(4);
@@ -1080,7 +1217,7 @@ fn decode_residual(blob: Option<&[u8]>, point_count: usize) -> Decoded {
     Decoded::Usable {
         kind: residual_kind(blob),
         bytes,
-        pinned,
+        status,
     }
 }
 
@@ -1093,10 +1230,26 @@ fn checked_residual(
     segment_id: u64,
     start_time: i64,
     end_time: i64,
-) -> Result<Option<(ResidualKind, Vec<u8>)>, ResidualError> {
+    unpinned: UnpinnedResiduals,
+) -> Result<Option<(ResidualKind, Vec<u8>, ReadStatus)>, ResidualError> {
     match decode_residual(blob, point_count) {
         Decoded::None => Ok(None),
-        Decoded::Usable { kind, bytes, .. } => Ok(Some((kind, bytes))),
+        Decoded::Usable {
+            status: ReadStatus::Unpinned,
+            ..
+        } if unpinned == UnpinnedResiduals::Refuse => {
+            Err(ResidualError::Unpinned(ResidualUnpinned {
+                segment_id,
+                start_time,
+                end_time,
+                series: None,
+            }))
+        }
+        Decoded::Usable {
+            kind,
+            bytes,
+            status,
+        } => Ok(Some((kind, bytes, status))),
         Decoded::Mismatch(stored) => Err(ResidualError::Mismatch(ResidualMismatch {
             segment_id,
             start_time,
@@ -1197,8 +1350,9 @@ fn missing_word(
 /// arithmetic, and IEEE 754 leaves the transcendentals free to differ between
 /// targets, so without it a reader cannot tell an exact reconstruction from a
 /// value that is neither the original nor the model. Blobs written before
-/// 0.3.0 carry no identifier ([`ResidualSemantics::Unpinned`]) and are still
-/// read, with that limitation.
+/// 0.3.0 carry no identifier ([`ResidualSemantics::Unpinned`]): a read refuses them
+/// unless it opts in with [`UnpinnedResiduals::Accept`], and then reports
+/// [`ReadStatus::Unpinned`]. Nothing in this crate writes such a blob any more.
 #[must_use]
 pub fn compress_residual_xor(raw: &[u8], semantics_id: &[u8; SEMANTICS_ID_LEN]) -> Vec<u8> {
     let mut compressed = Vec::new();
@@ -1214,30 +1368,6 @@ pub fn compress_residual_xor(raw: &[u8], semantics_id: &[u8; SEMANTICS_ID_LEN]) 
         let mut out = Vec::with_capacity(1 + SEMANTICS_ID_LEN + raw.len());
         out.push(RESIDUAL_XOR_PINNED_RAW);
         out.extend_from_slice(semantics_id);
-        out.extend_from_slice(raw);
-        out
-    }
-}
-
-/// Compress an **additive** residual (`original − model` per sample, f32 LE)
-/// — the 0.2.0-beta.2 format; kept so existing blobs and callers keep
-/// working, but the memtable writes [`compress_residual_xor`] since
-/// 2026-09-17 (an additive residual is not bit exact).
-///
-/// Format: `[1 byte magic] [data]`, raw fallback when LZMA would expand.
-#[must_use]
-pub fn compress_residual(raw: &[u8]) -> Vec<u8> {
-    let mut compressed = Vec::new();
-    if lzma_rs::lzma_compress(&mut std::io::Cursor::new(raw), &mut compressed).is_ok()
-        && compressed.len() < raw.len()
-    {
-        let mut out = Vec::with_capacity(1 + compressed.len());
-        out.push(RESIDUAL_LZMA);
-        out.extend_from_slice(&compressed);
-        out
-    } else {
-        let mut out = Vec::with_capacity(1 + raw.len());
-        out.push(RESIDUAL_RAW);
         out.extend_from_slice(raw);
         out
     }
@@ -1683,6 +1813,23 @@ impl SegmentView {
     /// [`ResidualError`], as [`DataSegment::query_point`].
     #[inline(always)]
     pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualError> {
+        self.read_point(timestamp, UnpinnedResiduals::Refuse)
+            .map(|read| read.map(|(value, _)| value))
+    }
+
+    /// [`Self::query_point`] that also says what the value rests on, and whether a residual
+    /// written before residuals carried an identifier ([`ResidualSemantics::Unpinned`]) is
+    /// applied ([`UnpinnedResiduals::Accept`]) or refused with [`ResidualError::Unpinned`]
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::query_point`], and [`ResidualError::Unpinned`] for a residual without an
+    /// identifier under [`UnpinnedResiduals::Refuse`].
+    pub fn read_point(
+        &self,
+        timestamp: i64,
+        unpinned: UnpinnedResiduals,
+    ) -> Result<Option<(f32, ReadStatus)>, ResidualError> {
         let Some(value) = self.query_point_model_only(timestamp) else {
             return Ok(None);
         };
@@ -1697,14 +1844,15 @@ impl SegmentView {
             self.archived.metadata.id,
             self.archived.start_time,
             self.archived.end_time,
+            unpinned,
         )?
         else {
-            return Ok(Some(value));
+            return Ok(Some((value, ReadStatus::Current)));
         };
-        let (kind, decompressed) = residual;
+        let (kind, decompressed, status) = residual;
         let idx = self.archived_timestamp_to_index(timestamp);
         apply_residual(value, kind, &decompressed, idx)
-            .map(Some)
+            .map(|value| Some((value, status)))
             .ok_or_else(|| {
                 missing_word(
                     self.archived.metadata.id,
@@ -1769,6 +1917,21 @@ impl SegmentView {
     ///
     /// [`ResidualError`], as [`DataSegment::query_range`].
     pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualError> {
+        self.read_range(start, end, UnpinnedResiduals::Refuse)
+            .map(|(points, _)| points)
+    }
+
+    /// [`Self::query_range`] that also says what the values rest on (see [`Self::read_point`])
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read_point`].
+    pub fn read_range(
+        &self,
+        start: i64,
+        end: i64,
+        unpinned: UnpinnedResiduals,
+    ) -> Result<(Vec<(i64, f32)>, ReadStatus), ResidualError> {
         let residual = checked_residual(
             self.archived
                 .residual_blob
@@ -1778,10 +1941,13 @@ impl SegmentView {
             self.archived.metadata.id,
             self.archived.start_time,
             self.archived.end_time,
+            unpinned,
         )?;
         let mut results = self.query_range_model_only(start, end);
         // Lossless residuals (see `query_point`)
-        if let Some((kind, decompressed)) = residual {
+        let mut status = ReadStatus::Current;
+        if let Some((kind, decompressed, residual_status)) = residual {
+            status = residual_status;
             for (timestamp, value) in &mut results {
                 let idx = self.archived_timestamp_to_index(*timestamp);
                 *value = apply_residual(*value, kind, &decompressed, idx).ok_or_else(|| {
@@ -1795,7 +1961,7 @@ impl SegmentView {
                 })?;
             }
         }
-        Ok(results)
+        Ok((results, status))
     }
 
     /// The model's values over `[start, end]`, with no residual applied (see
@@ -2558,6 +2724,23 @@ mod tests {
         assert_eq!(a, b, "same inputs must give identical bytes (G10)");
     }
 
+    /// The additive residual blob `alice-db` wrote before 0.3.0 (`[magic][LZMA or raw]`,
+    /// no identifier) — the writer is gone; tests build the bytes to read them back
+    fn pre_0_3_0_additive_blob(raw: &[u8]) -> Vec<u8> {
+        let mut compressed = Vec::new();
+        if lzma_rs::lzma_compress(&mut std::io::Cursor::new(raw), &mut compressed).is_ok()
+            && compressed.len() < raw.len()
+        {
+            let mut out = vec![super::RESIDUAL_LZMA];
+            out.extend_from_slice(&compressed);
+            out
+        } else {
+            let mut out = vec![super::RESIDUAL_RAW];
+            out.extend_from_slice(raw);
+            out
+        }
+    }
+
     #[test]
     fn test_lossless_lzma_roundtrip() {
         // Create a segment with known residuals
@@ -2571,8 +2754,8 @@ mod tests {
             raw_residuals.extend_from_slice(&r.to_le_bytes());
         }
 
-        // Compress and attach
-        let compressed = super::compress_residual(&raw_residuals);
+        // Compress and attach (the pre-0.3.0 form: no identifier)
+        let compressed = pre_0_3_0_additive_blob(&raw_residuals);
         // Compressed blob should have magic byte prefix
         assert!(!compressed.is_empty());
         assert!(compressed[0] == super::RESIDUAL_LZMA || compressed[0] == super::RESIDUAL_RAW);
@@ -2583,17 +2766,24 @@ mod tests {
         assert_eq!(decompressed.len(), raw_residuals.len());
         assert_eq!(decompressed, raw_residuals);
 
-        // Verify query_point applies residual correction
-        let val_at_0 = segment
-            .query_point(0)
-            .expect("residual of this arithmetic")
+        // The default read refuses a residual without an identifier
+        assert!(matches!(
+            segment.query_point(0),
+            Err(ResidualError::Unpinned(_))
+        ));
+
+        // Accepted explicitly, it applies and says so
+        let (val_at_0, status) = segment
+            .read_point(0, UnpinnedResiduals::Accept)
+            .expect("accepted")
             .unwrap();
+        assert_eq!(status, ReadStatus::Unpinned);
         // Constant model = 10.0, residual[0] = 0.0 * 0.001 = 0.0
         assert!((val_at_0 - 10.0).abs() < 0.01);
 
-        let val_at_50 = segment
-            .query_point(50)
-            .expect("residual of this arithmetic")
+        let (val_at_50, _) = segment
+            .read_point(50, UnpinnedResiduals::Accept)
+            .expect("accepted")
             .unwrap();
         // Constant model = 10.0, residual[50] = 50 * 0.001 = 0.05
         assert!((val_at_50 - 10.05).abs() < 0.01);
@@ -2603,7 +2793,7 @@ mod tests {
     fn test_compress_decompress_fallback() {
         // Tiny data: LZMA expansion expected → falls back to raw
         let tiny = vec![1u8, 2, 3, 4];
-        let compressed = super::compress_residual(&tiny);
+        let compressed = pre_0_3_0_additive_blob(&tiny);
         assert_eq!(compressed[0], super::RESIDUAL_RAW);
         let decompressed = super::decompress_residual(&compressed);
         assert_eq!(decompressed, tiny);
@@ -2697,7 +2887,10 @@ mod tests {
         );
         assert!(matches!(
             decode_residual(Some(&blob), raw.len() / 4),
-            Decoded::Usable { pinned: true, .. }
+            Decoded::Usable {
+                status: ReadStatus::Current | ReadStatus::VerifiedPrevious(_),
+                ..
+            }
         ));
     }
 
@@ -2706,6 +2899,15 @@ mod tests {
     /// `id == SEMANTICS_ID` equality and `check_semantics` both guard
     /// against, so this alone does not distinguish the two — the test above
     /// does, once run against a moved identifier).
+    /// The default read does not apply a residual without an identifier
+    #[test]
+    fn an_unpinned_residual_is_not_applicable_by_default() {
+        let raw: Vec<u8> = (0..16u8).collect();
+        let blob = pre_0_3_0_additive_blob(&raw);
+        assert_eq!(residual_semantics(&blob), ResidualSemantics::Unpinned);
+        assert!(!residual_is_applicable(&blob));
+    }
+
     #[test]
     fn an_unknown_semantics_id_is_refused() {
         let unknown = [0xee_u8; SEMANTICS_ID_LEN];

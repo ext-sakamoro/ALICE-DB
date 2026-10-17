@@ -44,7 +44,7 @@
 
 use alice_db::bloom::BloomFilter;
 use alice_db::checksum::{Checksum, ChecksumAlgorithm};
-use alice_db::segment::{compress_residual, decompress_residual};
+use alice_db::segment::{compress_residual_xor, decompress_residual};
 use alice_db::{Aggregation, AliceDB, DataSegment, DataType, FitConfig, ModelType, StorageConfig};
 use std::io::Cursor;
 
@@ -269,13 +269,16 @@ fn residual_blob_and_raw_lzma_round_trip_bit_exactly() {
     let mut seed = 7u64;
     let raw: Vec<f32> = (0..2048).map(|_| lcg(&mut seed) * 1e3).collect();
     let bytes: Vec<u8> = raw.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let blob = compress_residual(&bytes);
+    let blob = compress_residual_xor(&bytes, &alice_db::SEMANTICS_ID);
     assert_eq!(decompress_residual(&blob), bytes);
     // incompressible input takes the raw path and still round-trips
     let noise: Vec<u8> = (0..1000u32)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
         .collect();
-    assert_eq!(decompress_residual(&compress_residual(&noise)), noise);
+    assert_eq!(
+        decompress_residual(&compress_residual_xor(&noise, &alice_db::SEMANTICS_ID)),
+        noise
+    );
 
     // RawLzma model: every value comes back exactly for f32 payloads
     let mut compressed = Vec::new();

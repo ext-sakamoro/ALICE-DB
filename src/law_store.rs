@@ -74,7 +74,9 @@
 //!
 //! ```text
 //! magic          8 bytes  b"ALAWVRD\x01"
-//! format         u32      VERDICT_RECORD_FORMAT (= 1)
+//! format         u32      VERDICT_RECORD_FORMAT (= 2)
+//! name           u32 length + UTF-8
+//! semantics      32 bytes crate::DB_SEMANTICS_ID of the build that judged (format 2 only)
 //! seq            u64
 //! law_version    u64      version the evidence was judged against
 //! evidence_count u64
@@ -107,7 +109,17 @@
 //! default of [`AliceDB::get_law`] and the other reads) and refused with
 //! [`LawStoreError::Unpinned`] under [`LawReadPolicy::RequirePinned`]. The
 //! status comes back with every law and value ([`StoredLaw`], [`LawValue`]),
-//! so a caller always sees which of the three it got. Bytes carried by
+//! so a caller always sees which of the three it got.
+//!
+//! A verdict record (format 2) stores [`crate::DB_SEMANTICS_ID`] of the build
+//! that judged the evidence: its `rms` and outcome are this crate's arithmetic
+//! (the fit, the RMS, the comparison with the policy). [`AliceDB::law_history_with`]
+//! reads it as [`RecordSemantics::Current`] when the identifier is this build's
+//! and refuses any other with [`LawStoreError::VerdictRecordMismatch`] (no
+//! earlier `DB_SEMANTICS_ID` is listed as computing the same verdicts). A format 1
+//! verdict carries none: [`RecordSemantics::Unpinned`] under
+//! [`LawReadPolicy::AcceptUnpinned`], [`LawStoreError::Unpinned`] under
+//! [`LawReadPolicy::RequirePinned`]. Bytes carried by
 //! [`AliceDB::to_bytes`] / [`AliceDB::from_bytes`] are checked the same way
 //! when a law is read from the restored store.
 //!
@@ -173,8 +185,13 @@ pub const VERDICT_RECORD_MAGIC: [u8; 8] = *b"ALAWVRD\x01";
 /// (without it) are still read, as [`RecordSemantics::Unpinned`].
 pub const LAW_RECORD_FORMAT: u32 = 2;
 
-/// Layout version of the verdict records written by this build.
-pub const VERDICT_RECORD_FORMAT: u32 = 1;
+/// Layout version of the verdict records written by this build. Format 2 adds
+/// [`crate::DB_SEMANTICS_ID`] of the judging build; format 1 records (without
+/// it) are still read, as [`RecordSemantics::Unpinned`].
+pub const VERDICT_RECORD_FORMAT: u32 = 2;
+
+/// The verdict record format that carries no semantics identifier.
+const VERDICT_RECORD_FORMAT_UNPINNED: u32 = 1;
 
 /// The law record format that carries no semantics identifier.
 const LAW_RECORD_FORMAT_UNPINNED: u32 = 1;
@@ -211,9 +228,18 @@ pub enum LawStoreError {
         /// The identifier this build evaluates with
         running: [u8; 32],
     },
-    /// The law record carries no semantics identifier (layout format 1) and
-    /// the read asked for [`LawReadPolicy::RequirePinned`]
+    /// The law or verdict record carries no semantics identifier (layout
+    /// format 1) and the read asked for [`LawReadPolicy::RequirePinned`]
     Unpinned,
+    /// The verdict record was judged by a build whose [`crate::DB_SEMANTICS_ID`]
+    /// is not this build's: its RMS and outcome may not be what this build
+    /// computes from the same evidence
+    VerdictRecordMismatch {
+        /// The identifier the record carries
+        stored: [u8; 32],
+        /// [`crate::DB_SEMANTICS_ID`] of this build
+        running: [u8; 32],
+    },
 }
 
 fn hex32(id: &[u8; 32]) -> String {
@@ -317,7 +343,13 @@ impl fmt::Display for LawStoreError {
                 hex32(running)
             ),
             Self::Unpinned => f.write_str(
-                "law record carries no semantics identifier and the read requires one",
+                "law or verdict record carries no semantics identifier and the read requires one",
+            ),
+            Self::VerdictRecordMismatch { stored, running } => write!(
+                f,
+                "verdict record judged under db semantics {} which is not this build's ({})",
+                hex32(stored),
+                hex32(running)
             ),
         }
     }
@@ -397,6 +429,34 @@ impl VerdictKind {
             5 => Self::Breaks,
             _ => return None,
         })
+    }
+}
+
+/// A verdict read back from the history, with what is known about the
+/// arithmetic it was judged under ([`AliceDB::law_history_with`])
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredVerdict {
+    /// The verdict
+    pub record: VerdictRecord,
+    /// `Current` for a format 2 record of this build's [`crate::DB_SEMANTICS_ID`],
+    /// `Unpinned` for a format 1 record (under [`LawReadPolicy::AcceptUnpinned`])
+    pub semantics: RecordSemantics,
+}
+
+/// Checks the identifier a verdict record carries against
+/// [`crate::DB_SEMANTICS_ID`]
+fn check_verdict_semantics(
+    stored: Option<[u8; 32]>,
+    policy: LawReadPolicy,
+) -> Result<RecordSemantics, LawStoreError> {
+    let running = crate::DB_SEMANTICS_ID;
+    match stored {
+        None => match policy {
+            LawReadPolicy::AcceptUnpinned => Ok(RecordSemantics::Unpinned),
+            LawReadPolicy::RequirePinned => Err(LawStoreError::Unpinned),
+        },
+        Some(id) if id == running => Ok(RecordSemantics::Current),
+        Some(stored) => Err(LawStoreError::VerdictRecordMismatch { stored, running }),
     }
 }
 
@@ -790,6 +850,7 @@ fn encode_verdict_record(name: &str, r: &VerdictRecord) -> Result<Vec<u8>, LawSt
     w.0.extend_from_slice(&VERDICT_RECORD_MAGIC);
     w.u32(VERDICT_RECORD_FORMAT);
     w.str(name)?;
+    w.0.extend_from_slice(&crate::DB_SEMANTICS_ID);
     w.u64(r.seq);
     w.u64(r.law_version);
     w.u64(r.evidence_count);
@@ -802,10 +863,25 @@ fn encode_verdict_record(name: &str, r: &VerdictRecord) -> Result<Vec<u8>, LawSt
     Ok(w.finish())
 }
 
-fn decode_verdict_record(bytes: &[u8]) -> Result<(String, VerdictRecord), LawStoreError> {
-    let (_, body) = open_record(bytes, VERDICT_RECORD_MAGIC, &[VERDICT_RECORD_FORMAT])?;
+/// A decoded verdict record: `(name, record, semantics identifier)`; the
+/// identifier is `None` for a format 1 record
+type DecodedVerdict = (String, VerdictRecord, Option<[u8; 32]>);
+
+fn decode_verdict_record(bytes: &[u8]) -> Result<DecodedVerdict, LawStoreError> {
+    let (format, body) = open_record(
+        bytes,
+        VERDICT_RECORD_MAGIC,
+        &[VERDICT_RECORD_FORMAT, VERDICT_RECORD_FORMAT_UNPINNED],
+    )?;
     let mut r = Reader(body);
     let name = r.str()?;
+    let semantics = if format == VERDICT_RECORD_FORMAT_UNPINNED {
+        None
+    } else {
+        let mut id = [0u8; 32];
+        id.copy_from_slice(r.take(32)?);
+        Some(id)
+    };
     let seq = r.u64()?;
     let law_version = r.u64()?;
     let evidence_count = r.u64()?;
@@ -830,6 +906,7 @@ fn decode_verdict_record(bytes: &[u8]) -> Result<(String, VerdictRecord), LawSto
             rms: has_rms.then_some(rms),
             new_version: has_new.then_some(new_version),
         },
+        semantics,
     ))
 }
 
@@ -1288,13 +1365,35 @@ impl AliceDB {
         Ok(verdict)
     }
 
-    /// Recorded verdicts of `name` in ingestion order (empty if none)
+    /// Recorded verdicts of `name` in ingestion order (empty if none), under
+    /// [`LawReadPolicy::AcceptUnpinned`] and without the status
+    /// ([`Self::law_history_with`] returns it)
     ///
     /// # Errors
-    /// [`LawStoreError::InvalidName`], [`LawStoreError::Io`], or
-    /// [`LawStoreError::Corrupt`] for a damaged record or one stored under
-    /// another key.
+    /// As [`Self::law_history_with`].
     pub fn law_history(&self, name: &str) -> Result<Vec<VerdictRecord>, LawStoreError> {
+        Ok(self
+            .law_history_with(name, LawReadPolicy::AcceptUnpinned)?
+            .into_iter()
+            .map(|v| v.record)
+            .collect())
+    }
+
+    /// Recorded verdicts of `name` in ingestion order (empty if none), each with
+    /// the check of the identifier it was judged under (module docs, "Semantics
+    /// identifier")
+    ///
+    /// # Errors
+    /// [`LawStoreError::InvalidName`], [`LawStoreError::Io`],
+    /// [`LawStoreError::Corrupt`] for a damaged record or one stored under
+    /// another key, [`LawStoreError::VerdictRecordMismatch`] for a record judged
+    /// under another [`crate::DB_SEMANTICS_ID`], [`LawStoreError::Unpinned`] for
+    /// a format 1 record under [`LawReadPolicy::RequirePinned`].
+    pub fn law_history_with(
+        &self,
+        name: &str,
+        policy: LawReadPolicy,
+    ) -> Result<Vec<StoredVerdict>, LawStoreError> {
         check_name(name)?;
         let prefix = name_prefix(name, HISTORY_TAG);
         self.blob
@@ -1302,11 +1401,12 @@ impl AliceDB {
             .iter()
             .map(|(k, v)| {
                 let seq = key_number(k, &prefix)?;
-                let (stored_name, rec) = decode_verdict_record(v)?;
-                if stored_name != name || rec.seq != seq {
+                let (stored_name, record, stored) = decode_verdict_record(v)?;
+                if stored_name != name || record.seq != seq {
                     return Err(LawStoreError::Corrupt("record stored under another key"));
                 }
-                Ok(rec)
+                let semantics = check_verdict_semantics(stored, policy)?;
+                Ok(StoredVerdict { record, semantics })
             })
             .collect()
     }

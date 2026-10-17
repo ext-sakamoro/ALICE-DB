@@ -427,12 +427,24 @@ pub enum ResidualPolicy {
     /// `Corrupt`: a residual that does not decode) naming the segment, its key
     /// range and the store; a range read fails as a whole rather than
     /// returning fewer or partly corrected points
+    ///
+    /// A residual written before residuals carried an identifier (`alice-db` before 0.3.0)
+    /// is refused too ([`crate::segment::ResidualError::Unpinned`]): its arithmetic is not
+    /// known, so applying it could return a value that is neither the original nor the
+    /// model. Such a store is read with [`Self::AcceptUnpinned`].
     #[default]
     Refuse,
     /// The read returns the model's approximation for that segment's keys,
     /// knowingly: what was stored is not reconstructed (for a residual of
-    /// another arithmetic and for one that does not decode alike)
+    /// another arithmetic and for one that does not decode alike); the status is
+    /// [`crate::segment::ReadStatus::ModelOnly`]
     ModelOnly,
+    /// As [`Self::Refuse`], but a residual without an identifier (`alice-db` before 0.3.0)
+    /// is applied, and [`AliceDB::get_with_status`](crate::AliceDB::get_with_status) /
+    /// [`AliceDB::scan_with_status`](crate::AliceDB::scan_with_status) report
+    /// [`crate::segment::ReadStatus::Unpinned`] for it: exact only where the writer's
+    /// arithmetic was this one. An explicit opt-in for reading a store written before 0.3.0
+    AcceptUnpinned,
 }
 
 impl Default for StorageConfig {
@@ -1437,8 +1449,23 @@ impl StorageEngine {
     /// [`crate::segment::ResidualError`] when the segment that answers the key
     /// holds a residual that cannot be applied.
     pub fn query_point(&self, timestamp: i64) -> io::Result<Option<f32>> {
+        self.read_point(timestamp)
+            .map(|read| read.map(|(value, _)| value))
+    }
+
+    /// [`Self::query_point`] with what the value rests on
+    /// ([`crate::segment::ReadStatus`])
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::query_point`].
+    pub fn read_point(
+        &self,
+        timestamp: i64,
+    ) -> io::Result<Option<(f32, crate::segment::ReadStatus)>> {
+        use crate::segment::{ReadStatus, UnpinnedResiduals};
         if let Some(v) = self.memtable.get(timestamp) {
-            return Ok(Some(v));
+            return Ok(Some((v, ReadStatus::Current)));
         }
 
         let mut entries = self.find_segments(timestamp, timestamp);
@@ -1451,12 +1478,18 @@ impl StorageEngine {
             if view.is_lossless() && !view.on_grid(timestamp) {
                 continue;
             }
-            return match self.config.residual_policy {
-                ResidualPolicy::ModelOnly => Ok(view.query_point_model_only(timestamp)),
-                ResidualPolicy::Refuse => view
-                    .query_point(timestamp)
-                    .map_err(|m| self.residual_error(m)),
+            let unpinned = match self.config.residual_policy {
+                ResidualPolicy::ModelOnly => {
+                    return Ok(view
+                        .query_point_model_only(timestamp)
+                        .map(|v| (v, ReadStatus::ModelOnly)));
+                }
+                ResidualPolicy::Refuse => UnpinnedResiduals::Refuse,
+                ResidualPolicy::AcceptUnpinned => UnpinnedResiduals::Accept,
             };
+            return view
+                .read_point(timestamp, unpinned)
+                .map_err(|m| self.residual_error(m));
         }
         Ok(None)
     }
@@ -1494,6 +1527,21 @@ impl StorageEngine {
     /// or a newer segment) is superseded and does not fail the read; one that
     /// still answers a key does.
     pub fn query_range(&self, start: i64, end: i64) -> io::Result<Vec<(i64, f32)>> {
+        self.read_range(start, end).map(|(points, _)| points)
+    }
+
+    /// [`Self::query_range`] with what the values rest on: the weakest
+    /// [`crate::segment::ReadStatus`] over the segments that answered a key of the result
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::query_range`].
+    pub fn read_range(
+        &self,
+        start: i64,
+        end: i64,
+    ) -> io::Result<(Vec<(i64, f32)>, crate::segment::ReadStatus)> {
+        use crate::segment::{ReadStatus, UnpinnedResiduals};
         let mut entries = self.find_segments(start, end);
         entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.id));
 
@@ -1501,11 +1549,11 @@ impl StorageEngine {
         // segment whose points are all superseded by newer writes does not
         // fail the read, one that still answers a key does
         let mut refused: Vec<crate::segment::ResidualError> = Vec::new();
-        let mut results: Vec<(i64, f32, Option<usize>)> = self
+        let mut results: Vec<(i64, f32, Option<usize>, ReadStatus)> = self
             .memtable
             .range(start, end)
             .into_iter()
-            .map(|(t, v)| (t, v, None))
+            .map(|(t, v)| (t, v, None, ReadStatus::Current))
             .collect();
         for entry in entries {
             let view = self.load_segment(&entry)?;
@@ -1519,34 +1567,55 @@ impl StorageEngine {
             } else {
                 start
             };
-            let (segment_results, tag) = match self.config.residual_policy {
-                ResidualPolicy::ModelOnly => (view.query_range_model_only(from, end), None),
-                ResidualPolicy::Refuse => match view.query_range(from, end) {
-                    Ok(points) => (points, None),
+            let unpinned = match self.config.residual_policy {
+                ResidualPolicy::ModelOnly => None,
+                ResidualPolicy::Refuse => Some(UnpinnedResiduals::Refuse),
+                ResidualPolicy::AcceptUnpinned => Some(UnpinnedResiduals::Accept),
+            };
+            let (segment_results, tag, status) = match unpinned {
+                None => (
+                    view.query_range_model_only(from, end),
+                    None,
+                    ReadStatus::ModelOnly,
+                ),
+                Some(unpinned) => match view.read_range(from, end, unpinned) {
+                    Ok((points, status)) => (points, None, status),
                     Err(error) => {
                         refused.push(error);
                         (
                             view.query_range_model_only(from, end),
                             Some(refused.len() - 1),
+                            ReadStatus::ModelOnly,
                         )
                     }
                 },
             };
-            results.extend(segment_results.into_iter().map(|(t, v)| (t, v, tag)));
+            results.extend(
+                segment_results
+                    .into_iter()
+                    .map(|(t, v)| (t, v, tag, status)),
+            );
         }
 
         // Sort by timestamp; the sort is stable, so for equal keys the
         // memtable comes first, then segments newest first
-        results.sort_by_key(|&(t, _, _)| t);
+        results.sort_by_key(|&(t, _, _, _)| t);
 
         // Remove duplicates (keep first occurrence = newest)
-        results.dedup_by_key(|&mut (t, _, _)| t);
+        results.dedup_by_key(|&mut (t, _, _, _)| t);
 
         // All or nothing: a surviving point from a refused segment fails the read
-        if let Some(i) = results.iter().find_map(|&(_, _, tag)| tag) {
+        if let Some(i) = results.iter().find_map(|&(_, _, tag, _)| tag) {
             return Err(self.residual_error(refused.swap_remove(i)));
         }
-        Ok(results.into_iter().map(|(t, v, _)| (t, v)).collect())
+        // the status of the points that survived (a superseded segment does not count)
+        let status = results
+            .iter()
+            .fold(ReadStatus::Current, |acc, &(_, _, _, s)| acc.weaker(s));
+        Ok((
+            results.into_iter().map(|(t, v, _, _)| (t, v)).collect(),
+            status,
+        ))
     }
 
     /// Force flush `MemTable` to disk

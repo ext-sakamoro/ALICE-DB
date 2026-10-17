@@ -285,7 +285,10 @@ pub use replication::{
     Command, LogEntry, LogIndex, NodeId, RaftNode, ReplicationError, Role, Term,
 };
 pub use segment::DataSegment;
-pub use segment::{ResidualCorrupt, ResidualError, ResidualMismatch, ResidualStatus};
+pub use segment::{
+    ReadStatus, ResidualCorrupt, ResidualError, ResidualMismatch, ResidualStatus, ResidualUnpinned,
+    UnpinnedResiduals,
+};
 pub use semantics::DB_SEMANTICS_ID;
 pub use seqlock::{OptimisticError, OptimisticLock, OptimisticTxn, SeqLock, Version};
 pub use series::{Series, SeriesValue};
@@ -602,6 +605,34 @@ impl AliceDB {
     /// [`StorageEngine::query_range`] and [`ResidualPolicy`]).
     pub fn scan(&self, start: i64, end: i64) -> io::Result<Vec<(i64, f32)>> {
         self.engine.query_range(start, end)
+    }
+
+    /// [`Self::get`] with what the value rests on ([`ReadStatus`], ALICE-Law G8)
+    ///
+    /// Under the default [`ResidualPolicy::Refuse`] the status is `Current` or
+    /// `VerifiedPrevious` (a residual without an identifier is refused); it is `Unpinned`
+    /// only under [`ResidualPolicy::AcceptUnpinned`] and `ModelOnly` under
+    /// [`ResidualPolicy::ModelOnly`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::get`].
+    pub fn get_with_status(&self, timestamp: i64) -> io::Result<Option<(f32, ReadStatus)>> {
+        self.engine.read_point(timestamp)
+    }
+
+    /// [`Self::scan`] with what the values rest on: the weakest [`ReadStatus`] over the
+    /// segments that answered a key of the result (see [`Self::get_with_status`])
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::scan`].
+    pub fn scan_with_status(
+        &self,
+        start: i64,
+        end: i64,
+    ) -> io::Result<(Vec<(i64, f32)>, ReadStatus)> {
+        self.engine.read_range(start, end)
     }
 
     /// Create a query builder for advanced queries

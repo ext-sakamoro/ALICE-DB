@@ -57,9 +57,10 @@
 //!
 //! ```text
 //! magic          8 bytes  b"ALAWREC\x01"
-//! format         u32      LAW_RECORD_FORMAT (= 1)
+//! format         u32      LAW_RECORD_FORMAT (= 2)
 //! name           u32 length + UTF-8
 //! version        u64
+//! semantics      32 bytes the identifier the law was written under (format 2 only)
 //! coefficients   u32 count + f64 × count   (ascending, in u = (x - lo) / (hi - lo))
 //! domain         f64 lo, f64 hi
 //! evidence       u64 count + (f64 x, f64 y) × count
@@ -73,7 +74,7 @@
 //!
 //! ```text
 //! magic          8 bytes  b"ALAWVRD\x01"
-//! format         u32      LAW_RECORD_FORMAT (= 1)
+//! format         u32      VERDICT_RECORD_FORMAT (= 1)
 //! seq            u64
 //! law_version    u64      version the evidence was judged against
 //! evidence_count u64
@@ -92,6 +93,24 @@
 //! example evidence outside the stored domain ([`LawError::OutOfRange`]) or a
 //! non-finite coefficient ([`LawError::NonFinite`]).
 //!
+//! # Semantics identifier
+//!
+//! A law record (format 2) stores the identifier it was written under (the
+//! `semantics_id` given to [`AliceDB::put_law`] / [`AliceDB::ingest_evidence`],
+//! normally [`crate::SEMANTICS_ID`]). Every read compares it with the identifier
+//! this build evaluates with: the same one, or an earlier one
+//! `alice_det_math::check_semantics` accepts, is read and reported as
+//! [`RecordSemantics::Current`] / [`RecordSemantics::VerifiedPrevious`]; any
+//! other is refused with [`LawStoreError::LawRecordMismatch`], which names
+//! both. A format 1 record carries none: it is read as
+//! [`RecordSemantics::Unpinned`] under [`LawReadPolicy::AcceptUnpinned`] (the
+//! default of [`AliceDB::get_law`] and the other reads) and refused with
+//! [`LawStoreError::Unpinned`] under [`LawReadPolicy::RequirePinned`]. The
+//! status comes back with every law and value ([`StoredLaw`], [`LawValue`]),
+//! so a caller always sees which of the three it got. Bytes carried by
+//! [`AliceDB::to_bytes`] / [`AliceDB::from_bytes`] are checked the same way
+//! when a law is read from the restored store.
+//!
 //! # Write order
 //!
 //! [`AliceDB::ingest_evidence`] writes the new version (if any) before the
@@ -99,13 +118,14 @@
 //! stored version. Writes are serialised per database by an internal lock.
 //!
 //! ```
-//! use alice_db::law_store::{IngestPolicy, Provenance, SignalLaw, Verdict};
+//! use alice_db::law_store::{IngestPolicy, Provenance, RecordSemantics, SignalLaw, Verdict};
 //! use alice_db::{AliceDB, StorageConfig};
 //!
 //! // Identifies the arithmetic the law is evaluated with. It goes into the
-//! // law's content identifier, so a stored result names both the law and the
-//! // numeric semantics it was computed under.
-//! const SEMANTICS: [u8; 32] = [0x11; 32];
+//! // law's content identifier and into the stored record, so a stored result
+//! // names both the law and the numeric semantics it was computed under, and
+//! // a read under other semantics is refused.
+//! const SEMANTICS: [u8; 32] = alice_db::SEMANTICS_ID;
 //!
 //! let db = AliceDB::in_memory(StorageConfig::default())?;
 //! // y = 1 + 2x measured at x = 0..=4
@@ -113,8 +133,10 @@
 //! let law = SignalLaw::fit_polynomial(&pts, 1, Provenance::new("run 1", "least squares"))?;
 //! db.put_law("line", &law, &SEMANTICS)?;
 //!
-//! assert!((db.evaluate_law("line", 2.5)? - 6.0).abs() < 1e-12);
+//! assert!((db.evaluate_law("line", 2.5)?.value - 6.0).abs() < 1e-12);
 //! assert!(db.evaluate_law("line", 9.0).is_err()); // outside [0, 4]
+//! // the record carries the identifier it was written under
+//! assert_eq!(db.get_law("line")?.expect("stored").semantics, RecordSemantics::Current);
 //!
 //! // The stored law is reachable by its content identifier as well as by name.
 //! let id = law.law_id(&SEMANTICS);
@@ -146,8 +168,16 @@ pub const LAW_RECORD_MAGIC: [u8; 8] = *b"ALAWREC\x01";
 /// Leading bytes of a verdict record.
 pub const VERDICT_RECORD_MAGIC: [u8; 8] = *b"ALAWVRD\x01";
 
-/// Layout version of both record kinds written by this build.
-pub const LAW_RECORD_FORMAT: u32 = 1;
+/// Layout version of the law records written by this build. Format 2 adds
+/// the semantics identifier the law was written under; format 1 records
+/// (without it) are still read, as [`RecordSemantics::Unpinned`].
+pub const LAW_RECORD_FORMAT: u32 = 2;
+
+/// Layout version of the verdict records written by this build.
+pub const VERDICT_RECORD_FORMAT: u32 = 1;
+
+/// The law record format that carries no semantics identifier.
+const LAW_RECORD_FORMAT_UNPINNED: u32 = 1;
 
 const VERSION_TAG: &[u8] = b"\0v";
 const HISTORY_TAG: &[u8] = b"\0h";
@@ -171,6 +201,100 @@ pub enum LawStoreError {
     /// A stored record decodes but [`SignalLaw::from_parts`] refuses it,
     /// or a law operation refused its input
     Law(LawError),
+    /// The law record was written under a semantics identifier this build
+    /// does not reproduce: neither the identifier it evaluates with
+    /// ([`crate::SEMANTICS_ID`]) nor one `alice_det_math::check_semantics`
+    /// accepts as an earlier identifier with the same bits
+    LawRecordMismatch {
+        /// The identifier the record carries
+        stored: [u8; 32],
+        /// The identifier this build evaluates with
+        running: [u8; 32],
+    },
+    /// The law record carries no semantics identifier (layout format 1) and
+    /// the read asked for [`LawReadPolicy::RequirePinned`]
+    Unpinned,
+}
+
+fn hex32(id: &[u8; 32]) -> String {
+    use fmt::Write as _;
+    id.iter().fold(String::with_capacity(64), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// What a read knows about the arithmetic a stored law was written under
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RecordSemantics {
+    /// The record carries the identifier this build evaluates with
+    /// ([`crate::SEMANTICS_ID`])
+    Current,
+    /// The record carries an earlier identifier that
+    /// `alice_det_math::check_semantics` accepts as computing the same bits
+    VerifiedPrevious([u8; 32]),
+    /// The record carries no identifier (layout format 1, written before the
+    /// identifier was stored): nothing says which arithmetic it was written
+    /// under. Accepted only by [`LawReadPolicy::AcceptUnpinned`]
+    Unpinned,
+}
+
+/// Whether a read accepts a law record that carries no semantics identifier
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LawReadPolicy {
+    /// Read it and report [`RecordSemantics::Unpinned`] with the law
+    #[default]
+    AcceptUnpinned,
+    /// Refuse it with [`LawStoreError::Unpinned`]
+    RequirePinned,
+}
+
+/// A law read back from the store, with what is known about the arithmetic
+/// it was written under
+#[derive(Debug, Clone)]
+pub struct StoredLaw {
+    /// The law, restored through [`SignalLaw::from_parts`]
+    pub law: SignalLaw,
+    /// The semantics identifier check of its record
+    pub semantics: RecordSemantics,
+}
+
+/// `f(x)` of a stored law, with what is known about the arithmetic the law
+/// was written under
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LawValue {
+    /// `f(x)`
+    pub value: f64,
+    /// The semantics identifier check of the law's record
+    pub semantics: RecordSemantics,
+}
+
+/// Checks the identifier a record carries against the one this build
+/// evaluates with
+fn check_record_semantics(
+    stored: Option<[u8; 32]>,
+    policy: LawReadPolicy,
+) -> Result<RecordSemantics, LawStoreError> {
+    let running = crate::SEMANTICS_ID;
+    let Some(stored) = stored else {
+        return match policy {
+            LawReadPolicy::AcceptUnpinned => Ok(RecordSemantics::Unpinned),
+            LawReadPolicy::RequirePinned => Err(LawStoreError::Unpinned),
+        };
+    };
+    if stored == running {
+        return Ok(RecordSemantics::Current);
+    }
+    match alice_det_math::check_semantics(&stored) {
+        alice_det_math::SemanticsCheck::Verified => Ok(RecordSemantics::Current),
+        alice_det_math::SemanticsCheck::VerifiedPrevious(id) => {
+            Ok(RecordSemantics::VerifiedPrevious(id))
+        }
+        alice_det_math::SemanticsCheck::Mismatch => {
+            Err(LawStoreError::LawRecordMismatch { stored, running })
+        }
+    }
 }
 
 impl fmt::Display for LawStoreError {
@@ -184,6 +308,15 @@ impl fmt::Display for LawStoreError {
             Self::NotFound => f.write_str("no law stored under this name"),
             Self::Corrupt(why) => write!(f, "stored law record is corrupt: {why}"),
             Self::Law(e) => write!(f, "law: {e}"),
+            Self::LawRecordMismatch { stored, running } => write!(
+                f,
+                "law record written under semantics {} which this build (semantics {}) does not reproduce",
+                hex32(stored),
+                hex32(running)
+            ),
+            Self::Unpinned => f.write_str(
+                "law record carries no semantics identifier and the read requires one",
+            ),
         }
     }
 }
@@ -493,9 +626,13 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Checks magic, format and checksum and returns the body between the header
-/// and the checksum
-fn open_record(bytes: &[u8], magic: [u8; 8]) -> Result<&[u8], LawStoreError> {
+/// Checks magic, format and checksum and returns the format and the body
+/// between the header and the checksum
+fn open_record<'a>(
+    bytes: &'a [u8],
+    magic: [u8; 8],
+    formats: &[u32],
+) -> Result<(u32, &'a [u8]), LawStoreError> {
     if bytes.len() < magic.len() + 4 + 4 {
         return Err(TRUNCATED);
     }
@@ -508,10 +645,11 @@ fn open_record(bytes: &[u8], magic: [u8; 8]) -> Result<&[u8], LawStoreError> {
         return Err(LawStoreError::Corrupt("checksum mismatch"));
     }
     let mut r = Reader(&data[magic.len()..]);
-    if r.u32()? != LAW_RECORD_FORMAT {
+    let format = r.u32()?;
+    if !formats.contains(&format) {
         return Err(LawStoreError::Corrupt("unknown record format"));
     }
-    Ok(r.0)
+    Ok((format, r.0))
 }
 
 /// Encodes a law record (layout in the module docs)
@@ -523,6 +661,7 @@ pub fn encode_law_record(
     name: &str,
     version: u64,
     parts: &SignalLawParts,
+    semantics_id: &[u8; 32],
 ) -> Result<Vec<u8>, LawStoreError> {
     check_name(name)?;
     let mut w = Writer(Vec::new());
@@ -530,6 +669,7 @@ pub fn encode_law_record(
     w.u32(LAW_RECORD_FORMAT);
     w.str(name)?;
     w.u64(version);
+    w.0.extend_from_slice(semantics_id);
     w.len32(parts.coefficients.len())?;
     for &c in &parts.coefficients {
         w.f64(c);
@@ -556,19 +696,40 @@ pub fn encode_law_record(
     Ok(w.finish())
 }
 
-/// Decodes a law record into `(name, version, parts)` without validating the
-/// law (that is [`SignalLaw::from_parts`])
+/// A decoded law record: `(name, version, parts, semantics identifier)`; the
+/// identifier is `None` for a format 1 record, which does not carry one
+pub type DecodedLawRecord = (String, u64, SignalLawParts, Option<[u8; 32]>);
+
+/// A restored law and the identifier its record carries, before the check
+type UncheckedLaw = (SignalLaw, Option<[u8; 32]>);
+
+/// Decodes a law record (format 2, or format 1 without the semantics
+/// identifier) without validating the law (that is
+/// [`SignalLaw::from_parts`]) or the identifier (that is the read paths of
+/// [`AliceDB`])
 ///
 /// # Errors
 /// [`LawStoreError::Corrupt`] for a wrong magic / format / checksum, a
 /// truncated record, trailing bytes, invalid UTF-8 or an invalid name.
-pub fn decode_law_record(bytes: &[u8]) -> Result<(String, u64, SignalLawParts), LawStoreError> {
-    let mut r = Reader(open_record(bytes, LAW_RECORD_MAGIC)?);
+pub fn decode_law_record(bytes: &[u8]) -> Result<DecodedLawRecord, LawStoreError> {
+    let (format, body) = open_record(
+        bytes,
+        LAW_RECORD_MAGIC,
+        &[LAW_RECORD_FORMAT, LAW_RECORD_FORMAT_UNPINNED],
+    )?;
+    let mut r = Reader(body);
     let name = r.str()?;
     if check_name(&name).is_err() {
         return Err(LawStoreError::Corrupt("invalid name in record"));
     }
     let version = r.u64()?;
+    let semantics = if format == LAW_RECORD_FORMAT_UNPINNED {
+        None
+    } else {
+        let mut id = [0u8; 32];
+        id.copy_from_slice(r.take(32)?);
+        Some(id)
+    };
     let nc = r.u32()?;
     let nc = r.count(u64::from(nc), 8)?;
     let mut coefficients = Vec::with_capacity(nc);
@@ -619,13 +780,13 @@ pub fn decode_law_record(bytes: &[u8]) -> Result<(String, u64, SignalLawParts), 
         provenance: Provenance { source, method },
         oracles,
     };
-    Ok((name, version, parts))
+    Ok((name, version, parts, semantics))
 }
 
 fn encode_verdict_record(name: &str, r: &VerdictRecord) -> Result<Vec<u8>, LawStoreError> {
     let mut w = Writer(Vec::new());
     w.0.extend_from_slice(&VERDICT_RECORD_MAGIC);
-    w.u32(LAW_RECORD_FORMAT);
+    w.u32(VERDICT_RECORD_FORMAT);
     w.str(name)?;
     w.u64(r.seq);
     w.u64(r.law_version);
@@ -640,7 +801,8 @@ fn encode_verdict_record(name: &str, r: &VerdictRecord) -> Result<Vec<u8>, LawSt
 }
 
 fn decode_verdict_record(bytes: &[u8]) -> Result<(String, VerdictRecord), LawStoreError> {
-    let mut r = Reader(open_record(bytes, VERDICT_RECORD_MAGIC)?);
+    let (_, body) = open_record(bytes, VERDICT_RECORD_MAGIC, &[VERDICT_RECORD_FORMAT])?;
+    let mut r = Reader(body);
     let name = r.str()?;
     let seq = r.u64()?;
     let law_version = r.u64()?;
@@ -722,15 +884,37 @@ impl AliceDB {
         }
     }
 
-    fn load_version(&self, name: &str, version: u64) -> Result<Option<SignalLaw>, LawStoreError> {
+    /// The law of a stored version and the identifier its record carries,
+    /// without checking the identifier (for the index, which only computes
+    /// keys from it)
+    fn load_version_unchecked(
+        &self,
+        name: &str,
+        version: u64,
+    ) -> Result<Option<UncheckedLaw>, LawStoreError> {
         let Some(bytes) = self.blob.get(&numbered_key(name, VERSION_TAG, version))? else {
             return Ok(None);
         };
-        let (stored_name, stored_version, parts) = decode_law_record(&bytes)?;
+        let (stored_name, stored_version, parts, semantics) = decode_law_record(&bytes)?;
         if stored_name != name || stored_version != version {
             return Err(LawStoreError::Corrupt("record stored under another key"));
         }
-        Ok(Some(SignalLaw::from_parts(parts)?))
+        Ok(Some((SignalLaw::from_parts(parts)?, semantics)))
+    }
+
+    /// The law of a stored version, its record's identifier checked against
+    /// this build's under `policy`
+    fn load_version(
+        &self,
+        name: &str,
+        version: u64,
+        policy: LawReadPolicy,
+    ) -> Result<Option<StoredLaw>, LawStoreError> {
+        let Some((law, stored)) = self.load_version_unchecked(name, version)? else {
+            return Ok(None);
+        };
+        let semantics = check_record_semantics(stored, policy)?;
+        Ok(Some(StoredLaw { law, semantics }))
     }
 
     /// Writes a version and the key that addresses it by content
@@ -744,7 +928,7 @@ impl AliceDB {
         law: &SignalLaw,
         semantics_id: &[u8; 32],
     ) -> Result<(), LawStoreError> {
-        let rec = encode_law_record(name, version, &law.to_parts())?;
+        let rec = encode_law_record(name, version, &law.to_parts(), semantics_id)?;
         self.blob
             .put(&numbered_key(name, VERSION_TAG, version), &rec)?;
         // The pointer is entirely in the key, so the value carries nothing.
@@ -773,17 +957,34 @@ impl AliceDB {
     }
 
     /// The latest version of `name`, restored through [`SignalLaw::from_parts`]
-    /// (`Ok(None)` if no law is stored under it)
+    /// (`Ok(None)` if no law is stored under it), with the check of the
+    /// semantics identifier its record carries ([module docs](self)); a
+    /// record without one is read as [`RecordSemantics::Unpinned`]
     ///
     /// # Errors
     /// [`LawStoreError::InvalidName`], [`LawStoreError::Io`],
-    /// [`LawStoreError::Corrupt`] for a damaged record, and
-    /// [`LawStoreError::Law`] for a record [`SignalLaw::from_parts`] refuses.
-    pub fn get_law(&self, name: &str) -> Result<Option<SignalLaw>, LawStoreError> {
+    /// [`LawStoreError::Corrupt`] for a damaged record,
+    /// [`LawStoreError::Law`] for a record [`SignalLaw::from_parts`] refuses,
+    /// and [`LawStoreError::LawRecordMismatch`] for a record written under an
+    /// identifier this build does not reproduce.
+    pub fn get_law(&self, name: &str) -> Result<Option<StoredLaw>, LawStoreError> {
+        self.get_law_with(name, LawReadPolicy::AcceptUnpinned)
+    }
+
+    /// [`Self::get_law`] under `policy`
+    ///
+    /// # Errors
+    /// As [`Self::get_law`], and [`LawStoreError::Unpinned`] for a record
+    /// without an identifier under [`LawReadPolicy::RequirePinned`].
+    pub fn get_law_with(
+        &self,
+        name: &str,
+        policy: LawReadPolicy,
+    ) -> Result<Option<StoredLaw>, LawStoreError> {
         check_name(name)?;
         match self.last_number(name, VERSION_TAG)? {
             0 => Ok(None),
-            v => self.load_version(name, v),
+            v => self.load_version(name, v, policy),
         }
     }
 
@@ -795,9 +996,22 @@ impl AliceDB {
         &self,
         name: &str,
         version: u64,
-    ) -> Result<Option<SignalLaw>, LawStoreError> {
+    ) -> Result<Option<StoredLaw>, LawStoreError> {
+        self.get_law_version_with(name, version, LawReadPolicy::AcceptUnpinned)
+    }
+
+    /// [`Self::get_law_version`] under `policy`
+    ///
+    /// # Errors
+    /// As [`Self::get_law_with`].
+    pub fn get_law_version_with(
+        &self,
+        name: &str,
+        version: u64,
+        policy: LawReadPolicy,
+    ) -> Result<Option<StoredLaw>, LawStoreError> {
         check_name(name)?;
-        self.load_version(name, version)
+        self.load_version(name, version, policy)
     }
 
     /// `f(x)` of the latest version of `name`
@@ -807,9 +1021,28 @@ impl AliceDB {
     /// the law's valid range or not finite (no extrapolation);
     /// [`LawStoreError::NotFound`] if no law is stored; otherwise as
     /// [`Self::get_law`].
-    pub fn evaluate_law(&self, name: &str, x: f64) -> Result<f64, LawStoreError> {
-        let law = self.get_law(name)?.ok_or(LawStoreError::NotFound)?;
-        Ok(law.evaluate(x)?)
+    pub fn evaluate_law(&self, name: &str, x: f64) -> Result<LawValue, LawStoreError> {
+        self.evaluate_law_with(name, x, LawReadPolicy::AcceptUnpinned)
+    }
+
+    /// [`Self::evaluate_law`] under `policy`
+    ///
+    /// # Errors
+    /// As [`Self::evaluate_law`], and [`LawStoreError::Unpinned`] for a
+    /// record without an identifier under [`LawReadPolicy::RequirePinned`].
+    pub fn evaluate_law_with(
+        &self,
+        name: &str,
+        x: f64,
+        policy: LawReadPolicy,
+    ) -> Result<LawValue, LawStoreError> {
+        let stored = self
+            .get_law_with(name, policy)?
+            .ok_or(LawStoreError::NotFound)?;
+        Ok(LawValue {
+            value: stored.law.evaluate(x)?,
+            semantics: stored.semantics,
+        })
     }
 
     /// Every `(name, version)` stored under the content identifier `law_id`
@@ -942,7 +1175,7 @@ impl AliceDB {
         let mut added = 0usize;
         for name in self.law_names()? {
             for version in self.law_versions(&name)? {
-                let Some(law) = self.load_version(&name, version)? else {
+                let Some((law, _)) = self.load_version_unchecked(&name, version)? else {
                     continue;
                 };
                 let current_key = law_id_key(&law.law_id(semantics_id), &name, version)?;
@@ -980,17 +1213,35 @@ impl AliceDB {
     /// [`LawStoreError::NotFound`] when no law is stored under the identifier
     /// (an identifier cannot be turned into a value out of nothing),
     /// [`LawStoreError::Io`], [`LawStoreError::Corrupt`], and
-    /// [`LawStoreError::Law`] for an `x` outside the valid range.
-    pub fn evaluate_by_id(&self, law_id: &[u8; 32], x: f64) -> Result<f64, LawStoreError> {
+    /// [`LawStoreError::Law`] for an `x` outside the valid range, and
+    /// [`LawStoreError::LawRecordMismatch`] as [`Self::get_law`].
+    pub fn evaluate_by_id(&self, law_id: &[u8; 32], x: f64) -> Result<LawValue, LawStoreError> {
+        self.evaluate_by_id_with(law_id, x, LawReadPolicy::AcceptUnpinned)
+    }
+
+    /// [`Self::evaluate_by_id`] under `policy`
+    ///
+    /// # Errors
+    /// As [`Self::evaluate_by_id`], and [`LawStoreError::Unpinned`] for a
+    /// record without an identifier under [`LawReadPolicy::RequirePinned`].
+    pub fn evaluate_by_id_with(
+        &self,
+        law_id: &[u8; 32],
+        x: f64,
+        policy: LawReadPolicy,
+    ) -> Result<LawValue, LawStoreError> {
         let (name, version) = self
             .law_pointers_by_id(law_id)?
             .into_iter()
             .next()
             .ok_or(LawStoreError::NotFound)?;
-        let law = self
-            .load_version(&name, version)?
+        let stored = self
+            .load_version(&name, version, policy)?
             .ok_or(LawStoreError::NotFound)?;
-        Ok(law.evaluate(x)?)
+        Ok(LawValue {
+            value: stored.law.evaluate(x)?,
+            semantics: stored.semantics,
+        })
     }
 
     /// Judges `points` against the latest version of `name` and records the
@@ -1019,8 +1270,9 @@ impl AliceDB {
             return Err(LawStoreError::NotFound);
         }
         let law = self
-            .load_version(name, version)?
-            .ok_or(LawStoreError::NotFound)?;
+            .load_version(name, version, LawReadPolicy::AcceptUnpinned)?
+            .ok_or(LawStoreError::NotFound)?
+            .law;
         let verdict = law.ingest(points, policy);
         let mut record = record_for(&verdict, version, points.len());
         if let Verdict::ParameterUpdate { updated, .. } = &verdict {

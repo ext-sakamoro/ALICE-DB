@@ -227,6 +227,7 @@ pub mod replication;
 #[cfg(feature = "sdf")]
 pub mod sdf_bridge;
 pub mod segment;
+pub mod semantics;
 pub mod seqlock;
 pub mod series;
 pub mod snapshot;
@@ -241,10 +242,16 @@ pub mod ffi;
 ///
 /// A lossless residual records it (see [`segment::ResidualSemantics`]), and a
 /// reader applies a residual only when the identifier it carries is this one.
-/// Pass it to [`segment::compress_residual_xor`] when writing a residual
-/// measured against this crate's model evaluation. It is the identifier
-/// `alice-zip` publishes for its point evaluators, which are built on
-/// `alice-det-math` like every other transcendental here.
+/// A law record stores the identifier it was written under and is compared
+/// with this one on read ([`law_store`]). Pass it to
+/// [`segment::compress_residual_xor`] when writing a residual measured against
+/// this crate's model evaluation, and to [`AliceDB::put_law`]. It is the
+/// identifier `alice-zip` publishes for its point evaluators, which are built
+/// on `alice-det-math` like every other transcendental here.
+///
+/// It names the arithmetic, not this crate: this crate's own identifier,
+/// which also covers the decisions it computes itself, is
+/// [`semantics::DB_SEMANTICS_ID`].
 pub use alice_core::law::SEMANTICS_ID;
 #[cfg(feature = "analytics")]
 pub use analytics_bridge::{
@@ -266,6 +273,7 @@ pub use replication::{
 };
 pub use segment::DataSegment;
 pub use segment::{ResidualCorrupt, ResidualError, ResidualMismatch, ResidualStatus};
+pub use semantics::DB_SEMANTICS_ID;
 pub use seqlock::{OptimisticError, OptimisticLock, OptimisticTxn, SeqLock, Version};
 pub use series::{Series, SeriesValue};
 pub use storage_engine::{

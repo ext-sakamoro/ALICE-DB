@@ -123,8 +123,8 @@ assert_eq!(energy.scan_f32(0, 1 << 41)?.len(), 5);
 | メソッド | 動作 |
 |----------|------|
 | `put_law(name, &law, &semantics_id)` | `name` の次の版として保存し、内容の識別子で index に入れる |
-| `get_law(name)` / `get_law_version(name, v)` | 版を復元する 残差は保存した証拠から測り直す |
-| `evaluate_law(name, x)` | 最新版の `f(x)` 成立範囲外の `x` は拒否し (`LawError::OutOfRange`)、外挿しない |
+| `get_law(name)` / `get_law_version(name, v)` | 版を復元する 残差は保存した証拠から測り直す 結果は `RecordSemantics` を持つ: `Current` / `VerifiedPrevious(id)` / 形式 2 より前の記録は `Unpinned` この build が再現しない識別子の記録は拒否する (`LawRecordMismatch`、両方の識別子を示す) `get_law_with(name, LawReadPolicy::RequirePinned)` は `Unpinned` も拒否する |
+| `evaluate_law(name, x)` | 最新版の `f(x)` (同じ `RecordSemantics` 付き) 成立範囲外の `x` は拒否し (`LawError::OutOfRange`)、外挿しない |
 | `ingest_evidence(name, points, &policy, &semantics_id)` | 新しい点を判定し (証拠なし / 範囲外 / 支持 / parameter 更新 / 残差増加 / 破綻)、判定を記録する parameter 更新は新しい版として保存し、古い版も読める |
 | `law_pointers_by_id(&id)` / `evaluate_by_id(&id, x)` | 1 つの内容識別子の下にある `(name, version)` を全部返す、またそこを通して `f(x)` を返す |
 | `law_history(name)` / `law_versions(name)` / `law_names()` | 記録した判定 (証拠の点数と RMS 付き) を順に、保存した版、保存した名前 |
@@ -144,7 +144,7 @@ let pts: Vec<(f64, f64)> = (0..5).map(|i| (f64::from(i), 1.0 + 2.0 * f64::from(i
 let law = SignalLaw::fit_polynomial(&pts, 1, Provenance::new("run 1", "least squares"))?;
 db.put_law("line", &law, &SEMANTICS_ID)?;
 
-assert!((db.evaluate_law("line", 2.5)? - 6.0).abs() < 1e-12);
+assert!((db.evaluate_law("line", 2.5)?.value - 6.0).abs() < 1e-12);
 assert!(db.evaluate_law("line", 9.0).is_err()); // outside [0, 4]
 
 // The stored law is reachable by its content identifier as well as by name.
@@ -298,10 +298,10 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 | G3 no-outer-fneg-of-fma | 未確認 | unverified: no violation is known, but there is no syntax-tree checker for the outer negation of a fused multiply-add and no CI step for it. A one-off run of … |
 | G4 debug-release-arch-goldens | 未達 | unmet, with the test now present. (1) The signed-zero case of Aggregation::Min / Max is now fixed and pinned: the folds use alice_det_math::min64 / max64 … |
 | G5 release-profile-test-leg | 未達 | unmet: the release leg exists, on aarch64 (macos-latest), but runs only two test binaries: .github/workflows/release-profile.yml line 52 is `cargo test … |
-| G6 semantics-id | 未達 | unmet: src/lib.rs line 248 re-exports alice-zip's identifier (the alice-det-math arithmetic identifier) instead of computing one that folds this crate's own … |
-| G7 handshake-carries-id | 未達 | unmet at one type-erasing boundary. AliceDB::from_bytes (src/lib.rs line 447, snapshot::decode at src/snapshot.rs line 119) takes serialized bytes that carry … |
-| G8 persisted-semantics-id | 未達 | unmet for law records. Compliant: the lossless segment residual carries the writer's identifier (src/segment.rs line 1203) and the reader accepts its own or a … |
-| G9 persisted-meaning-change-is-major | 未確認 | unverified: the audit covers the one identifier this crate persists and finds no violation, but the law record has no identifier (see G8), so its history … |
+| G6 semantics-id | 適合 | alice-db computes its own identifier, DB_SEMANTICS_ID (39eb7dc0...cf1c99 with alice-det-math 0.5.1), from the bits of the decisions it computes itself and the … |
+| G7 handshake-carries-id | 適合 | the Law-bearing value that crosses this crate's boundary is the stored law record (alice-zip SignalLaw parts), handed over in AliceDB::to_bytes / from_bytes … |
+| G8 persisted-semantics-id | 適合 | both durable forms carry the identifier of the arithmetic the stored bytes mean: lossless segment residuals since 0.3.0 and law records since 0.6.0 (format 2). … |
+| G9 persisted-meaning-change-is-major | 未確認 | unverified: the audit covers the identifier this crate persists and finds no violation. Since 0.6.0 the law record carries the same arithmetic identifier as … |
 | G10 no-run-varying-artifacts | 適合 | no ambient clock or OS-entropy read is known in a Law-bearing path: scripts/entropy_guard.py reports `23 files, 10 patterns, 0 problems`, created_at is an … |
 | G11 gate-self-tests | 未達 | unmet: clause (c). scripts/clippy_canary.py, scripts/test_clippy_canary.py, scripts/gen_clippy_canary_calls.py, scripts/test_gen_clippy_canary_calls.py and … |
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |

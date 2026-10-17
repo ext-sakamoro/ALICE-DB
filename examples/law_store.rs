@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "[file, reopened] versions {:?}, {} verdicts, f(2) = {}",
             db.law_versions("line")?,
             db.law_history("line")?.len(),
-            db.evaluate_law("line", 2.0)?
+            db.evaluate_law("line", 2.0)?.value
         );
     }
     Ok(())
@@ -49,10 +49,12 @@ fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let backend = if db.is_in_memory() { "memory" } else { "file" };
     db.put_law("line", law, &SEMANTICS_ID)?;
-    println!("[{backend}] f(2.5) = {}", db.evaluate_law("line", 2.5)?);
+    let at = db.evaluate_law("line", 2.5)?;
+    // a record this build wrote carries its semantics identifier
+    println!("[{backend}] f(2.5) = {} ({:?})", at.value, at.semantics);
     match db.evaluate_law("line", 9.0) {
         Err(e) => println!("[{backend}] f(9) refused: {e}"),
-        Ok(v) => return Err(format!("f(9) = {v} was extrapolated").into()),
+        Ok(v) => return Err(format!("f(9) = {} was extrapolated", v.value).into()),
     }
 
     // the same line measured again, then shifted by +0.6
@@ -81,8 +83,8 @@ fn run(
     println!(
         "[{backend}] versions {:?}: v1 f(0) = {}, latest f(0) = {}",
         db.law_versions("line")?,
-        old.evaluate(0.0)?,
-        db.evaluate_law("line", 0.0)?
+        old.law.evaluate(0.0)?,
+        db.evaluate_law("line", 0.0)?.value
     );
     Ok(())
 }

@@ -21,9 +21,12 @@ use alice_db::law_store::{
 };
 use alice_db::{AliceDB, StorageConfig};
 
-/// Stand-in for the identifier the arithmetic crate publishes. These oracles
-/// only care that it reaches the key, not what it is.
-const SEMANTICS_A: [u8; 32] = [0x11; 32];
+/// The identifier this build writes into a law record. A read checks the
+/// record's identifier against the build's, so laws these oracles read back
+/// are stored under it.
+const SEMANTICS_A: [u8; 32] = alice_db::SEMANTICS_ID;
+/// A made-up identifier no build reproduces, used only where a law is looked
+/// up or indexed under it, never read back through it.
 const SEMANTICS_B: [u8; 32] = [0x22; 32];
 
 const POLICY: IngestPolicy = IngestPolicy {
@@ -106,9 +109,9 @@ fn same_content_under_two_names_shares_one_id_and_evaluates_identically() {
     // The guarantee: whichever pointer the store picks, the answer is the same
     // bits as going through either name.
     for x in grid() {
-        let by_id = db.evaluate_by_id(&id, x).expect("evaluate by id");
-        let via_left = db.evaluate_law("left", x).expect("evaluate left");
-        let via_right = db.evaluate_law("right", x).expect("evaluate right");
+        let by_id = db.evaluate_by_id(&id, x).expect("evaluate by id").value;
+        let via_left = db.evaluate_law("left", x).expect("evaluate left").value;
+        let via_right = db.evaluate_law("right", x).expect("evaluate right").value;
         assert_eq!(by_id.to_bits(), via_left.to_bits(), "by id vs left at {x}");
         assert_eq!(
             by_id.to_bits(),
@@ -132,7 +135,8 @@ fn put_law_round_trips_through_the_id_index() {
     let restored = db
         .get_law_version("line", version)
         .expect("read")
-        .expect("present");
+        .expect("present")
+        .law;
     assert_eq!(
         restored.law_id(&SEMANTICS_A),
         id,
@@ -223,8 +227,12 @@ fn the_index_survives_to_bytes_and_from_bytes() {
     );
     for x in grid() {
         assert_eq!(
-            restored.evaluate_by_id(&id, x).expect("by id").to_bits(),
-            db.evaluate_by_id(&id, x).expect("by id").to_bits(),
+            restored
+                .evaluate_by_id(&id, x)
+                .expect("by id")
+                .value
+                .to_bits(),
+            db.evaluate_by_id(&id, x).expect("by id").value.to_bits(),
         );
     }
 }

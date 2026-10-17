@@ -27,9 +27,9 @@ fn line_law() -> SignalLaw {
     .expect("five distinct points determine a line")
 }
 
-/// Stand-in for the identifier of the numeric semantics the laws are
-/// evaluated under (the arithmetic crate publishes the real one).
-const SEMANTICS: [u8; 32] = [0x11; 32];
+/// The identifier of the numeric semantics this build evaluates laws under; a
+/// read refuses a record written under another one.
+const SEMANTICS: [u8; 32] = alice_db::SEMANTICS_ID;
 
 const POLICY: IngestPolicy = IngestPolicy {
     abs_tolerance: 0.5,
@@ -82,7 +82,7 @@ fn memory_round_trip_is_bit_identical() {
         2.0, 5.0, 1e-9, "table 1",
     ));
     db.put_law("ohm", &law, &SEMANTICS).unwrap();
-    let back = db.get_law("ohm").unwrap().expect("stored law");
+    let back = db.get_law("ohm").unwrap().expect("stored law").law;
     assert_parts_bit_identical(&law.to_parts(), &back.to_parts());
     assert_eq!(db.law_versions("ohm").unwrap(), vec![1]);
     assert_eq!(db.law_names().unwrap(), vec!["ohm".to_string()]);
@@ -98,7 +98,7 @@ fn snapshot_bytes_carry_laws_to_a_memory_database() {
     let restored = AliceDB::from_bytes(StorageConfig::default(), &bytes).unwrap();
     assert_parts_bit_identical(
         &line_law().to_parts(),
-        &restored.get_law("ohm").unwrap().unwrap().to_parts(),
+        &restored.get_law("ohm").unwrap().unwrap().law.to_parts(),
     );
     assert_eq!(restored.law_history("ohm").unwrap().len(), 1);
 }
@@ -115,7 +115,7 @@ fn file_round_trip_survives_close_and_reopen() {
     }
     {
         let db = AliceDB::open(dir.path()).unwrap();
-        let back = db.get_law("ohm").unwrap().expect("law survives reopen");
+        let back = db.get_law("ohm").unwrap().expect("law survives reopen").law;
         assert_parts_bit_identical(&law.to_parts(), &back.to_parts());
         // write after reopen: offset +0.6 → parameter update (see below)
         let shifted: Vec<(f64, f64)> = line_points().iter().map(|&(x, y)| (x, y + 0.6)).collect();
@@ -129,14 +129,18 @@ fn file_round_trip_survives_close_and_reopen() {
     assert_eq!(db.law_versions("ohm").unwrap(), vec![1, 2]);
     assert_parts_bit_identical(
         &law.to_parts(),
-        &db.get_law_version("ohm", 1).unwrap().unwrap().to_parts(),
+        &db.get_law_version("ohm", 1)
+            .unwrap()
+            .unwrap()
+            .law
+            .to_parts(),
     );
     let hist = db.law_history("ohm").unwrap();
     assert_eq!(hist.len(), 1);
     assert_eq!(hist[0].outcome, VerdictKind::ParameterUpdate);
     assert_eq!(hist[0].new_version, Some(2));
     // 1.3 + 2x at x = 2
-    assert!((db.evaluate_law("ohm", 2.0).unwrap() - 5.3).abs() < 1e-12);
+    assert!((db.evaluate_law("ohm", 2.0).unwrap().value - 5.3).abs() < 1e-12);
 }
 
 #[cfg(feature = "fs")]
@@ -150,7 +154,7 @@ fn file_backend_survives_blob_compaction() {
     let db = AliceDB::open(dir.path()).unwrap();
     assert_parts_bit_identical(
         &line_law().to_parts(),
-        &db.get_law("ohm").unwrap().unwrap().to_parts(),
+        &db.get_law("ohm").unwrap().unwrap().law.to_parts(),
     );
 }
 
@@ -161,10 +165,10 @@ fn evaluate_inside_range_matches_the_line() {
     let db = memory_db();
     db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     // 1 + 2 · 2.5 = 6 (a condition that was not measured)
-    assert!((db.evaluate_law("ohm", 2.5).unwrap() - 6.0).abs() < 1e-12);
+    assert!((db.evaluate_law("ohm", 2.5).unwrap().value - 6.0).abs() < 1e-12);
     // the closed bounds are inside
-    assert!((db.evaluate_law("ohm", 0.0).unwrap() - 1.0).abs() < 1e-12);
-    assert!((db.evaluate_law("ohm", 4.0).unwrap() - 9.0).abs() < 1e-12);
+    assert!((db.evaluate_law("ohm", 0.0).unwrap().value - 1.0).abs() < 1e-12);
+    assert!((db.evaluate_law("ohm", 4.0).unwrap().value - 9.0).abs() < 1e-12);
 }
 
 #[test]
@@ -302,11 +306,11 @@ fn parameter_update_keeps_the_old_version_readable() {
     };
     assert_eq!(db.law_versions("ohm").unwrap(), vec![1, 2]);
     // latest = the refitted law, 1.3 + 2x
-    let latest = db.get_law("ohm").unwrap().unwrap();
+    let latest = db.get_law("ohm").unwrap().unwrap().law;
     assert_parts_bit_identical(&updated.to_parts(), &latest.to_parts());
     assert!((latest.evaluate(0.0).unwrap() - 1.3).abs() < 1e-12);
     // version 1 is unchanged, 1 + 2x
-    let v1 = db.get_law_version("ohm", 1).unwrap().unwrap();
+    let v1 = db.get_law_version("ohm", 1).unwrap().unwrap().law;
     assert_parts_bit_identical(&law.to_parts(), &v1.to_parts());
     assert!((v1.evaluate(0.0).unwrap() - 1.0).abs() < 1e-12);
     assert!(db.get_law_version("ohm", 3).unwrap().is_none());
@@ -332,7 +336,7 @@ fn put_law_on_an_existing_name_adds_a_version() {
     assert_eq!(db.put_law("ohm", &other, &SEMANTICS).unwrap(), 2);
     assert_eq!(db.law_versions("ohm").unwrap(), vec![1, 2]);
     // x² at 1.5
-    assert!((db.evaluate_law("ohm", 1.5).unwrap() - 2.25).abs() < 1e-12);
+    assert!((db.evaluate_law("ohm", 1.5).unwrap().value - 2.25).abs() < 1e-12);
 }
 
 #[test]
@@ -376,7 +380,7 @@ fn a_flipped_byte_is_rejected_by_the_checksum() {
 #[test]
 fn a_truncated_record_is_rejected() {
     let parts = line_law().to_parts();
-    let rec = encode_law_record("ohm", 1, &parts).unwrap();
+    let rec = encode_law_record("ohm", 1, &parts, &SEMANTICS).unwrap();
     for cut in [0, 1, 8, 12, rec.len() / 2, rec.len() - 1] {
         assert!(
             matches!(
@@ -402,7 +406,7 @@ fn a_forged_record_with_evidence_outside_the_domain_is_rejected() {
     db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     let mut parts = line_law().to_parts();
     parts.evidence.push((7.0, 15.0)); // domain stays [0, 4]
-    let forged = encode_law_record("ohm", 1, &parts).unwrap();
+    let forged = encode_law_record("ohm", 1, &parts, &SEMANTICS).unwrap();
     db.put_blob(&law_version_key("ohm", 1).unwrap(), &forged)
         .unwrap();
     assert!(matches!(
@@ -417,7 +421,7 @@ fn a_forged_record_with_a_non_finite_coefficient_is_rejected() {
     db.put_law("ohm", &line_law(), &SEMANTICS).unwrap();
     let mut parts = line_law().to_parts();
     parts.coefficients[0] = f64::NAN;
-    let forged = encode_law_record("ohm", 1, &parts).unwrap();
+    let forged = encode_law_record("ohm", 1, &parts, &SEMANTICS).unwrap();
     db.put_blob(&law_version_key("ohm", 1).unwrap(), &forged)
         .unwrap();
     assert!(matches!(
@@ -456,8 +460,9 @@ fn stored_residual_is_not_trusted() {
     parts.evidence[4].1 = 10.0;
     parts.residual.rms = 0.0;
     parts.residual.max_abs = 0.0;
-    let rec = encode_law_record("ohm", 1, &parts).unwrap();
-    let (name, version, decoded) = decode_law_record(&rec).unwrap();
+    let rec = encode_law_record("ohm", 1, &parts, &SEMANTICS).unwrap();
+    let (name, version, decoded, semantics) = decode_law_record(&rec).unwrap();
+    assert_eq!(semantics, Some(SEMANTICS));
     assert_eq!((name.as_str(), version), ("ohm", 1));
     let law = SignalLaw::from_parts(decoded).unwrap();
     assert!((law.residual().rms - (0.2_f64).sqrt()).abs() < 1e-12);
@@ -588,15 +593,16 @@ fn crc_reference_matches_the_check_value() {
 /// truncated before anything is allocated for them
 #[test]
 fn a_forged_huge_count_is_refused_without_allocating() {
-    let rec = encode_law_record("ohm", 1, &line_law().to_parts()).unwrap();
-    // magic 8 + format 4 + name length 4 + "ohm" 3 + version 8 = 27
+    let rec = encode_law_record("ohm", 1, &line_law().to_parts(), &SEMANTICS).unwrap();
+    // magic 8 + format 4 + name length 4 + "ohm" 3 + version 8 + semantics
+    // identifier 32 = 59
     let mut body = rec[..rec.len() - 4].to_vec();
     assert_eq!(
-        &body[27..31],
+        &body[59..63],
         &2u32.to_le_bytes(),
         "two coefficients of a line"
     );
-    body[27..31].copy_from_slice(&u32::MAX.to_le_bytes());
+    body[59..63].copy_from_slice(&u32::MAX.to_le_bytes());
     let crc = crc32_ieee(&body);
     body.extend_from_slice(&crc.to_le_bytes());
     assert!(matches!(
@@ -604,11 +610,11 @@ fn a_forged_huge_count_is_refused_without_allocating() {
         Err(LawStoreError::Corrupt(_))
     ));
 
-    // evidence count (u64) after 27 + coefficient count 4 + 2 coefficients 16
-    // + domain 16 = 63: u64::MAX points of 16 bytes exceed any allocation
+    // evidence count (u64) after 59 + coefficient count 4 + 2 coefficients 16
+    // + domain 16 = 95: u64::MAX points of 16 bytes exceed any allocation
     let mut body = rec[..rec.len() - 4].to_vec();
-    assert_eq!(&body[63..71], &5u64.to_le_bytes(), "five evidence points");
-    body[63..71].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert_eq!(&body[95..103], &5u64.to_le_bytes(), "five evidence points");
+    body[95..103].copy_from_slice(&u64::MAX.to_le_bytes());
     let crc = crc32_ieee(&body);
     body.extend_from_slice(&crc.to_le_bytes());
     assert!(matches!(
@@ -687,7 +693,7 @@ fn reseal(rec: &[u8], at: usize, new: &[u8], extra: &[u8]) -> Vec<u8> {
 
 #[test]
 fn sealed_records_with_a_wrong_header_or_tail_are_refused() {
-    let rec = encode_law_record("ohm", 1, &line_law().to_parts()).unwrap();
+    let rec = encode_law_record("ohm", 1, &line_law().to_parts(), &SEMANTICS).unwrap();
     // the untouched re-seal decodes (the helper itself is sound)
     assert!(decode_law_record(&reseal(&rec, 0, &rec[..1], b"")).is_ok());
     // magic of a verdict record
@@ -695,9 +701,9 @@ fn sealed_records_with_a_wrong_header_or_tail_are_refused() {
         decode_law_record(&reseal(&rec, 0, b"ALAWVRD\x01", b"")),
         Err(LawStoreError::Corrupt(_))
     ));
-    // format 2
+    // format 3, which no reader of this crate knows
     assert!(matches!(
-        decode_law_record(&reseal(&rec, 8, &2u32.to_le_bytes(), b"")),
+        decode_law_record(&reseal(&rec, 8, &3u32.to_le_bytes(), b"")),
         Err(LawStoreError::Corrupt(_))
     ));
     // one byte after the last field

@@ -246,6 +246,11 @@ fn compaction_while_other_threads_read() {
         .map(|_| {
             let db = Arc::clone(&db);
             let stop = Arc::clone(&stop);
+            #[allow(
+                clippy::disallowed_methods,
+                clippy::disallowed_types,
+                reason = "a concurrency test: the threads exercise the store's locking and are joined; no Law value is combined across them (ALICE-Law G13)"
+            )]
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     for i in 0_u8..20 {

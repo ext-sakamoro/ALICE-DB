@@ -47,6 +47,11 @@ const DEADLINE: Duration = Duration::from_secs(3);
 /// with a failure when it does not return before [`DEADLINE`].
 fn within_deadline<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = mpsc::channel();
+    #[allow(
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        reason = "runs one case on a thread to enforce a deadline; one thread, joined, nothing combined (ALICE-Law G13)"
+    )]
     let handle = std::thread::spawn(move || {
         let _ = tx.send(f());
     });

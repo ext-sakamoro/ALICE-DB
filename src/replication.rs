@@ -6,7 +6,7 @@
 //!
 //! Author: Moroya Sakamoto
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 // ============================================================================
 // 型定義
@@ -155,9 +155,9 @@ pub struct RaftNode {
     /// クラスタメンバー。
     pub peers: Vec<NodeId>,
     /// リーダーが管理: 各フォロワーの次送信インデックス。
-    pub next_index: HashMap<NodeId, LogIndex>,
+    pub next_index: BTreeMap<NodeId, LogIndex>,
     /// リーダーが管理: 各フォロワーの一致確認済みインデックス。
-    pub match_index: HashMap<NodeId, LogIndex>,
+    pub match_index: BTreeMap<NodeId, LogIndex>,
     /// 受信した投票数 (候補者時)。
     pub votes_received: usize,
     /// 現在のリーダー ID。
@@ -175,8 +175,8 @@ impl RaftNode {
             commit_index: LogIndex(0),
             last_applied: LogIndex(0),
             peers,
-            next_index: HashMap::new(),
-            match_index: HashMap::new(),
+            next_index: BTreeMap::new(),
+            match_index: BTreeMap::new(),
             votes_received: 0,
             leader_id: None,
         }

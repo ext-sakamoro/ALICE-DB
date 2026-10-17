@@ -1,0 +1,13 @@
+# scripts/order_guard.py (ALICE-Law G13): production sites whose order cannot
+# reach a Law-bearing output, with the exact line count, the SHA-256 of each
+# allowed line (stripped, in file order; the comment shows the line) and the reason
+[allow]
+"src/memtable.rs::parallel" = { count = 1, lines = [
+    "6fc7a451fae4e5d89a8fe2edfbdbff45dfc1886504343cca733d407e1c316ca6", # let (poly_result, fourier_result) = rayon::join(
+], reason = "rayon::join runs the polynomial and the Fourier fit of the same values side by side and returns both; the candidates are compared afterwards in a fixed order, no reduction combines partial results in completion order" }
+"src/storage_engine.rs::threads" = { count = 2, lines = [
+    "05f570494984af52d02c5106141dc0bc0308feec684510d205aea21f2a3d0a40", # flush_handle: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
+    "d0537eaaf6557d4230f3090921ac849576cab471eb3ebacc7f0ae30daf0c6798", # let handle = std::thread::Builder::new()
+], reason = "the single background flush thread (enable_background_flush): it takes flush jobs from a bounded channel in send order and writes each segment; no value is combined across threads" }
+"Cargo.toml::crossbeam-channel" = { reason = "the bounded FIFO channel of the single background flush thread (src/storage_engine.rs): jobs are taken in send order" }
+"Cargo.toml::rayon" = { reason = "rayon::join in src/memtable.rs only (the entry above): two independent fits, compared in a fixed order" }

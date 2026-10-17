@@ -113,6 +113,11 @@ fn concurrent_writers_do_not_corrupt_state() {
     let threads = 8;
     let per_thread = 64;
 
+    #[allow(
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        reason = "a concurrency test: the threads exercise the store's locking and are joined; no Law value is combined across them (ALICE-Law G13)"
+    )]
     let handles: Vec<_> = (0..threads)
         .map(|t| {
             let db = Arc::clone(&db);

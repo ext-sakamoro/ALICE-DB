@@ -4,25 +4,28 @@
 //! the decisions this crate computes itself: which model a segment stores and
 //! what it reads back, the aggregates over stored values, the size of a
 //! bloom filter and the identifiers and values of stored laws. This module folds those digests, plus the semantics
-//! identifier of `alice-zip` (whose models and laws this crate stores and
-//! evaluates), into one 32-byte value. Two builds with the same identifier
+//! identifiers of `alice-zip` (whose models and laws this crate stores and
+//! evaluates) and of `alice-det-math` (the transcendental functions the models
+//! are evaluated with), into one 32-byte value. Two builds with the same identifier
 //! compute every pinned scenario to the same bits; a build that computes any
 //! of them differently has a different value.
 //!
-//! `alice-zip`'s identifier is itself a fold of `alice-det-math`'s (the
-//! transcendental functions the models are evaluated with) and of its own
-//! pinned outputs, so the `alice-det-math` generation is covered through it:
-//! each `alice-det-math` identifier maps to one `alice-zip` identifier
-//! (`tests/db_semantics_id.rs` pins that the resolved one is reachable).
+//! `alice-zip`'s identifier is itself a fold of `alice-det-math`'s and of its
+//! own pinned outputs, and each `alice-det-math` identifier maps to one
+//! `alice-zip` identifier (`tests/db_semantics_id.rs` pins that the resolved
+//! one is reachable), so the `alice-zip` row of [`DB_SEMANTICS_BY_ZIP`] fixes
+//! both. The `alice-det-math` entry is folded as well, so that the table names
+//! every generation the identifier depends on (each ALICE crate's pins hold the
+//! `alice-det-math` it linked, once) and folding the table gives the identifier.
 //!
 //! [`crate::SEMANTICS_ID`] is a different identifier: the arithmetic a stored
 //! residual or law record was measured against (`alice-zip`'s), which is what a
 //! reader compares a stored value with.
 //!
-//! # Hex form (with `alice-zip` 0.11)
+//! # Hex form (with `alice-zip` 0.11 over `alice-det-math` 0.5.1)
 //!
 //! ```text
-//! e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce
+//! da19695fde5394a1136def273ea18c459e28146fd6864ff06c49841a876a2a2b
 //! ```
 //!
 //! # Fold
@@ -48,7 +51,8 @@
 //!
 //! `tests/db_semantics_id.rs` reads every digest from the golden test that
 //! records it (the source, not a copy), checks that the alice-zip entry equals
-//! `alice_core::law::SEMANTICS_ID` and recomputes the fold. Re-recording order
+//! `alice_core::law::SEMANTICS_ID` and the alice-det-math entry
+//! `alice_det_math::SEMANTICS_ID`, and recomputes the fold. Re-recording order
 //! after an intended change: update the golden first, then the entry here,
 //! then the identifier.
 
@@ -75,7 +79,8 @@ const fn hex32(s: &str) -> [u8; 32] {
 
 /// The entries [`DB_SEMANTICS_ID`] folds: one per recorded-bit scenario of
 /// `tests/determinism_golden.rs`, named as that file names it, with its
-/// SHA-256 golden, plus `"alice-zip"` holding `alice_core::law::SEMANTICS_ID`.
+/// SHA-256 golden, plus `"alice-zip"` holding `alice_core::law::SEMANTICS_ID`
+/// and `"alice-det-math"` holding `alice_det_math::SEMANTICS_ID`.
 pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
     (
         "model selection",
@@ -100,6 +105,9 @@ pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
     // the resolved alice-zip's own identifier, not a copy of it: the
     // identifier below is looked up by it
     ("alice-zip", alice_core::law::SEMANTICS_ID),
+    // the linked alice-det-math's identifier: alice-zip's folds it already, and
+    // it is listed so that the table describes everything the identifier folds
+    ("alice-det-math", alice_det_math::SEMANTICS_ID),
 ];
 
 /// The crate version and toolchain the pins of [`DB_SEMANTICS_PINS`] were last
@@ -118,7 +126,7 @@ pub const DB_SEMANTICS_BY_ZIP: &[([u8; 32], [u8; 32])] = &[
     // alice-zip 0.11 (over alice-det-math 0.5.1)
     (
         hex32("51ffeb079769ea34bd3cb3df756b6cb940b8d2d6a6a0f1e1115ab8139415935e"),
-        hex32("e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce"),
+        hex32("da19695fde5394a1136def273ea18c459e28146fd6864ff06c49841a876a2a2b"),
     ),
 ];
 
@@ -126,8 +134,8 @@ pub const DB_SEMANTICS_BY_ZIP: &[([u8; 32], [u8; 32])] = &[
 /// [`DB_SEMANTICS_PINS`] described in the [module documentation](self),
 /// taken from [`DB_SEMANTICS_BY_ZIP`] by the resolved `alice-zip`.
 ///
-/// Hex (with `alice-zip` 0.11):
-/// `e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce`.
+/// Hex (with `alice-zip` 0.11 over `alice-det-math` 0.5.1):
+/// `da19695fde5394a1136def273ea18c459e28146fd6864ff06c49841a876a2a2b`.
 pub const DB_SEMANTICS_ID: [u8; 32] = semantics_id_for(&alice_core::law::SEMANTICS_ID);
 
 /// The [`DB_SEMANTICS_ID`] of a build that resolved the `alice-zip` with

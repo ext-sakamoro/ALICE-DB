@@ -330,7 +330,7 @@ fn every_entry_is_the_golden_its_scenario_records() {
     let goldens = recorded_goldens();
     let mut compared = 0;
     for (name, digest) in DB_SEMANTICS_PINS {
-        if *name == "alice-zip" {
+        if *name == "alice-zip" || *name == "alice-det-math" {
             continue;
         }
         let recorded = goldens.get(*name).unwrap_or_else(|| {
@@ -365,12 +365,18 @@ fn the_zip_entry_is_the_zip_identifier() {
         .find(|(name, _)| *name == "alice-zip")
         .expect("an alice-zip entry");
     assert_eq!(entry.1, alice_core::law::SEMANTICS_ID);
-    assert!(
-        !DB_SEMANTICS_PINS
-            .iter()
-            .any(|(name, _)| *name == "alice-det-math"),
-        "alice-det-math is covered through alice-zip's identifier, not folded twice"
-    );
+}
+
+/// The table names the alice-det-math this build linked, once, so that the
+/// pins describe every generation the identifier folds
+#[test]
+fn the_det_math_entry_is_the_linked_det_math_identifier() {
+    let entries: Vec<_> = DB_SEMANTICS_PINS
+        .iter()
+        .filter(|(name, _)| *name == "alice-det-math")
+        .collect();
+    assert_eq!(entries.len(), 1, "one alice-det-math entry");
+    assert_eq!(entries[0].1, alice_det_math::SEMANTICS_ID);
 }
 
 /// The alice-det-math generation is covered through alice-zip's identifier:
@@ -419,9 +425,11 @@ fn the_identifier_is_the_recorded_value() {
     assert_eq!(
         hex(&DB_SEMANTICS_ID),
         // the fold recomputed outside this toolchain from the documented
-        // procedure, which also reproduces the previous aab1eb3d… from the
-        // previous table (alice-det-math entry, law digest 703f17b1…)
-        "e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce"
+        // procedure, which also reproduces the previous e1a82c64… from the
+        // previous table (alice-zip entry without the alice-det-math entry)
+        // and aab1eb3d… from the one before (alice-det-math entry, law digest
+        // 703f17b1…)
+        "da19695fde5394a1136def273ea18c459e28146fd6864ff06c49841a876a2a2b"
     );
 }
 

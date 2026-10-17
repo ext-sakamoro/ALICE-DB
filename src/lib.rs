@@ -254,18 +254,20 @@ pub mod ffi;
 /// [`semantics::DB_SEMANTICS_ID`].
 pub use alice_core::law::SEMANTICS_ID;
 
+/// Earlier values of [`SEMANTICS_ID`] whose stamps still read back exact (alice-zip's
+/// `law::PREVIOUS_SEMANTICS_IDS`): up to alice-zip 0.10 that identifier was
+/// `alice-det-math`'s, so data this crate stamped through 0.6.0's predecessors carries
+/// `85e08846…` (alice-det-math 0.5.1) or `135c407d…` (0.5.0) and reads back as
+/// [`segment::ReadStatus::VerifiedPrevious`].
+pub use alice_core::law::PREVIOUS_SEMANTICS_IDS;
+
 // Residuals and law records are stamped with [`SEMANTICS_ID`] (alice-zip's
-// `law::SEMANTICS_ID`) and checked on read with `alice_det_math::check_semantics`,
-// which compares with `alice_det_math::SEMANTICS_ID`. That holds only while the two
-// are one identifier (alice-zip up to 0.10 re-exports alice-det-math's). A build
-// against an alice-zip that names its own identifier would read every stamp it wrote
-// as a mismatch (and report the stamp as the running identifier), so it does not
-// compile: its reads must move to alice-zip's own check first.
-const _: () = assert!(
-    semantics::same32(&SEMANTICS_ID, &alice_det_math::SEMANTICS_ID),
-    "alice-zip's law::SEMANTICS_ID is not alice-det-math's: the stamps would not pass \
-     alice_det_math::check_semantics; move the reads to alice-zip's check"
-);
+// `law::SEMANTICS_ID`) and checked on read with alice-zip's own
+// `law::check_semantics`, so the stamp and the check name one identifier. From
+// alice-zip 0.11 that identifier is alice-zip's (it folds alice-det-math's with its
+// own pinned outputs); data stamped by earlier releases carries alice-det-math's
+// identifier, which `law::PREVIOUS_SEMANTICS_IDS` lists, so it reads back as
+// `ReadStatus::VerifiedPrevious`.
 #[cfg(feature = "analytics")]
 pub use analytics_bridge::{
     flush_metrics_to_db, metric_key, metric_name_hash, read_metric, scan_metric, AnalyticsSink,

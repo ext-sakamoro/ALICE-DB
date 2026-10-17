@@ -5,16 +5,29 @@ package = "alice-db"
 manifest = "Cargo.toml"
 tags = ["v{version}"]
 probe-dependencies = ["alice-det-math"]
+# the features rustdoc reads (completeness) and the previous-tests run with: every feature but
+# python, whose extension-module build of pyo3 does not link a test binary (it defines no
+# [u8; 32] constant)
+doc-features = ["fs", "ffi", "sdf", "analytics", "crypto", "open-file-audit"]
+
+[exempt]
+PREVIOUS_SEMANTICS_IDS = "alice-zip's previous-identifier list, re-exported as the previous list of the SEMANTICS_ID [[id]] below (not an identifier itself): its entries are checked there"
 
 [[id]]
 path = "alice_db::semantics::DB_SEMANTICS_ID"
 
 [[id]]
 # the identifier every lossless residual and law record is stamped with (a re-export of
-# alice-zip's law::SEMANTICS_ID, asserted equal to alice-det-math's in lib.rs); readers accept
-# it or one of alice-det-math's previous identifiers
+# alice-zip's law::SEMANTICS_ID); readers check it with alice-zip's law::check_semantics, which
+# accepts it or one of alice-zip's previous identifiers (alice-det-math's, stamped up to 0.10)
 path = "alice_db::SEMANTICS_ID"
-previous = "alice_det_math::PREVIOUS_SEMANTICS_IDS"
+previous = "alice_db::PREVIOUS_SEMANTICS_IDS"
+# the tests that read data stamped with a previous identifier back exact: each must pass, and
+# fail once the old value is taken out of the list
+previous-tests = [
+    "tests/previous_identifier_store.rs::values_written_before_alice_zip_0_11_read_back_exact_as_verified_previous",
+    "tests/determinism_golden.rs::law_id_under_the_previous_identifiers_is_unchanged",
+]
 
 [[id]]
 # the Bloom filter position derivation stamped in every format v4 SSTable (src/bloom.rs); a

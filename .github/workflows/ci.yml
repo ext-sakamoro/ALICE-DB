@@ -47,6 +47,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       # the toolchain itself comes from rust-toolchain.toml
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -56,10 +57,10 @@ jobs:
       # same on every OS and in every feature set, so it is named in each step.
       - name: Test (default = file backend)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,residual_unpinned_store=5,verdict_record_semantics=3,bloom_fixed_hash=4,nonfinite_exact=5,residual_base_finite=3 -- cargo test
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,residual_unpinned_store=5,verdict_record_semantics=3,bloom_fixed_hash=4,nonfinite_exact=5,residual_base_finite=3,previous_identifier_store=5,stamp_is_checked_id=3 -- cargo test
       - name: Test (full native feature set)
         shell: bash
-        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,residual_unpinned_store=5,verdict_record_semantics=3,bloom_fixed_hash=4,nonfinite_exact=5,residual_base_finite=3 -- cargo test --features "$NATIVE_FEATURES"
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,residual_unpinned_store=5,verdict_record_semantics=3,bloom_fixed_hash=4,nonfinite_exact=5,residual_base_finite=3,previous_identifier_store=5,stamp_is_checked_id=3 -- cargo test --features "$NATIVE_FEATURES"
       - name: Test (no default features = memory backend only)
         shell: bash
         run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,verdict_record_semantics=3 -- cargo test --no-default-features
@@ -96,6 +97,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
         with:
           targets: wasm32-unknown-unknown
@@ -120,6 +122,7 @@ jobs:
           persist-credentials: false
           # the release tags: scripts/id_move_check.py compares with the newest one
           fetch-depth: 0
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
         with:
           components: clippy
@@ -184,6 +187,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@91c3abd82c08dd9739cd868596bc2f9e426bd28e # 1.87 (branch, installs 1.87.0)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # library only: the dev-dependencies follow their own MSRV
@@ -200,6 +204,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cargo-hack
@@ -216,6 +221,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo doc (no-deps, default features)
@@ -242,6 +248,7 @@ jobs:
           persist-credentials: false
           # the online pin step compares with the commit before the push
           fetch-depth: 0
+      - uses: ./.github/actions/alice-siblings
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
@@ -292,6 +299,12 @@ jobs:
         run: python scripts/test_tracked_binaries.py
       - name: No built binary is tracked (0 files read fails)
         run: python scripts/tracked_binaries.py
+      # the ../ALICE-* path dependencies (alice-zip until 0.11 is on crates.io): the clones are the
+      # commits in .github/alice-siblings (the action above), and preflight runs the same check locally
+      - name: ALICE sibling check (tests)
+        run: python scripts/test_alice_siblings_check.py
+      - name: ALICE sibling check (the clones are .github/alice-siblings)
+        run: python scripts/alice_siblings_check.py
       # ALICE-Law G5: release-profile.yml requires the same test binaries as the test job
       - name: Release legs require the same binaries (test, then check)
         run: |
@@ -333,6 +346,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -362,6 +376,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
         with:
           components: rustfmt

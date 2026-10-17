@@ -30,6 +30,11 @@ on:
       - 'scripts/stub_guard.sh'
       - 'scripts/changed_paths.py'
       - '.github/paths/security-audit.txt'
+      - '.github/alice-siblings'
+      - '.github/actions/alice-siblings/**'
+      - 'scripts/package_integrity.py'
+      - 'scripts/test_package_integrity.py'
+      - 'scripts/alice_siblings_check.py'
   schedule:
     # every Monday 09:00 UTC
     - cron: '0 9 * * 1'
@@ -91,6 +96,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cargo-audit
@@ -123,6 +129,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - name: Install cargo-deny
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
@@ -140,6 +147,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - name: Install cargo-machete
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
@@ -168,64 +176,37 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
 
-      # 依存はすべて crates.io の version 要求なので、隔離 build は公開済の実物を引く
-      # (= 宣言した version 要求が publish 済 version と噛み合うかまで検査される)
-      # publish される .crate に必要な file が全部入っているかを見る
+      # the published .crate builds on its own (scripts/package_integrity.py, the same file in
+      # every crate that takes an unpublished ALICE sibling by path): it packages the crate,
+      # unpacks it and builds it standalone with the shipped lock and with a fresh resolution;
+      # a dependency only an unpublished sibling satisfies (alice-zip 0.11 today) is built
+      # against that sibling and reported as blocked, and the publish gate refuses it
       #
-      # include_str! / include_bytes! が package 境界を越える、exclude を効かせ過ぎる、
-      # 必要 file が漏れる — これらは repo / workspace に file がある限り
-      # cargo build も cargo test も clippy も preflight も全部通り、
-      # crates.io から取得した利用者だけが compile 不能になる
-      - name: cargo package (.crate を作る)
-        run: cargo package --no-verify --allow-dirty
-
-      # このcrateの file ではないもの (CI 設定 / script / fuzz / 設計メモ) が
-      # .crate に入っていないこと 件数 0 の比較は fail (空振り防止)
-      - name: package 内容 (このcrateの file のみ)
-        run: |
-          set -euo pipefail
-          cargo package --list --allow-dirty > /tmp/package-files.txt
-          total=$(wc -l < /tmp/package-files.txt)
-          [ "$total" -gt 0 ] || { echo "::error::package 一覧が空 (検査が空振り)"; exit 1; }
-          if grep -E '^(\.github|docs|scripts|fuzz)/' /tmp/package-files.txt; then
-            echo "::error::このcrateの file ではないものが package に入っている (Cargo.toml の include を確認)"
-            exit 1
-          fi
-          # README の doctest 入力 (src/lib.rs の cfg(doctest) include_str!) と test fixture
-          for f in README.md README_JP.md tests/fixtures/store_det_math_0_4/seg_1.rkyv; do
-            grep -qx "$f" /tmp/package-files.txt || { echo "::error::$f が package に無い"; exit 1; }
-          done
-          echo "package files: $total"
-
-      - name: 展開して隔離 build
-        run: |
-          set -euo pipefail
-          crate=$(find target/package -maxdepth 1 -name '*.crate' | head -1)
-          [ -n "$crate" ] || { echo "::error::.crate が生成されていない"; exit 1; }
-          echo "packaged: $(basename "$crate") ($(du -h "$crate" | cut -f1))"
-          tmp=$(mktemp -d)
-          tar xzf "$crate" -C "$tmp"
-          cd "$tmp"/*/
-          # 親 workspace を継承すると member 扱いになり、境界を越えた file が
-          # 再び見えてしまう (検査の意味が消える) ので単独 package として build
-          printf '\n[workspace]\n' >> Cargo.toml
-          cargo check --all-features --all-targets
-          # README の doctest は cfg(doctest) の include_str! なので、README が
-          # package から漏れても cargo check では見えない
-          doc=$(cargo test --doc 2>&1 | tee /dev/stderr | sed -n 's/^running \([0-9]*\) tests\?$/\1/p' | head -1)
-          [ "${doc:-0}" -gt 0 ] || { echo "::error::doctest が 0 件 (README の doctest が走っていない)"; exit 1; }
-          # fixture (tests/fixtures) を実際に読む test と、open-file-audit が要る test を
-          # 展開した crate で走らせる (単独 package には dev の self 依存が無いので feature を明示)
-          cargo test --features open-file-audit --test residual_arithmetic --test blob_compaction_crash_safety
-          # 利用者は .crate 同梱の Cargo.lock を使わず依存を新たに解決する 同梱 lock の
-          # ままでは、直接依存と依存先 (例: numpy が使う ndarray) の版が食い違っても
-          # 同じ版に揃って見えて compile が通る lock を外して lib を全 feature で check
-          rm Cargo.lock
-          cargo check --lib --all-features
-          grep -q '^name = "numpy"$' Cargo.lock || { echo "::error::lock 無しの check で numpy が解決されていない (python feature が検査されていない)"; exit 1; }
-
+      # include_str! / include_bytes! crossing the package boundary, an over-wide exclude or a
+      # missing file pass cargo build / test / clippy / preflight in the repository and fail
+      # only for users of the published crate
+      - name: Package integrity (tests)
+        run: python3 scripts/test_package_integrity.py
+      # the package holds only this crate's files, and the README doctest input (src/lib.rs
+      # cfg(doctest) include_str!) and the fixtures the packaged tests read; the README doctest
+      # runs in the unpacked crate (a README left out of the package is not seen by cargo
+      # check); the fixture-reading and open-file-audit tests run there too (the standalone
+      # package has no dev self-dependency, so the feature is named); the fresh resolution
+      # checks the library with every feature and must resolve numpy (the python feature)
+      - name: Package integrity (the .crate builds on its own)
+        run: >-
+          python3 scripts/package_integrity.py
+          --forbid-prefix .github/ --forbid-prefix docs/ --forbid-prefix scripts/ --forbid-prefix fuzz/
+          --require-file README.md --require-file README_JP.md
+          --require-file tests/fixtures/store_det_math_0_4/seg_1.rkyv
+          --doctests-min 1
+          "--test-in-package=--features open-file-audit --test residual_arithmetic --test blob_compaction_crash_safety"
+          "--locked-check-args=--all-features --all-targets"
+          "--check-args=--lib --all-features"
+          --expect-in-lock numpy
   coverage:
     needs: changes
     if: needs.changes.outputs.run == 'true'
@@ -236,6 +217,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
         with:
           components: llvm-tools-preview

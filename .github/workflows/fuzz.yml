@@ -32,6 +32,8 @@ on:
       - 'scripts/changed_paths.py'
       - '.github/workflows/fuzz.yml'
       - '.github/paths/fuzz.txt'
+      - '.github/alice-siblings'
+      - '.github/actions/alice-siblings/**'
   schedule:
     # 毎日 03:00 UTC = 12:00 JST (idle 時間帯)
     - cron: '0 3 * * *'
@@ -108,6 +110,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/alice-siblings
       # cargo-fuzz は nightly toolchain 必須
       - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@f0d5300ba8908d942c808f4d31c08471d7798ba3 # nightly (branch, default toolchain nightly)

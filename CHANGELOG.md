@@ -36,6 +36,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- `scripts/run_tests.sh` は `Doc-tests <crate>` の結果を最後に走った試験 binary に足していた (`verdict_record_semantics` が 3 件のところ 12 件と数えられ、`=3` の下限が doctest の件数で満たされていた) doctest は独自の節として数えて要約に `N doctests` と出し、節の見出しは cargo の字下げの後でだけ認める (試験の出力に出た `Running` で数え先が移らない) 試験は binary 複数 + doctest の log を再生し、旧版で red になることを確かめた
 - 残差と法則の記録の識別子の不一致 (`ResidualMismatch` / `ResidualStatus::Mismatch` / `LawStoreError::LawRecordMismatch`) は、`running` に読みが実際に比べた識別子 (`alice_det_math::SEMANTICS_ID`) を入れる これまでは印に使う `alice-zip` の `law::SEMANTICS_ID` を入れていたので、両者が別の値になる `alice-zip` で build すると `stored` と `running` が同じ値の不一致を報告した 印 (`SEMANTICS_ID`) が `alice_det_math::check_semantics` の受け取る識別子であることは compile 時の assert で固定し、違う `alice-zip` (自分の識別子を持つ 0.11) では build が止まる 試験 `a_mismatch_reports_the_identifier_the_read_compared_with` (`tests/legacy_segment_compat.rs`)
 
 ## [0.5.1] - 2026-10-15

@@ -278,16 +278,16 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | 保存時暗号化 (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | 組込み機器でのモデル当てはめ |
 
-<!-- law-integration:begin law=5c6363312520f9991837e519bab14909ccf6f2b3 -->
+<!-- law-integration:begin law=68dc0c3c26591798325f73da79762b95d2d663ae -->
 ## ALICE-Law との統合
 
-ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
+ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
 
 | | |
 |---|---|
-| release train | alice-db 0.4.0 (published)、Law への依存: あり |
-| 算術 | train の alice-det-math 0.5.0、算術の識別子 `135c407d4249c1c200e4d1be79a12e848ce5c355fc3a918da965849e697ef000` この crate の要求は `alice-det-math = "0.5.1"` |
-| end to end 検査 | 対象 (`alice-db = "0.4"`)、digest `966a78784bb4e3341ac6627d519db896f398176b71c2402b188294db6c8e3728`、aarch64 と x86_64 で同じ |
+| release train | alice-db 0.5.1 (published)、Law への依存: あり |
+| 算術 | train の alice-det-math 0.5.1、算術の識別子 `85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315` この crate の要求は `alice-det-math = "0.5.1"` |
+| end to end 検査 | 対象 (`alice-db = "0.5"`)、digest `9f7cf676708a272e3817ebbf0727c610f391e1547747af4307ee44d5523267c2`、aarch64 と x86_64 で同じ |
 
 ### 適合 (G1-G14)
 
@@ -300,7 +300,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5c6363312520` と
 | G5 release-profile-test-leg | 未達 | unmet: the release leg exists, on aarch64 (macos-latest), but runs only two test binaries: .github/workflows/release-profile.yml line 52 is `cargo test … |
 | G6 semantics-id | 適合 | alice-db computes its own identifier, DB_SEMANTICS_ID (aab1eb3d...51162f with alice-det-math 0.5.1), from the bits of the decisions it computes itself and the … |
 | G7 handshake-carries-id | 適合 | the Law-bearing value that crosses this crate's boundary is the stored law record (alice-zip SignalLaw parts), handed over in AliceDB::to_bytes / from_bytes … |
-| G8 persisted-semantics-id | 適合 | both durable forms carry the identifier of the arithmetic the stored bytes mean: lossless segment residuals since 0.3.0 and law records since 0.6.0 (format 2). … |
+| G8 persisted-semantics-id | 未達 | unmet (located 2026-10-17): (1) residuals written before 0.3.0 (ResidualSemantics::Unpinned) are applied by the StorageEngine reads under both ResidualPolicy … |
 | G9 persisted-meaning-change-is-major | 未確認 | unverified: the audit covers the identifier this crate persists and finds no violation. Since 0.6.0 the law record carries the same arithmetic identifier as … |
 | G10 no-run-varying-artifacts | 適合 | no ambient clock or OS-entropy read is known in a Law-bearing path: scripts/entropy_guard.py reports `23 files, 10 patterns, 0 problems`, created_at is an … |
 | G11 gate-self-tests | 未達 | unmet: clause (c). scripts/clippy_canary.py, scripts/test_clippy_canary.py, scripts/gen_clippy_canary_calls.py, scripts/test_gen_clippy_canary_calls.py and … |

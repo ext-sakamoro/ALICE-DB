@@ -40,9 +40,7 @@ dependencies = [
 
 [[package]]
 name = "alice-analytics"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f88494dfa330a02ea22c5846d54ca0efe742f477db7c4894b9eaa6fb0d057e31"
+version = "0.7.0"
 dependencies = [
  "alice-det-math",
  "libm",

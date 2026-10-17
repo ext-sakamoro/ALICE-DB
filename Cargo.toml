@@ -40,12 +40,11 @@ alice_core = { package = "alice-zip", path = "../ALICE-Zip", version = ">=0.11, 
 # Every transcendental this crate evaluates itself (bloom filter sizing, model
 # selection error) goes through `alice-det-math`, whose kernels are built from
 # IEEE 754 basic operations only and so return the same bits on every target.
-# The same major as alice-zip 0.9 uses, so `alice_det_math::SEMANTICS_ID` and
-# `alice_core::law::SEMANTICS_ID` name the same arithmetic (pinned in
-# tests/determinism_golden.rs). This crate always builds with `std`.
-# 0.5.1 because alice-analytics 0.6 requires it: resolving 0.6 would otherwise
-# move the identifier under a requirement of "0.5" (0.5.0's identifier stays
-# accepted on read through `alice_det_math::PREVIOUS_SEMANTICS_IDS`).
+# The generation alice-zip folds into its own identifier, which is the one this
+# crate stamps (`alice_core::law::SEMANTICS_ID`, pinned in
+# tests/determinism_golden.rs; DB_SEMANTICS_ID is keyed by it). This crate always
+# builds with `std`. 0.5.1, the generation alice-zip 0.11 and alice-analytics
+# require.
 alice-det-math = { version = "0.5.1", default-features = false, features = ["std"] }
 
 # Zero-Copy Serialization (Phase 1)
@@ -75,7 +74,9 @@ rayon = "1.10"
 parking_lot = "0.12"
 
 # ALICE-Analytics bridge (optional)
-alice-analytics = { version = ">=0.5, <0.7", optional = true }
+# by path until 0.7 is on crates.io (CI clones it at the commit in .github/alice-siblings);
+# 0.7 only: the published 0.6 requires alice-zip 0.10, which a range accepting it would resolve
+alice-analytics = { path = "../ALICE-Analytics", version = ">=0.7, <0.8", optional = true }
 
 # ALICE-Crypto bridge (optional)
 alice-crypto = { version = "0.4", optional = true, default-features = false, features = ["std"] }

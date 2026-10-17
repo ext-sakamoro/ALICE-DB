@@ -1,6 +1,6 @@
 name: Release profile
 
-# The bit-exact goldens under the release profile (opt-level 3, no debug
+# The whole test suite under the release profile (opt-level 3, no debug
 # assertions): an optimisation that changes a stored or answered float (a
 # contracted multiply-add, a reordered sum, a lost sign of zero) is red here
 # even when the debug build in ci.yml is green. Mirrored in scripts/preflight.sh.
@@ -23,6 +23,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
+  # the full native feature set, as in ci.yml (the native leg below names it)
+  NATIVE_FEATURES: "ffi,sdf,analytics,crypto"
 
 # The token only reads the repository; a job that needs more raises it for
 # that job alone, with the reason next to it
@@ -31,14 +33,14 @@ permissions:
 
 jobs:
   release:
-    name: Release goldens (${{ matrix.os }})
+    name: Release suite (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         # aarch64: macos-latest / x86_64: ubuntu-latest
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -46,11 +48,22 @@ jobs:
       # the toolchain itself comes from rust-toolchain.toml
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # fails when no test ran, and when either golden file or the float environment test
-      # (G14: round-to-nearest-even, no flush-to-zero, in the shipped profile) ran none
-      - name: Test (release profile, goldens)
+      # ALICE-Law G5: the whole suite under the release profile, every test leg of ci.yml's test
+      # job with the same required binaries and counts (scripts/run_tests.sh fails when a
+      # named binary ran fewer tests, and when no test ran); the float environment test (G14:
+      # round-to-nearest-even, no flush-to-zero) is among them
+      - name: Test (release, default)
         shell: bash
-        run: scripts/run_tests.sh determinism_golden,float_edge_golden,float_environment=2 -- cargo test --release --test determinism_golden --test float_edge_golden --test float_environment
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,residual_unpinned_store=5,verdict_record_semantics=3 -- cargo test --release
+      - name: Test (release, full native feature set)
+        shell: bash
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,residual_unpinned_store=5,verdict_record_semantics=3 -- cargo test --release --features "$NATIVE_FEATURES"
+      - name: Test (release, no default features)
+        shell: bash
+        run: scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,verdict_record_semantics=3 -- cargo test --release --no-default-features
+      - name: Test (release, law store oracles, memory backend)
+        shell: bash
+        run: scripts/run_tests.sh law_store -- cargo test --release --no-default-features --test law_store
       # G14, dynamic half: the flags cargo really passes to rustc, read from `-v` in a
       # fresh target directory (a reused one prints Fresh without the command line),
       # for the default, all-features and no-default feature sets; fails on a

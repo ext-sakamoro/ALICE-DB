@@ -136,8 +136,11 @@ scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_com
 scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,verdict_record_semantics=3 -- cargo test --no-default-features
 scripts/run_tests.sh law_store -- cargo test --no-default-features --test law_store
 
-step "release-profile.yml / release: goldens under the release profile (fail on 0 tests)"
-scripts/run_tests.sh determinism_golden,float_edge_golden,float_environment=2 -- cargo test --release --test determinism_golden --test float_edge_golden --test float_environment
+step "release-profile.yml / release: the whole suite under the release profile (each leg of ci.yml's test job, fail on 0 tests)"
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,residual_unpinned_store=5,verdict_record_semantics=3 -- cargo test --release
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,residual_arithmetic,determinism_golden,crash_reopen_process,blob_format_pin,blob_merge_semantics,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,analytics_metrics_exact,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,residual_unpinned_store=5,verdict_record_semantics=3 -- cargo test --release --features "$NATIVE_FEATURES"
+scripts/run_tests.sh storage_backend_parity,law_single_source,legacy_segment_compat,determinism_golden,exact_series,segment_range_arith,get_reads_memtable,lossless_irregular_keys,sparse_steps_repro,query_group_by_interval,query_group_by_floor,float_edge_golden,float_environment=2,db_semantics_id,law_record_semantics,verdict_record_semantics=3 -- cargo test --release --no-default-features
+scripts/run_tests.sh law_store -- cargo test --release --no-default-features --test law_store
 python3 scripts/build_flags_check.py -- cargo check --release --lib
 python3 scripts/build_flags_check.py -- cargo check --release --lib --all-features
 python3 scripts/build_flags_check.py -- cargo check --release --lib --no-default-features

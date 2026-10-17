@@ -62,12 +62,14 @@ note = "unmet, with the test now present. (1) The signed-zero case of Aggregatio
 reference_repo = "ALICE-LOL"
 
 [G5]
-status = "fail-known"
+status = "pass"
 evidence = [
-    ".github/workflows/release-profile.yml lines 37 to 52 (release job on ubuntu-latest and macos-latest aarch64)",
+    ".github/workflows/release-profile.yml release job (matrix line 39: ubuntu-latest x86_64 and macos-latest aarch64, no paths filter, every push to main and ci/**): the whole suite under --release, one step per test leg of ci.yml's test job with the same required binaries and counts through scripts/run_tests.sh: default (line 55), the full native feature set (line 58, NATIVE_FEATURES as in ci.yml), no default features (line 61) and the law store oracles on the memory backend (line 64); a leg whose named binary ran fewer tests, or no test, fails",
+    "scripts/preflight.sh line 131 runs the same four release legs in its full part",
 ]
+mutant = "measured 2026-10-17, reverted: a Min fold that differs only under the release profile (`if cfg!(debug_assertions) { alice_det_math::min64 } else { hand-written min }` at src/query_engine.rs line 255) passes `cargo test` and fails `cargo test --release` (plain_aggregate_min_max_of_mixed_zero_is_order_independent and mixed_zero_alongside_a_third_point_still_resolves_to_ieee_minimum_maximum), so the release leg is what holds it; before this change the release job ran only determinism_golden, float_edge_golden and float_environment and missed it"
 since = ""
-note = "unmet: the release leg exists, on aarch64 (macos-latest), but runs only two test binaries: .github/workflows/release-profile.yml line 52 is `cargo test --release --test determinism_golden --test float_edge_golden`, while the debug legs run the whole suite with 16 required binaries (.github/workflows/ci.yml lines 58 to 67), so the Law-bearing tests in tests/residual_arithmetic.rs, tests/legacy_segment_compat.rs, tests/exact_series.rs, tests/law_store.rs and the library unit tests never run with --release. The job is also not required: main is not protected and the repository has no rulesets."
+note = "the aarch64 release leg is macos-latest. The repository has no branch protection; a leg is required in the sense that main moves only by a fast-forward after the verifier has seen every workflow run of the commit green by its sha, the release profile among them."
 reference_repo = "ALICE-LOL"
 
 [G6]

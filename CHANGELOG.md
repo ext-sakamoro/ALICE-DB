@@ -14,6 +14,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 
+- CI: clippy の canary の表の生成器 `scripts/gen_clippy_canary_calls.py` が generic 関数 (`std::thread::spawn` / `scope` / `Builder::spawn` / `spawn_scoped`) を turbofish 付きで植えるようにした (素の path では型が決まらず compile できないため) 他の行は byte 一致で、この repo の表は変わらない 共有 file の協調更新 (ALICE-Analytics などと同じ中身)
 - **破壊的:** 法則の記録 (`law_store`) を形式 2 にした (ALICE-Law G7 / G8) 記録は書いた時の算術の識別子 (`put_law` / `ingest_evidence` に渡す `semantics_id`) 32 byte を版の直後に持ち、読み出しは実行中の `SEMANTICS_ID` と比べる 同じなら `Current`、`alice_det_math::check_semantics` が同じ bit を再現すると確かめた以前の識別子なら `VerifiedPrevious`、それ以外は `LawRecordMismatch` で断る (識別子の不一致を識別子の無い記録として扱うことはしない) 0.5 以前の形式 1 の記録は従来どおり読め、結果は `Unpinned` になる `AliceDB::to_bytes` / `from_bytes` で別の build に渡した記録も同じ検査を通る これまで記録に識別子が無く、別の算術で書いた法則を読み手の算術でそのまま評価していた
   - 公開 API: `get_law` / `get_law_version` は `Option<SignalLaw>` から `Option<StoredLaw>` (`.law` と `.semantics`)、`evaluate_law` / `evaluate_by_id` は `f64` から `LawValue` (`.value` と `.semantics`) を返す `encode_law_record` は 4 番目の引数 `semantics_id`、`decode_law_record` は 4 番目の要素 `Option<[u8; 32]>` (形式 1 は `None`) を持つ `LAW_RECORD_FORMAT` は 1 から 2 判定の記録 (`VERDICT_RECORD_FORMAT`、1) は変えていない
   - 利用者調査 (ALICE-* の main): `alice-db` を依存に持つ 11 repo (版指定 9、path 2) のどれも `law_store` の API を呼んでいない 版を 0.5.1 から 0.6.0 に

@@ -2,8 +2,13 @@
 """Tests for scripts/clippy_external_coverage.py (synthetic rustdoc JSON, no cargo run)."""
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -130,6 +135,39 @@ class LockedVersion(unittest.TestCase):
 
     def test_absent(self):
         self.assertIsNone(c.locked_version({"package": []}, "libm"))
+
+
+class RustdocTargetDir(unittest.TestCase):
+    """rustdoc_json names its target directory, so CARGO_TARGET_DIR elsewhere does not move the output"""
+
+    def run_with(self, write_json: bool):
+        seen = {}
+
+        def fake_run(cmd, cwd, env, **_):
+            seen["cmd"], seen["cwd"] = cmd, Path(cwd)
+            target = Path(cmd[cmd.index("--target-dir") + 1]) if "--target-dir" in cmd else Path(env["CARGO_TARGET_DIR"])
+            if write_json:
+                (target / "doc").mkdir(parents=True, exist_ok=True)
+                (target / "doc" / "probe_crate.json").write_text(json.dumps({"format_version": 0}), encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as work, tempfile.TemporaryDirectory() as elsewhere:
+            with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": elsewhere}), mock.patch.object(c.subprocess, "run", fake_run):
+                try:
+                    got = c.rustdoc_json("probe-crate", "1.0.0", [], Path(work))
+                except SystemExit as e:
+                    got = e
+            return got, seen, Path(work)
+
+    def test_the_target_directory_is_named_so_the_output_is_where_it_is_read(self):
+        got, seen, work = self.run_with(write_json=True)
+        self.assertEqual(got, {"format_version": 0})
+        self.assertEqual(Path(seen["cmd"][seen["cmd"].index("--target-dir") + 1]), work / "target")
+
+    def test_no_output_is_a_stop_not_a_traceback(self):
+        got, _, _ = self.run_with(write_json=False)
+        self.assertIsInstance(got, SystemExit)
+        self.assertIn("compared nothing", str(got))
 
 
 if __name__ == "__main__":

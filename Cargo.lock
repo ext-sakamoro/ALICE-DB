@@ -99,9 +99,7 @@ checksum = "2857e06dcc3838a2138f4c8ed7b30cf8515a223eeb6d5fbd068dd13d45cb4ff4"
 
 [[package]]
 name = "alice-zip"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c74382778e10a48c4f3269a1b904dec6cc8a424690daadf51b655b49554a3e4"
+version = "0.11.0"
 dependencies = [
  "alice-det-math",
  "flate2",

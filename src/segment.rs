@@ -805,7 +805,7 @@ pub enum ResidualSemantics {
     Unpinned,
     /// The model values were produced with the arithmetic this identifier names.
     ///
-    /// Check it with `alice_det_math::check_semantics`: [`Verified`] or
+    /// Check it with `alice_core::law::check_semantics`: [`Verified`] or
     /// [`VerifiedPrevious`] means the residual reconstructs the original
     /// exactly on any target (a release that only adds functions still
     /// reproduces data an earlier release stamped), [`Mismatch`] means it
@@ -839,8 +839,8 @@ pub fn residual_semantics(blob: &[u8]) -> ResidualSemantics {
 /// [`ResidualSemantics::Unpinned`] answers `true`: those blobs predate the
 /// identifier and applying them is the established behaviour (exact on the
 /// machine that wrote them). A [`ResidualSemantics::Pinned`] blob answers
-/// `true` when its identifier is [`alice_det_math::SEMANTICS_ID`] **or** one of
-/// [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] (`alice_det_math::check_semantics`)
+/// `true` when its identifier is [`alice_core::law::SEMANTICS_ID`] **or** one of
+/// [`alice_core::law::PREVIOUS_SEMANTICS_IDS`] (`alice_core::law::check_semantics`)
 /// — a release that only adds functions still reconstructs residuals an
 /// earlier release stamped, so those must not be refused — and the query
 /// paths then return the model value on its own rather than a corrupted one.
@@ -848,7 +848,7 @@ pub fn residual_semantics(blob: &[u8]) -> ResidualSemantics {
 pub fn residual_is_applicable(blob: &[u8]) -> bool {
     match residual_semantics(blob) {
         ResidualSemantics::Unpinned => true,
-        ResidualSemantics::Pinned(id) => alice_det_math::check_semantics(&id).is_reproducible(),
+        ResidualSemantics::Pinned(id) => alice_core::law::check_semantics(&id).is_reproducible(),
     }
 }
 
@@ -1062,7 +1062,7 @@ fn decode_residual(blob: Option<&[u8]>, point_count: usize) -> Decoded {
     };
     let pinned = match residual_semantics(blob) {
         ResidualSemantics::Pinned(id)
-            if !alice_det_math::check_semantics(&id).is_reproducible() =>
+            if !alice_core::law::check_semantics(&id).is_reproducible() =>
         {
             return Decoded::Mismatch(id);
         }

@@ -107,6 +107,19 @@ class Check(unittest.TestCase):
         self.assertIn("--law-main origin/main --lint warn", out)
         self.assertIn("2 block(s) compared, ok", out)
 
+    def test_a_pass_names_uncommitted_inputs(self):
+        self.crate(self.block())
+        run("git", "init", "-q", cwd=self.repo)
+        run("git", "add", "-A", cwd=self.repo)
+        run("git", "commit", "-q", "-m", "c", cwd=self.repo)
+        rc, out = self.check()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("not covered", out)
+        (self.repo / "README.md").write_text(self.block() + "edit\n", encoding="utf-8")
+        rc, out = self.check()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("uncommitted changes to README.md are not covered", out)
+
     def test_a_stale_block_fails(self):
         self.crate(self.block("MARK:STALE"))
         rc, out = self.check()

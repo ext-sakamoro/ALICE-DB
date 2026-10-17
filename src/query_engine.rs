@@ -56,7 +56,32 @@ pub enum QueryResult {
     Aggregates(Vec<(i64, f64)>),
 }
 
+/// `x`, or the canonical quiet NaN `0x7ff8_0000_0000_0000` (`f64::NAN`) when `x` is a NaN
+/// (ALICE-Law G4): the sign and payload of a NaN computed from a stored NaN (a sum, a mean, a
+/// spread) are not specified and differ by codegen, so an aggregate that is NaN leaves as one bit
+/// pattern
+#[inline]
+fn canon64(x: f64) -> f64 {
+    if x.is_nan() {
+        f64::NAN
+    } else {
+        x
+    }
+}
+
 impl QueryResult {
+    /// This result with every computed NaN canonical: the scalar and the aggregates are computed
+    /// from the stored values; points are the stored values themselves and keep their bits
+    fn canonical(self) -> Self {
+        match self {
+            Self::Scalar(v) => Self::Scalar(canon64(v)),
+            Self::Aggregates(a) => {
+                Self::Aggregates(a.into_iter().map(|(t, v)| (t, canon64(v))).collect())
+            }
+            points @ Self::Points(_) => points,
+        }
+    }
+
     /// Get as points (panics if not Points variant)
     ///
     /// # Panics
@@ -200,6 +225,10 @@ impl<'a> QueryBuilder<'a> {
     /// [`io::ErrorKind::InvalidInput`] if a [`Self::group_by`] interval is
     /// zero or negative.
     pub fn execute(self) -> io::Result<QueryResult> {
+        self.execute_raw().map(QueryResult::canonical)
+    }
+
+    fn execute_raw(self) -> io::Result<QueryResult> {
         if let Some(interval) = self.group_by_interval {
             if interval <= 0 {
                 return Err(io::Error::new(

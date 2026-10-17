@@ -12,6 +12,10 @@
 //! - **cancellation** — the order in which large values cancel decides whether
 //!   a small term survives; the spread of near-equal values is the difference
 //!   of two close numbers
+//! - **NaN** — an aggregate computed from a stored NaN is the canonical quiet
+//!   NaN `0x7ff8_0000_0000_0000` (ALICE-Law G4), whatever sign and payload the
+//!   stored NaN and the arithmetic gave it; `get` / `scan` return a stored
+//!   value's own bits
 //!
 //! Every expected value is written as `to_bits()` and every case was checked
 //! against the exact result before it was pinned. The aggregates read the
@@ -21,6 +25,7 @@
 use alice_db::{Aggregation, AliceDB, FitConfig, StorageConfig};
 
 const NEG_ZERO_F64: u64 = 0x8000_0000_0000_0000;
+const CANONICAL_NAN_F64: u64 = 0x7ff8_0000_0000_0000;
 const POS_ZERO_F64: u64 = 0x0000_0000_0000_0000;
 const NEG_ZERO_F32: u32 = 0x8000_0000;
 const POS_ZERO_F32: u32 = 0x0000_0000;
@@ -102,6 +107,93 @@ fn sum_cancels_the_large_pair_before_adding_one() {
     db.put_batch(&[(0, 1e30), (1, -1e30), (2, 1.0)]).unwrap();
     let sum = db.aggregate(0, 2, Aggregation::Sum).unwrap();
     assert_eq!(sum.to_bits(), 1.0f64.to_bits());
+}
+
+#[test]
+fn sum_absorbs_the_one_when_it_comes_between_the_large_pair() {
+    // 1e30 (as f32, 1.0000000150474662e30 in f64) + 1 = 1e30 exactly (one ulp
+    // there is 2^47), then + (-1e30) = +0: in this key order the 1 is lost, the
+    // exact answer would be 1
+    let db = db();
+    db.put_batch(&[(0, 1e30), (1, 1.0), (2, -1e30)]).unwrap();
+    let sum = db.aggregate(0, 2, Aggregation::Sum).unwrap();
+    assert_eq!(sum.to_bits(), POS_ZERO_F64);
+    let avg = db.aggregate(0, 2, Aggregation::Avg).unwrap();
+    assert_eq!(avg.to_bits(), POS_ZERO_F64);
+}
+
+/// a NaN with the sign bit and a payload set, opaque to the optimiser (release
+/// folds arithmetic on a constant NaN at compile time)
+fn payload_nan() -> f32 {
+    std::hint::black_box(f32::from_bits(0xffc0_dead))
+}
+
+const NAN_AGGREGATES: [Aggregation; 4] = [
+    Aggregation::Sum,
+    Aggregation::Avg,
+    Aggregation::Variance,
+    Aggregation::StdDev,
+];
+
+#[test]
+fn an_aggregate_over_a_stored_nan_is_the_canonical_nan() {
+    let db = db();
+    db.put_batch(&[(0, 1.0), (1, payload_nan()), (2, 3.0)])
+        .unwrap();
+    for agg in NAN_AGGREGATES {
+        let v = db.aggregate(0, 2, agg).unwrap();
+        assert_eq!(
+            v.to_bits(),
+            CANONICAL_NAN_F64,
+            "{agg:?}: {:016x}",
+            v.to_bits()
+        );
+    }
+    // First / Last widen a stored value: a stored NaN leaves canonical too
+    let first = db.aggregate(1, 2, Aggregation::First).unwrap();
+    assert_eq!(first.to_bits(), CANONICAL_NAN_F64);
+    // the stored value itself keeps its bits (a store, not a computation)
+    assert_eq!(db.get(1).unwrap().map(f32::to_bits), Some(0xffc0_dead));
+}
+
+#[test]
+fn a_downsampled_bucket_over_a_stored_nan_is_the_canonical_nan() {
+    let db = db();
+    let points: Vec<(i64, f32)> = (0..8_i64)
+        .map(|k| (k, if k == 5 { payload_nan() } else { 1.0 }))
+        .collect();
+    db.put_batch(&points).unwrap();
+    for agg in NAN_AGGREGATES {
+        let buckets = db.downsample(0, 7, 4, agg).unwrap();
+        assert_eq!(buckets.len(), 2, "{agg:?}");
+        assert!(
+            !buckets[0].1.is_nan(),
+            "{agg:?}: the bucket without the NaN"
+        );
+        assert_eq!(
+            buckets[1].1.to_bits(),
+            CANONICAL_NAN_F64,
+            "{agg:?}: {:016x}",
+            buckets[1].1.to_bits()
+        );
+    }
+}
+
+#[test]
+fn an_aggregate_over_a_flushed_lossless_nan_is_the_canonical_nan() {
+    // the lossless residual brings the stored NaN back from a segment; the
+    // aggregate over it is still the canonical NaN
+    let db = lossless_db();
+    let points: Vec<(i64, f32)> = (0..16_u8)
+        .map(|k| {
+            let v = if k == 5 { payload_nan() } else { f32::from(k) };
+            (i64::from(k), v)
+        })
+        .collect();
+    db.put_batch(&points).unwrap();
+    db.flush().unwrap();
+    let sum = db.aggregate(0, 15, Aggregation::Sum).unwrap();
+    assert_eq!(sum.to_bits(), CANONICAL_NAN_F64, "{:016x}", sum.to_bits());
 }
 
 #[test]

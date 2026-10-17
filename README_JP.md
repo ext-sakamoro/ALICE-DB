@@ -296,7 +296,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` と
 | G1 no-libm-direct | 適合 | every banned method of the G1 list is in clippy.toml, every feature is linted with -D warnings (python included, without pedantic: the pyo3 binding trips … |
 | G2 ieee-max-min | 適合 | raw f32 / f64 max, min and clamp are a default-deny in clippy.toml, with no exception and so no raw_* manifest; the helpers come from alice-det-math, the owner … |
 | G3 no-outer-fneg-of-fma | 未確認 | unverified: no violation is known, but there is no syntax-tree checker for the outer negation of a fused multiply-add and no CI step for it. A one-off run of … |
-| G4 debug-release-arch-goldens | 未達 | unmet, with the test now present. (1) The signed-zero case of Aggregation::Min / Max is now fixed and pinned: the folds use alice_det_math::min64 / max64 … |
+| G4 debug-release-arch-goldens | 適合 | get / scan return a stored value's own bits (a store, not a computation), as lossless segments promise; computed results are canonical. Min / Max skip a NaN … |
 | G5 release-profile-test-leg | 適合 | the aarch64 release leg is macos-latest. The repository has no branch protection; a leg is required in the sense that main moves only by a fast-forward after … |
 | G6 semantics-id | 適合 | alice-db computes its own identifier, DB_SEMANTICS_ID (aab1eb3d...51162f with alice-det-math 0.5.1), from the bits of the decisions it computes itself and the … |
 | G7 handshake-carries-id | 適合 | the Law-bearing value that crosses this crate's boundary is the stored law record (alice-zip SignalLaw parts), handed over in AliceDB::to_bytes / from_bytes … |

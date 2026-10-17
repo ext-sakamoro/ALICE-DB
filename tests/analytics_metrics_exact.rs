@@ -33,6 +33,11 @@ type Pipeline = MetricPipeline<SLOTS, QUEUE>;
 /// built on the stack and does not fit the default test thread stack in
 /// debug builds.
 fn on_big_stack(f: impl FnOnce() + Send + 'static) {
+    #[allow(
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        reason = "one thread with a large stack runs the test body and is joined; nothing runs alongside it (ALICE-Law G13)"
+    )]
     std::thread::Builder::new()
         .stack_size(64 << 20)
         .spawn(f)

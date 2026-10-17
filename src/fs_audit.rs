@@ -30,19 +30,19 @@ use std::path::Path;
 #[cfg(feature = "open-file-audit")]
 mod imp {
     use std::cell::RefCell;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    fn open_handles() -> MutexGuard<'static, HashMap<PathBuf, usize>> {
-        static OPEN: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
-        OPEN.get_or_init(|| Mutex::new(HashMap::new()))
+    fn open_handles() -> MutexGuard<'static, BTreeMap<PathBuf, usize>> {
+        static OPEN: OnceLock<Mutex<BTreeMap<PathBuf, usize>>> = OnceLock::new();
+        OPEN.get_or_init(|| Mutex::new(BTreeMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     thread_local! {
-        static ARMED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+        static ARMED: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
     }
 
     /// Canonical key for `path`: the canonical parent directory joined

@@ -109,6 +109,13 @@ disallowed-methods = [
     { path = "std::time::SystemTime::elapsed", reason = "reads the wall clock the same as SystemTime::now; duration_since on an already-held value is fine, this reads the clock again" },
     { path = "std::time::SystemTime::now", reason = "the wall clock makes results depend on timing; pass time in or use a step count" },
     { path = "std::collections::hash_map::RandomState::new", reason = "seeds from OS randomness and would make HashMap iteration order non-deterministic" },
+    # ALICE-Law G13: no output may combine work in an order set by threads (scripts/order_guard.py
+    # reads the same in src/, and the dependencies)
+    { path = "std::thread::spawn", reason = "spawning or scoping threads makes the combination order depend on scheduling and thread count (ALICE-Law G13)" },
+    { path = "std::thread::scope", reason = "spawning or scoping threads makes the combination order depend on scheduling and thread count (ALICE-Law G13)" },
+    { path = "std::thread::Builder::spawn", reason = "spawning or scoping threads makes the combination order depend on scheduling and thread count (ALICE-Law G13)" },
+    { path = "std::thread::Builder::spawn_scoped", reason = "spawning or scoping threads makes the combination order depend on scheduling and thread count (ALICE-Law G13)" },
+    { path = "std::thread::available_parallelism", reason = "the combination order of work on several threads depends on scheduling and thread count (ALICE-Law G13)" },
 ]
 disallowed-types = [
     # disallowed-methods cannot name RandomState::default (a trait method,
@@ -117,4 +124,17 @@ disallowed-types = [
     # naming (a type annotation, a turbofish), without touching HashMap::new's
     # own internal (unnamed) use of RandomState.
     { path = "std::collections::hash_map::RandomState", reason = "seeds from OS randomness and would make HashMap iteration order non-deterministic; see disallowed-methods for RandomState::new" },
+    # ALICE-Law G13: unspecified iteration order and threads; a reviewed site carries an allow
+    # with its reason and is listed in scripts/order_allowlist.toml
+    { path = "std::collections::HashMap", reason = "iteration order is unspecified and differs between runs (ALICE-Law G13); use BTreeMap / BTreeSet, or list a membership-only site in scripts/order_allowlist.toml with an allow and its reason" },
+    { path = "std::collections::HashSet", reason = "iteration order is unspecified and differs between runs (ALICE-Law G13); use BTreeMap / BTreeSet, or list a membership-only site in scripts/order_allowlist.toml with an allow and its reason" },
+    { path = "std::collections::hash_map::Iter", reason = "iteration order is unspecified and differs between runs (ALICE-Law G13); use BTreeMap / BTreeSet, or list a membership-only site in scripts/order_allowlist.toml with an allow and its reason" },
+    { path = "std::collections::hash_map::Keys", reason = "iteration order is unspecified and differs between runs (ALICE-Law G13); use BTreeMap / BTreeSet, or list a membership-only site in scripts/order_allowlist.toml with an allow and its reason" },
+    { path = "std::collections::hash_map::Values", reason = "iteration order is unspecified and differs between runs (ALICE-Law G13); use BTreeMap / BTreeSet, or list a membership-only site in scripts/order_allowlist.toml with an allow and its reason" },
+    { path = "std::collections::hash_map::IntoIter", reason = "iteration order is unspecified and differs between runs (ALICE-Law G13); use BTreeMap / BTreeSet, or list a membership-only site in scripts/order_allowlist.toml with an allow and its reason" },
+    { path = "std::collections::hash_set::Iter", reason = "iteration order is unspecified and differs between runs (ALICE-Law G13); use BTreeMap / BTreeSet, or list a membership-only site in scripts/order_allowlist.toml with an allow and its reason" },
+    { path = "std::collections::hash_set::IntoIter", reason = "iteration order is unspecified and differs between runs (ALICE-Law G13); use BTreeMap / BTreeSet, or list a membership-only site in scripts/order_allowlist.toml with an allow and its reason" },
+    { path = "std::thread::Builder", reason = "a thread whose results are combined makes the order depend on scheduling and thread count (ALICE-Law G13)" },
+    { path = "std::thread::JoinHandle", reason = "a thread whose results are combined makes the order depend on scheduling and thread count (ALICE-Law G13)" },
+    { path = "std::thread::ScopedJoinHandle", reason = "a thread whose results are combined makes the order depend on scheduling and thread count (ALICE-Law G13)" },
 ]

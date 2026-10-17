@@ -104,6 +104,11 @@ fn crash_then_reopen(encrypted: bool) {
     // deadline keeps a stuck child from hanging the suite
     let stdout = child.stdout.take().unwrap();
     let (tx, rx) = mpsc::channel();
+    #[allow(
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        reason = "a reader thread for the child process's output, so a stuck child cannot hang the suite; it computes nothing (ALICE-Law G13)"
+    )]
     std::thread::spawn(move || {
         let ready = BufReader::new(stdout)
             .lines()

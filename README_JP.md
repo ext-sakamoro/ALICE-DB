@@ -305,7 +305,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` と
 | G10 no-run-varying-artifacts | 適合 | no ambient clock or OS-entropy read is known in a Law-bearing path: scripts/entropy_guard.py reports `23 files, 10 patterns, 0 problems`, created_at is an … |
 | G11 gate-self-tests | 未達 | unmet: clause (c). scripts/clippy_canary.py, scripts/test_clippy_canary.py, scripts/gen_clippy_canary_calls.py, scripts/test_gen_clippy_canary_calls.py and … |
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
-| G13 no-unspecified-order | 未確認 | unverified: no order-dependent output is known. The two sites found earlier are fixed with an oracle each (mutants above): model_distribution, which the Python … |
+| G13 no-unspecified-order | 適合 | the order-dependent outputs found earlier (model_distribution, detect_deadlock) were fixed with an oracle each; the remaining HashMap / HashSet sites, … |
 | G14 float-environment-invariants | 適合 | the static scan covers the files of this repository and the dynamic check covers the builds CI runs on ubuntu and macOS; a flag passed by a build outside this … |
 
 ### feature と保証の範囲

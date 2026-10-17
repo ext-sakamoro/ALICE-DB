@@ -65,6 +65,10 @@ python3 scripts/test_fuzz_reach.py
 python3 scripts/test_tracked_binaries.py
 python3 scripts/tracked_binaries.py
 
+step "ci.yml / docs-lint: release legs require the same binaries (test, then check)"
+python3 scripts/test_release_lists_check.py
+python3 scripts/release_lists_check.py
+
 step "law-readme-block.yml: README ALICE-Law block (tests, then the check the job runs, at the block's ALICE-Law pin)"
 python3 scripts/test_law_readme_block_check.py
 python3 scripts/law_readme_block_check.py

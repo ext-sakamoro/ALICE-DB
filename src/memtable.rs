@@ -436,7 +436,7 @@ impl MemTable {
             let t = i as f64 * inv_n_minus_1;
             let expected = first + t * delta;
             let error = (v as f64 - expected).abs();
-            max_error = max_error.max(error);
+            max_error = alice_det_math::max64(max_error, error);
         }
 
         let range = (last - first).abs();
@@ -752,7 +752,7 @@ mod tests {
                 (i as f32 * 7.3)
                     .sin()
                     .mul_add(1000.0, (i as f32 * 13.7).cos() * 500.0)
-                    + (i as f32 * 0.3).tan().clamp(-1000.0, 1000.0)
+                    + alice_det_math::metric::clamp((i as f32 * 0.3).tan(), -1000.0, 1000.0)
             })
             .collect();
         let result = memtable.fit_best_model(&values);

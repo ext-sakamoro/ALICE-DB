@@ -240,12 +240,15 @@ fn assert_bounded(obs: &Observed, data: &[(i64, f32)]) -> usize {
         if !BOUNDED_SEGMENTS.contains(&seg) {
             continue;
         }
-        let lo = seg_data.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+        let lo = seg_data
+            .iter()
+            .map(|p| p.1)
+            .fold(f32::INFINITY, alice_det_math::min);
         let hi = seg_data
             .iter()
             .map(|p| p.1)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let range = f64::from(hi - lo).max(1e-6);
+            .fold(f32::NEG_INFINITY, alice_det_math::max);
+        let range = alice_det_math::max64(f64::from(hi - lo), 1e-6);
         for (&(t, read), &(_, v)) in seg_points.iter().zip(seg_data) {
             let read = f32::from_bits(read.unwrap_or_else(|| panic!("t={t}: lossy read missing")));
             let rel = (f64::from(read) - f64::from(v)).abs() / range;

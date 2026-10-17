@@ -309,17 +309,17 @@ impl CompactionPlanner {
                         base_size * (self.config.level_size_ratio as u64).pow(level as u32);
                     let current_size = state.level_size(level);
                     let score = current_size as f64 / max_size as f64;
-                    max_level_score = max_level_score.max(score);
+                    max_level_score = alice_det_math::max64(max_level_score, score);
                 }
 
-                l0_score.max(max_level_score)
+                alice_det_math::max64(l0_score, max_level_score)
             }
             CompactionStrategy::Tiered | CompactionStrategy::SizeTiered => {
                 let mut max_score = 0.0f64;
                 for level in 0..self.config.max_levels {
                     let count = state.segment_count_at_level(level);
                     let score = count as f64 / self.config.tiered_min_merge as f64;
-                    max_score = max_score.max(score);
+                    max_score = alice_det_math::max64(max_score, score);
                 }
                 max_score
             }

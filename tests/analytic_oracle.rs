@@ -114,7 +114,7 @@ fn polynomial_linear_constant_models_evaluate_to_their_closed_forms() {
             .expect("residual of this arithmetic")
             .unwrap() as f64;
         assert!(
-            (got - expected).abs() < 1e-3 * expected.abs().max(1.0),
+            (got - expected).abs() < 1e-3 * alice_det_math::max64(expected.abs(), 1.0),
             "poly t={t}: {got} vs {expected}"
         );
     }
@@ -446,7 +446,7 @@ fn aggregates_match_their_closed_forms_on_a_lossless_store() {
     let db = lossless_db(dir.path(), true);
     db.put_batch(&data).unwrap();
     db.flush().unwrap();
-    let close = |a: f64, b: f64| (a - b).abs() <= 1e-6 * b.abs().max(1.0);
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-6 * alice_det_math::max64(b.abs(), 1.0);
     assert!(close(
         db.aggregate(0, 99, Aggregation::Sum).unwrap(),
         4950.0

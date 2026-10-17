@@ -2,8 +2,8 @@
 //!
 //! The recorded-bit tests in `tests/determinism_golden.rs` pin the bits of
 //! the decisions this crate computes itself: which model a segment stores and
-//! what it reads back, the aggregates over stored values, and the size of a
-//! bloom filter. This module folds those digests, plus the semantics
+//! what it reads back, the aggregates over stored values, the size of a
+//! bloom filter and the identifiers and values of stored laws. This module folds those digests, plus the semantics
 //! identifier of `alice-det-math` (the transcendental functions the models
 //! are evaluated with), into one 32-byte value. Two builds with the same
 //! identifier compute every pinned scenario to the same bits; a build that
@@ -16,7 +16,7 @@
 //! # Hex form (with `alice-det-math` 0.5.1)
 //!
 //! ```text
-//! 39eb7dc05d8a4ea362e894a6456134988a7c4ca274361d02f09b48c7b3cf1c99
+//! aab1eb3d22da13c75783c8d306feb7fa5dc8135b5d8625f315f19d68e051162f
 //! ```
 //!
 //! # Fold
@@ -88,6 +88,10 @@ pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
         "bloom sizing",
         hex32("9d7933ea59b2d3fad65aa0633af3a39d99c44448aa1af688fdd7913bdc1393bf"),
     ),
+    (
+        "law_id and evaluate",
+        hex32("703f17b165de1699421256302a23582a65cf3904f7ddc14e4c37365b0e444127"),
+    ),
     // the resolved alice-det-math's own identifier, not a copy of it: the
     // identifier below is looked up by it
     ("alice-det-math", alice_det_math::SEMANTICS_ID),
@@ -109,7 +113,7 @@ pub const DB_SEMANTICS_BY_DET_MATH: &[([u8; 32], [u8; 32])] = &[
     // alice-det-math 0.5.1
     (
         hex32("85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315"),
-        hex32("39eb7dc05d8a4ea362e894a6456134988a7c4ca274361d02f09b48c7b3cf1c99"),
+        hex32("aab1eb3d22da13c75783c8d306feb7fa5dc8135b5d8625f315f19d68e051162f"),
     ),
 ];
 
@@ -118,7 +122,7 @@ pub const DB_SEMANTICS_BY_DET_MATH: &[([u8; 32], [u8; 32])] = &[
 /// taken from [`DB_SEMANTICS_BY_DET_MATH`] by the resolved `alice-det-math`.
 ///
 /// Hex (with `alice-det-math` 0.5.1):
-/// `39eb7dc05d8a4ea362e894a6456134988a7c4ca274361d02f09b48c7b3cf1c99`.
+/// `aab1eb3d22da13c75783c8d306feb7fa5dc8135b5d8625f315f19d68e051162f`.
 pub const DB_SEMANTICS_ID: [u8; 32] = semantics_id_for(&alice_det_math::SEMANTICS_ID);
 
 /// The [`DB_SEMANTICS_ID`] of a build that resolved the `alice-det-math` with

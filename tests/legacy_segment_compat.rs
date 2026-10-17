@@ -325,7 +325,7 @@ fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
         segment.residual_status(),
         ResidualStatus::Mismatch {
             stored: other,
-            running: alice_det_math::SEMANTICS_ID
+            running: alice_db::SEMANTICS_ID
         }
     );
     let check = |err: ResidualError, what: &str| {
@@ -340,7 +340,7 @@ fn a_residual_from_different_arithmetic_is_refused_not_skipped() {
             "{what}: key range"
         );
         assert_eq!(err.stored, other, "{what}: stored");
-        assert_eq!(err.running, alice_det_math::SEMANTICS_ID, "{what}: running");
+        assert_eq!(err.running, alice_db::SEMANTICS_ID, "{what}: running");
         assert_eq!(
             err.series, None,
             "{what}: a segment read on its own names no store"
@@ -421,7 +421,7 @@ fn the_zero_copy_path_checks_the_identifier_too() {
         view.residual_status(),
         ResidualStatus::Mismatch {
             stored: other,
-            running: alice_det_math::SEMANTICS_ID
+            running: alice_db::SEMANTICS_ID
         }
     );
 
@@ -589,7 +589,7 @@ fn the_linear_law_divides_rather_than_multiplying_by_a_reciprocal() {
 fn a_mismatch_reports_the_identifier_the_read_compared_with() {
     use alice_db::segment::ResidualStatus;
     assert!(
-        alice_det_math::check_semantics(&alice_db::SEMANTICS_ID).is_reproducible(),
+        alice_core::law::check_semantics(&alice_db::SEMANTICS_ID).is_reproducible(),
         "the stamp of a fresh residual is not accepted by the read"
     );
     let n = 4_usize;
@@ -610,7 +610,7 @@ fn a_mismatch_reports_the_identifier_the_read_compared_with() {
         assert_eq!(stored, other, "byte {flip}: stored");
         assert_eq!(
             running,
-            alice_det_math::SEMANTICS_ID,
+            alice_db::SEMANTICS_ID,
             "byte {flip}: running is what was compared"
         );
         assert_ne!(

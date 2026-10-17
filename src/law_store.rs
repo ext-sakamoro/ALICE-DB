@@ -101,7 +101,7 @@
 //! `semantics_id` given to [`AliceDB::put_law`] / [`AliceDB::ingest_evidence`],
 //! normally [`crate::SEMANTICS_ID`]). Every read compares it with the identifier
 //! this build evaluates with: the same one, or an earlier one
-//! `alice_det_math::check_semantics` accepts, is read and reported as
+//! `alice_core::law::check_semantics` accepts, is read and reported as
 //! [`RecordSemantics::Current`] / [`RecordSemantics::VerifiedPrevious`]; any
 //! other is refused with [`LawStoreError::LawRecordMismatch`], which names
 //! both. A format 1 record carries none: it is read as
@@ -220,7 +220,7 @@ pub enum LawStoreError {
     Law(LawError),
     /// The law record was written under a semantics identifier this build
     /// does not reproduce: neither the identifier it evaluates with
-    /// ([`crate::SEMANTICS_ID`]) nor one `alice_det_math::check_semantics`
+    /// ([`crate::SEMANTICS_ID`]) nor one `alice_core::law::check_semantics`
     /// accepts as an earlier identifier with the same bits
     LawRecordMismatch {
         /// The identifier the record carries
@@ -258,7 +258,7 @@ pub enum RecordSemantics {
     /// ([`crate::SEMANTICS_ID`])
     Current,
     /// The record carries an earlier identifier that
-    /// `alice_det_math::check_semantics` accepts as computing the same bits
+    /// `alice_core::law::check_semantics` accepts as computing the same bits
     VerifiedPrevious([u8; 32]),
     /// The record carries no identifier (layout format 1, written before the
     /// identifier was stored): nothing says which arithmetic it was written
@@ -302,9 +302,9 @@ fn check_record_semantics(
     stored: Option<[u8; 32]>,
     policy: LawReadPolicy,
 ) -> Result<RecordSemantics, LawStoreError> {
-    // the identifier `alice_det_math::check_semantics` below compares with (the
-    // stamp is `crate::SEMANTICS_ID`, which lib.rs asserts is the same one)
-    let running = alice_det_math::SEMANTICS_ID;
+    // the identifier `alice_core::law::check_semantics` below compares with, and the
+    // one records are stamped with (`crate::SEMANTICS_ID` re-exports it)
+    let running = alice_core::law::SEMANTICS_ID;
     let Some(stored) = stored else {
         return match policy {
             LawReadPolicy::AcceptUnpinned => Ok(RecordSemantics::Unpinned),
@@ -314,7 +314,7 @@ fn check_record_semantics(
     if stored == running {
         return Ok(RecordSemantics::Current);
     }
-    match alice_det_math::check_semantics(&stored) {
+    match alice_core::law::check_semantics(&stored) {
         alice_det_math::SemanticsCheck::Verified => Ok(RecordSemantics::Current),
         alice_det_math::SemanticsCheck::VerifiedPrevious(id) => {
             Ok(RecordSemantics::VerifiedPrevious(id))
@@ -384,7 +384,7 @@ impl From<LawError> for LawStoreError {
 pub enum LawPointersFoundUnder {
     /// Found under the identifier the lookup was given as current.
     Current,
-    /// Found under an older identifier [`alice_det_math::check_semantics`]
+    /// Found under an older identifier [`alice_core::law::check_semantics`]
     /// still accepts as reproducing the same bits as the current one.
     Previous([u8; 32]),
 }
@@ -1133,7 +1133,7 @@ impl AliceDB {
     /// Writing always addresses a law under the identifier of the day it was
     /// written; a stored pointer never moves on its own. So a law written
     /// before the arithmetic's identifier changed (a dependency upgrade that
-    /// [`alice_det_math::check_semantics`] still judges bit-reproducing) stays
+    /// [`alice_core::law::check_semantics`] still judges bit-reproducing) stays
     /// addressed only under the old identifier here — this method does not
     /// try any other one. To look a law up without knowing which identifier
     /// it was last touched under, use [`Self::law_pointers_for`], which tries
@@ -1160,13 +1160,13 @@ impl AliceDB {
 
     /// Every `(name, version)` stored under `law`'s content identifier,
     /// trying `semantics_id` first and, if that finds nothing, every
-    /// identifier in [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] in order
+    /// identifier in [`alice_core::law::PREVIOUS_SEMANTICS_IDS`] in order
     ///
     /// A write never moves a law to a new identifier on its own
     /// ([`Self::law_pointers_by_id`]'s doc), so a law written under an
     /// identifier a later `alice-det-math` release superseded is otherwise
     /// unreachable without knowing that old identifier by name. This method
-    /// is the read-side counterpart: [`alice_det_math::check_semantics`]
+    /// is the read-side counterpart: [`alice_core::law::check_semantics`]
     /// already decides which identifiers are accepted as reproducing the same
     /// bits as the current one ([`alice_det_math::SemanticsCheck::VerifiedPrevious`]),
     /// and this tries exactly that set, in the same order, after the current
@@ -1192,7 +1192,7 @@ impl AliceDB {
         if !current.is_empty() {
             return Ok((current, LawPointersFoundUnder::Current));
         }
-        for previous in alice_det_math::PREVIOUS_SEMANTICS_IDS {
+        for previous in alice_core::law::PREVIOUS_SEMANTICS_IDS {
             let pointers = self.law_pointers_by_id(&law.law_id(previous))?;
             if !pointers.is_empty() {
                 return Ok((pointers, LawPointersFoundUnder::Previous(*previous)));
@@ -1203,7 +1203,7 @@ impl AliceDB {
 
     /// Writes a pointer under `semantics_id` for every stored law version this
     /// store still only addresses under an identifier
-    /// [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] accepts as reproducing the
+    /// [`alice_core::law::PREVIOUS_SEMANTICS_IDS`] accepts as reproducing the
     /// same bits, so later lookups find it under the current identifier
     /// directly instead of falling through [`Self::law_pointers_for`] every
     /// time
@@ -1215,7 +1215,7 @@ impl AliceDB {
     /// answering to the old identifier too — this only adds the new one.
     ///
     /// A `(name, version)` written under an identifier neither `semantics_id`
-    /// nor any entry of [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] accounts for (one
+    /// nor any entry of [`alice_core::law::PREVIOUS_SEMANTICS_IDS`] accounts for (one
     /// [`alice_det_math::SemanticsCheck::Mismatch`] would reject) is left
     /// alone: this method only ever repeats a pointer the fallback in
     /// [`Self::law_pointers_for`] would already have accepted, it never
@@ -1232,12 +1232,12 @@ impl AliceDB {
         &self,
         semantics_id: &[u8; 32],
     ) -> Result<usize, LawStoreError> {
-        self.reindex_with(semantics_id, alice_det_math::PREVIOUS_SEMANTICS_IDS)
+        self.reindex_with(semantics_id, alice_core::law::PREVIOUS_SEMANTICS_IDS)
     }
 
     /// [`Self::reindex_laws_under_current_semantics`] against an explicit
     /// `accepted` list instead of reading
-    /// [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] directly
+    /// [`alice_core::law::PREVIOUS_SEMANTICS_IDS`] directly
     ///
     /// Split out so a test can exercise the "found under a previous
     /// identifier, add a pointer" path with an injected `accepted` entry: the
@@ -1477,7 +1477,7 @@ mod tests {
     }
 
     // `reindex_with` takes `accepted` as an explicit argument instead of
-    // reading `alice_det_math::PREVIOUS_SEMANTICS_IDS`, so these tests
+    // reading `alice_core::law::PREVIOUS_SEMANTICS_IDS`, so these tests
     // exercise the "found under a previous identifier, add a pointer" path
     // with an injected entry -- the real PREVIOUS_SEMANTICS_IDS is empty at
     // the currently pinned alice-det-math release, so the public

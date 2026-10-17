@@ -71,7 +71,7 @@ fn is_mismatch(err: &LawStoreError) -> bool {
     matches!(
         err,
         LawStoreError::LawRecordMismatch { stored, running }
-            if *stored == FOREIGN && *running == alice_det_math::SEMANTICS_ID
+            if *stored == FOREIGN && *running == alice_db::SEMANTICS_ID
     )
 }
 
@@ -243,7 +243,7 @@ const PREVIOUS_HEX: &str = "135c407d4249c1c200e4d1be79a12e848ce5c355fc3a918da965
 fn a_record_under_a_verified_earlier_identifier_reads_as_verified_previous() {
     let previous: [u8; 32] = unhex(PREVIOUS_HEX).try_into().expect("32 bytes");
     assert!(
-        alice_det_math::PREVIOUS_SEMANTICS_IDS.contains(&previous),
+        alice_core::law::PREVIOUS_SEMANTICS_IDS.contains(&previous),
         "the resolved alice-det-math no longer lists the fixture's identifier"
     );
     let rec = encode_law_record("ohm", 1, &line_law().to_parts(), &previous).unwrap();

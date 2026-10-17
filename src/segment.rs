@@ -872,7 +872,7 @@ pub enum ResidualSemantics {
     Unpinned,
     /// The model values were produced with the arithmetic this identifier names.
     ///
-    /// Check it with `alice_det_math::check_semantics`: [`Verified`] or
+    /// Check it with `alice_core::law::check_semantics`: [`Verified`] or
     /// [`VerifiedPrevious`] means the residual reconstructs the original
     /// exactly on any target (a release that only adds functions still
     /// reproduces data an earlier release stamped), [`Mismatch`] means it
@@ -904,8 +904,8 @@ pub fn residual_semantics(blob: &[u8]) -> ResidualSemantics {
 /// original, rather than a value that is neither the original nor the model.
 ///
 /// A [`ResidualSemantics::Pinned`] blob answers `true` when its identifier is
-/// [`alice_det_math::SEMANTICS_ID`] **or** one of
-/// [`alice_det_math::PREVIOUS_SEMANTICS_IDS`] (`alice_det_math::check_semantics`)
+/// [`alice_core::law::SEMANTICS_ID`] **or** one of
+/// [`alice_core::law::PREVIOUS_SEMANTICS_IDS`] (`alice_core::law::check_semantics`)
 /// — a release that only adds functions still reconstructs residuals an
 /// earlier release stamped. [`ResidualSemantics::Unpinned`] answers `false`:
 /// nothing records the arithmetic it was written under, so the default read
@@ -915,7 +915,7 @@ pub fn residual_semantics(blob: &[u8]) -> ResidualSemantics {
 pub fn residual_is_applicable(blob: &[u8]) -> bool {
     match residual_semantics(blob) {
         ResidualSemantics::Unpinned => false,
-        ResidualSemantics::Pinned(id) => alice_det_math::check_semantics(&id).is_reproducible(),
+        ResidualSemantics::Pinned(id) => alice_core::law::check_semantics(&id).is_reproducible(),
     }
 }
 
@@ -1079,10 +1079,10 @@ pub enum UnpinnedResiduals {
 #[non_exhaustive]
 pub enum ReadStatus {
     /// Exact under this build's arithmetic: no residual, or a residual stamped with
-    /// `alice_det_math::SEMANTICS_ID`
+    /// `alice_core::law::SEMANTICS_ID`
     Current,
     /// Exact: the residual is stamped with an earlier identifier that
-    /// `alice_det_math::check_semantics` still accepts as computing the same bits
+    /// `alice_core::law::check_semantics` still accepts as computing the same bits
     VerifiedPrevious([u8; SEMANTICS_ID_LEN]),
     /// A residual without an identifier was applied ([`UnpinnedResiduals::Accept`]): exact
     /// only where the writer's arithmetic was this one
@@ -1194,7 +1194,7 @@ pub fn residual_status(blob: Option<&[u8]>, point_count: usize) -> ResidualStatu
         Decoded::None => ResidualStatus::NoResidual,
         Decoded::Mismatch(stored) => ResidualStatus::Mismatch {
             stored,
-            running: alice_det_math::SEMANTICS_ID,
+            running: alice_core::law::SEMANTICS_ID,
         },
         Decoded::Corrupt { needed, found } => ResidualStatus::Corrupt {
             needed_bytes: needed,
@@ -1228,7 +1228,7 @@ fn decode_residual(blob: Option<&[u8]>, point_count: usize) -> Decoded {
         return Decoded::None;
     };
     let status = match residual_semantics(blob) {
-        ResidualSemantics::Pinned(id) => match alice_det_math::check_semantics(&id) {
+        ResidualSemantics::Pinned(id) => match alice_core::law::check_semantics(&id) {
             alice_det_math::SemanticsCheck::Verified => ReadStatus::Current,
             alice_det_math::SemanticsCheck::VerifiedPrevious(previous) => {
                 ReadStatus::VerifiedPrevious(previous)
@@ -1286,7 +1286,7 @@ fn checked_residual(
             start_time,
             end_time,
             stored,
-            running: alice_det_math::SEMANTICS_ID,
+            running: alice_core::law::SEMANTICS_ID,
             series: None,
         })),
         Decoded::Corrupt { needed, found } => Err(ResidualError::Corrupt(ResidualCorrupt {

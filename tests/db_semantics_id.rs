@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use alice_db::semantics::{DB_SEMANTICS_BY_DET_MATH, DB_SEMANTICS_CHECKED_AT, DB_SEMANTICS_PINS};
+use alice_db::semantics::{DB_SEMANTICS_BY_ZIP, DB_SEMANTICS_CHECKED_AT, DB_SEMANTICS_PINS};
 use alice_db::DB_SEMANTICS_ID;
 use sha2::{Digest, Sha256};
 
@@ -46,13 +46,21 @@ fn fold(entries: &[(&str, [u8; 32])]) -> [u8; 32] {
 /// 64-hex literals of the golden file that are not folded digests, each
 /// with its reason
 const UNFOLDED_DIGESTS: &[&str] = &[
-    // alice-det-math 0.5.1's identifier, folded as the alice-det-math entry
-    "85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315",
+    // alice-zip 0.11's identifier, folded as the alice-zip entry
+    "51ffeb079769ea34bd3cb3df756b6cb940b8d2d6a6a0f1e1115ab8139415935e",
     // the law identifiers of the three fits: `law_scenario` hashes them into
     // the bits of "law_id and evaluate", so they are folded through it
+    "f7435747535332868e9d80b415766e1a9d2d5bdf22cf73ed70d901181de99784",
+    "995dbbc08d8f19fe0d2d4b61b27f6f3f24dd0dbe24bbafe5065db0a304966a0e",
+    "f3fbe5f39f54c82fa25f140ee86aba9aa914532f17d98077144b502245975744",
+    // alice-det-math 0.5.1's identifier (stamped up to alice-zip 0.10) and what
+    // it gave (law identifiers, the law scenario's digest): history, not a
+    // current output
+    "85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315",
     "99c89049846fd219094625cb9b151f3fbf059a11e3d27e958bc621cf0db56764",
     "80dea1c7e7e75e369848cc3195e7505df07011eb702feb2387913aa287c5b558",
     "5260e55a0814f1cf5f4ee489b6241d9bf18ad021cfde35c999d14f136aff8f14",
+    "703f17b165de1699421256302a23582a65cf3904f7ddc14e4c37365b0e444127",
     // alice-det-math 0.5.0's identifier and what it gave (law identifiers,
     // the law scenario's digest): history, not a current output
     "715a00ec9397378c7e06b82bdfa0d5d4717c72f1f9f9fc7345eb497d56300b34",
@@ -70,8 +78,10 @@ const UNFOLDED_GOLDENS: &[(&str, usize)] = &[
     // the checker's own canaries: a fixed digest of eight zero bytes and a
     // wrong one, no scenario of the crate
     ("canary", 4),
-    // the same scenario under alice-det-math 0.5.0's identifier, kept to show
-    // that the identifier is what moved the digest; not a current output
+    // the same scenario under the identifiers stamped before alice-zip 0.11
+    // (alice-det-math 0.5.1's and 0.5.0's), kept to show that the identifier is
+    // what moved the digest; not current outputs
+    ("law_id and evaluate under 0.5.1's identifier", 1),
     ("law_id and evaluate under 0.5.0's identifier", 1),
 ];
 
@@ -320,7 +330,7 @@ fn every_entry_is_the_golden_its_scenario_records() {
     let goldens = recorded_goldens();
     let mut compared = 0;
     for (name, digest) in DB_SEMANTICS_PINS {
-        if *name == "alice-det-math" {
+        if *name == "alice-zip" {
             continue;
         }
         let recorded = goldens.get(*name).unwrap_or_else(|| {
@@ -349,21 +359,58 @@ fn every_entry_is_the_golden_its_scenario_records() {
 }
 
 #[test]
-fn the_det_math_entry_is_the_det_math_identifier() {
+fn the_zip_entry_is_the_zip_identifier() {
     let entry = DB_SEMANTICS_PINS
         .iter()
-        .find(|(name, _)| *name == "alice-det-math")
-        .expect("an alice-det-math entry");
-    assert_eq!(entry.1, alice_det_math::SEMANTICS_ID);
+        .find(|(name, _)| *name == "alice-zip")
+        .expect("an alice-zip entry");
+    assert_eq!(entry.1, alice_core::law::SEMANTICS_ID);
+    assert!(
+        !DB_SEMANTICS_PINS
+            .iter()
+            .any(|(name, _)| *name == "alice-det-math"),
+        "alice-det-math is covered through alice-zip's identifier, not folded twice"
+    );
+}
+
+/// The alice-det-math generation is covered through alice-zip's identifier:
+/// alice-zip maps the resolved alice-det-math identifier to exactly the
+/// alice-zip identifier this crate folds, so a different alice-det-math gives a
+/// different alice-zip row and with it a different `DB_SEMANTICS_ID` (or no row,
+/// which does not compile)
+#[test]
+fn the_det_math_identifier_is_reached_through_the_zip_identifier() {
+    let rows: Vec<_> = alice_core::semantics::ZIP_SEMANTICS_BY_DET_MATH
+        .iter()
+        .filter(|(det, _)| *det == alice_det_math::SEMANTICS_ID)
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one alice-zip row for the resolved alice-det-math"
+    );
+    assert_eq!(rows[0].1, alice_core::law::SEMANTICS_ID);
+    let zips: Vec<_> = alice_core::semantics::ZIP_SEMANTICS_BY_DET_MATH
+        .iter()
+        .map(|(_, zip)| *zip)
+        .collect();
+    let mut distinct = zips.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        zips.len(),
+        "two alice-det-math generations share an alice-zip identifier"
+    );
 }
 
 #[test]
 fn the_identifier_is_the_fold_of_the_table() {
     assert_eq!(hex(&fold(DB_SEMANTICS_PINS)), hex(&DB_SEMANTICS_ID));
-    let row = DB_SEMANTICS_BY_DET_MATH
+    let row = DB_SEMANTICS_BY_ZIP
         .iter()
-        .find(|(det, _)| *det == alice_det_math::SEMANTICS_ID)
-        .expect("a row for the resolved alice-det-math");
+        .find(|(zip, _)| *zip == alice_core::law::SEMANTICS_ID)
+        .expect("a row for the resolved alice-zip");
     assert_eq!(row.1, DB_SEMANTICS_ID);
 }
 
@@ -371,7 +418,10 @@ fn the_identifier_is_the_fold_of_the_table() {
 fn the_identifier_is_the_recorded_value() {
     assert_eq!(
         hex(&DB_SEMANTICS_ID),
-        "aab1eb3d22da13c75783c8d306feb7fa5dc8135b5d8625f315f19d68e051162f"
+        // the fold recomputed outside this toolchain from the documented
+        // procedure, which also reproduces the previous aab1eb3d… from the
+        // previous table (alice-det-math entry, law digest 703f17b1…)
+        "e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce"
     );
 }
 

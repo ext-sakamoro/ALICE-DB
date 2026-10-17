@@ -324,8 +324,8 @@ fn law_id_key_rejects_the_names_the_store_rejects() {
 // 8. Reading a law without knowing which semantics identifier wrote it
 //
 // `law_pointers_for` tries the current identifier, then every one
-// `alice_det_math::check_semantics` still accepts as reproducing the same
-// bits (`alice_det_math::PREVIOUS_SEMANTICS_IDS`); `reindex_laws_under_current_semantics`
+// `alice_core::law::check_semantics` still accepts as reproducing the same
+// bits (`alice_core::law::PREVIOUS_SEMANTICS_IDS`); `reindex_laws_under_current_semantics`
 // writes a pointer under the current identifier for whatever it finds that
 // way, without touching the pointer it found.
 //
@@ -365,7 +365,7 @@ fn law_pointers_for_misses_when_stored_under_neither_current_nor_any_previous_id
     db.put_law("line", &law, &SEMANTICS_A).expect("stored");
 
     // SEMANTICS_B is a different made-up identifier, not one
-    // `alice_det_math::PREVIOUS_SEMANTICS_IDS` contains (that list only ever
+    // `alice_core::law::PREVIOUS_SEMANTICS_IDS` contains (that list only ever
     // holds identifiers the arithmetic crate itself published), so looking the
     // same law up under it must come back empty regardless of how many
     // previous identifiers the running crate happens to carry.
@@ -398,7 +398,7 @@ fn law_pointers_for_tries_the_current_identifier_before_any_previous_one() {
 #[test]
 fn reindex_leaves_a_law_stored_under_an_unaccepted_identifier_alone() {
     // SEMANTICS_A is not the identifier passed as "current" here, and it is
-    // not in `alice_det_math::PREVIOUS_SEMANTICS_IDS` either (that list only
+    // not in `alice_core::law::PREVIOUS_SEMANTICS_IDS` either (that list only
     // ever holds identifiers the arithmetic crate itself published as
     // bit-reproducing) — exactly the shape of a `SemanticsCheck::Mismatch`.
     // Reindex must not manufacture a pointer for it: doing so would assert a

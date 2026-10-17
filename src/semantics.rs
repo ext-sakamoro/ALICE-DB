@@ -4,19 +4,25 @@
 //! the decisions this crate computes itself: which model a segment stores and
 //! what it reads back, the aggregates over stored values, the size of a
 //! bloom filter and the identifiers and values of stored laws. This module folds those digests, plus the semantics
-//! identifier of `alice-det-math` (the transcendental functions the models
-//! are evaluated with), into one 32-byte value. Two builds with the same
-//! identifier compute every pinned scenario to the same bits; a build that
-//! computes any of them differently has a different value.
+//! identifier of `alice-zip` (whose models and laws this crate stores and
+//! evaluates), into one 32-byte value. Two builds with the same identifier
+//! compute every pinned scenario to the same bits; a build that computes any
+//! of them differently has a different value.
+//!
+//! `alice-zip`'s identifier is itself a fold of `alice-det-math`'s (the
+//! transcendental functions the models are evaluated with) and of its own
+//! pinned outputs, so the `alice-det-math` generation is covered through it:
+//! each `alice-det-math` identifier maps to one `alice-zip` identifier
+//! (`tests/db_semantics_id.rs` pins that the resolved one is reachable).
 //!
 //! [`crate::SEMANTICS_ID`] is a different identifier: the arithmetic a stored
-//! residual or law record was measured against (the `alice-det-math`
-//! identifier), which is what a reader compares a stored value with.
+//! residual or law record was measured against (`alice-zip`'s), which is what a
+//! reader compares a stored value with.
 //!
-//! # Hex form (with `alice-det-math` 0.5.1)
+//! # Hex form (with `alice-zip` 0.11)
 //!
 //! ```text
-//! aab1eb3d22da13c75783c8d306feb7fa5dc8135b5d8625f315f19d68e051162f
+//! e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce
 //! ```
 //!
 //! # Fold
@@ -35,14 +41,14 @@
 //!
 //! [`DB_SEMANTICS_CHECKED_AT`] names the crate version and toolchain the pins
 //! were last checked on; a different version or toolchain fails the test
-//! below until they are checked again. An `alice-det-math` generation with no
-//! row in [`DB_SEMANTICS_BY_DET_MATH`] does not compile.
+//! below until they are checked again. An `alice-zip` generation with no row
+//! in [`DB_SEMANTICS_BY_ZIP`] does not compile.
 //!
 //! # Checked by
 //!
 //! `tests/db_semantics_id.rs` reads every digest from the golden test that
-//! records it (the source, not a copy), checks that the det-math entry equals
-//! `alice_det_math::SEMANTICS_ID` and recomputes the fold. Re-recording order
+//! records it (the source, not a copy), checks that the alice-zip entry equals
+//! `alice_core::law::SEMANTICS_ID` and recomputes the fold. Re-recording order
 //! after an intended change: update the golden first, then the entry here,
 //! then the identifier.
 
@@ -69,8 +75,7 @@ const fn hex32(s: &str) -> [u8; 32] {
 
 /// The entries [`DB_SEMANTICS_ID`] folds: one per recorded-bit scenario of
 /// `tests/determinism_golden.rs`, named as that file names it, with its
-/// SHA-256 golden, plus `"alice-det-math"` holding
-/// `alice_det_math::SEMANTICS_ID`.
+/// SHA-256 golden, plus `"alice-zip"` holding `alice_core::law::SEMANTICS_ID`.
 pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
     (
         "model selection",
@@ -90,11 +95,11 @@ pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
     ),
     (
         "law_id and evaluate",
-        hex32("703f17b165de1699421256302a23582a65cf3904f7ddc14e4c37365b0e444127"),
+        hex32("42a9c52669170b8a9246dc5e9a217a7621c5a7ca4214dfc9bb89c3015e11ed2f"),
     ),
-    // the resolved alice-det-math's own identifier, not a copy of it: the
+    // the resolved alice-zip's own identifier, not a copy of it: the
     // identifier below is looked up by it
-    ("alice-det-math", alice_det_math::SEMANTICS_ID),
+    ("alice-zip", alice_core::law::SEMANTICS_ID),
 ];
 
 /// The crate version and toolchain the pins of [`DB_SEMANTICS_PINS`] were last
@@ -105,43 +110,43 @@ pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
 /// recorded scenario moved).
 pub const DB_SEMANTICS_CHECKED_AT: (&str, &str) = ("0.6.0", "1.98.1");
 
-/// [`DB_SEMANTICS_ID`] for each `alice-det-math` generation this crate
-/// knows: `(alice_det_math::SEMANTICS_ID, fold of DB_SEMANTICS_PINS with that
-/// det-math entry)`. A build against a generation with no row does not
+/// [`DB_SEMANTICS_ID`] for each `alice-zip` generation this crate knows:
+/// `(alice_core::law::SEMANTICS_ID, fold of DB_SEMANTICS_PINS with that
+/// alice-zip entry)`. A build against a generation with no row does not
 /// compile, rather than reporting an identifier of another generation.
-pub const DB_SEMANTICS_BY_DET_MATH: &[([u8; 32], [u8; 32])] = &[
-    // alice-det-math 0.5.1
+pub const DB_SEMANTICS_BY_ZIP: &[([u8; 32], [u8; 32])] = &[
+    // alice-zip 0.11 (over alice-det-math 0.5.1)
     (
-        hex32("85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315"),
-        hex32("aab1eb3d22da13c75783c8d306feb7fa5dc8135b5d8625f315f19d68e051162f"),
+        hex32("51ffeb079769ea34bd3cb3df756b6cb940b8d2d6a6a0f1e1115ab8139415935e"),
+        hex32("e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce"),
     ),
 ];
 
 /// Content hash of this crate's own arithmetic: the fold of
 /// [`DB_SEMANTICS_PINS`] described in the [module documentation](self),
-/// taken from [`DB_SEMANTICS_BY_DET_MATH`] by the resolved `alice-det-math`.
+/// taken from [`DB_SEMANTICS_BY_ZIP`] by the resolved `alice-zip`.
 ///
-/// Hex (with `alice-det-math` 0.5.1):
-/// `aab1eb3d22da13c75783c8d306feb7fa5dc8135b5d8625f315f19d68e051162f`.
-pub const DB_SEMANTICS_ID: [u8; 32] = semantics_id_for(&alice_det_math::SEMANTICS_ID);
+/// Hex (with `alice-zip` 0.11):
+/// `e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce`.
+pub const DB_SEMANTICS_ID: [u8; 32] = semantics_id_for(&alice_core::law::SEMANTICS_ID);
 
-/// The [`DB_SEMANTICS_ID`] of a build that resolved the `alice-det-math` with
-/// identifier `det_math`.
+/// The [`DB_SEMANTICS_ID`] of a build that resolved the `alice-zip` with
+/// identifier `zip`.
 ///
 /// # Panics
 ///
-/// When [`DB_SEMANTICS_BY_DET_MATH`] has no row for `det_math` (in a const
-/// context this stops the compile).
+/// When [`DB_SEMANTICS_BY_ZIP`] has no row for `zip` (in a const context this
+/// stops the compile).
 #[must_use]
-pub const fn semantics_id_for(det_math: &[u8; 32]) -> [u8; 32] {
+pub const fn semantics_id_for(zip: &[u8; 32]) -> [u8; 32] {
     let mut i = 0;
-    while i < DB_SEMANTICS_BY_DET_MATH.len() {
-        if same32(&DB_SEMANTICS_BY_DET_MATH[i].0, det_math) {
-            return DB_SEMANTICS_BY_DET_MATH[i].1;
+    while i < DB_SEMANTICS_BY_ZIP.len() {
+        if same32(&DB_SEMANTICS_BY_ZIP[i].0, zip) {
+            return DB_SEMANTICS_BY_ZIP[i].1;
         }
         i += 1;
     }
-    panic!("alice-det-math SEMANTICS_ID has no row in DB_SEMANTICS_BY_DET_MATH: add its fold");
+    panic!("alice-zip SEMANTICS_ID has no row in DB_SEMANTICS_BY_ZIP: add its fold");
 }
 
 pub(crate) const fn same32(a: &[u8; 32], b: &[u8; 32]) -> bool {

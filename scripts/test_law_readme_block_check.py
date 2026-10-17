@@ -188,7 +188,8 @@ class Check(unittest.TestCase):
         if wf.exists():
             m = chk.CHECK_RE.search(wf.read_text(encoding="utf-8"))
             self.assertIsNotNone(m, f"{wf}: the check command is not readable")
-            self.assertEqual((m["law_main"], m["lint"]), ("origin/main", "warn"))
+            self.assertEqual(m["law_main"], "origin/main")
+            self.assertIn(m["lint"], ("warn", "error"), "a repository picks its own lint level")
 
 
 if __name__ == "__main__":

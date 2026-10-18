@@ -15,6 +15,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- CI: G2 / G5 の歯 `tests/minmax_signed_zero_arch.rs` (4 件) を `scripts/run_tests.sh` の必須一覧に足した (ci.yml の test job 3 本、release-profile.yml の 3 本、preflight の 6 本) file を消すか名前を変えると「did not run any test」で落ちる `alice-law-conformance.toml` の evidence の行番号を `path#token` の anchor (その file に 1 度だけ現れる文字列) にした 古くなっていた数を測り直して command と一緒に書いた (clippy canary 80 件、entropy guard 24 file、IR 7413 関数)
 - CI: ALICE-Analytics と共有する `scripts/package_integrity.py` / `scripts/test_package_integrity.py` を新しい版に揃えた (`--member` の追加) この crate の CI と同じ引数での出力は旧版と byte 一致 (8 行)
 - CI: ALICE-Analytics と共有する `scripts/alice_siblings_check.py` / `scripts/test_alice_siblings_check.py` / `.github/actions/alice-siblings/action.yml` を新しい版に揃えた (Cargo workspace の `[workspace].members` の manifest も読み、action に `repo-dir` 入力を足す この crate は workspace でなく既定の `repo-dir` を使うので、検査の結果は変わらない)
 

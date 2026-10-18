@@ -15,6 +15,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- CI: ALICE-Analytics と共有する `scripts/package_integrity.py` / `scripts/test_package_integrity.py` を新しい版に揃えた (`--member` の追加) この crate の CI と同じ引数での出力は旧版と byte 一致 (8 行)
 - CI: ALICE-Analytics と共有する `scripts/alice_siblings_check.py` / `scripts/test_alice_siblings_check.py` / `.github/actions/alice-siblings/action.yml` を新しい版に揃えた (Cargo workspace の `[workspace].members` の manifest も読み、action に `repo-dir` 入力を足す この crate は workspace でなく既定の `repo-dir` を使うので、検査の結果は変わらない)
 
 - **Breaking** (`analytics` feature): 任意依存 `alice-analytics` を crates.io の `>=0.5, <0.7` から path `../ALICE-Analytics` の `>=0.7, <0.8` にした (公開済の 0.6 は alice-zip 0.10 を引き、この crate の alice-zip 0.11 と 2 版が並ぶので 0.6 は受け取らない) CI は `.github/alice-siblings` に書いた commit の ALICE-Analytics を隣に置く 公開 API の `AnalyticsSink::pipeline` の型と `flush_metrics_to_db` が受け取る pipeline は alice-analytics 0.7 の `MetricPipeline` になる (alice-analytics 0.6 の型を名指す呼び出し側は 0.7 に上げる) alice-det-math の要求の説明を alice-zip の識別子に合わせた

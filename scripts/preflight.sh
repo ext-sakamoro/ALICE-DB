@@ -48,6 +48,9 @@ step "ci.yml / fmt: cargo fmt --check"
 cargo fmt -- --check
 
 step "ci.yml / docs-lint: tests + public documents / CHANGELOG structure"
+# text files are LF in the index and the working tree (.github/workflows/eol.yml, shared by the ALICE crates)
+python3 scripts/test_check_eol.py
+python3 scripts/check_eol.py
 python3 scripts/test_docs_lint.py
 python3 scripts/docs_lint.py --check
 python3 scripts/check_py_license.py

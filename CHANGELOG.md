@@ -5,6 +5,8 @@ All notable changes to ALICE-DB will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `conformance/g11-own.toml`: ALICE-Law G11 の表のうち、この crate 固有の行 (G4 / G5 の golden、G6 の識別子、G7 の law record の識別子の照合、G8 の保存した識別子の照合、比較 0 件は `scripts/run_tests.sh` の試験) 共有の検査器の行は ALICE-Law の `conformance/g11-shared-rows.toml` から生成する
+- CI (ALICE-Law G11 (c)): ほかの ALICE の crate と同じ bytes で持つ file を ALICE-Law の表と比べる `scripts/shared_files.sh` (試験 `scripts/test_shared_files.py`、ALICE-DetMath などと同じ中身) と `.github/shared-files-pin` を足し、docs-lint job (3 OS) と preflight で走らせる 表と検査器は pin の版で取得し SHA-256 を確かめる 差、表に無い共有の path、比較 0 件は失敗
 - CI: text の file の行末の検査 `scripts/check_eol.py` (試験 `scripts/test_check_eol.py`) と `.github/workflows/eol.yml` を足した `git ls-files --eol` で text の file が index か working tree で CRLF / 混在なら失敗 (`-text` と binary は除く、比べた数を出し 0 件は失敗)、workflow は ubuntu / macos / windows で走り、preflight にも同じ検査を足した (ALICE の crate で同じ中身の file)
 - 試験 `tests/identifier_history.rs` (ALICE-Law G9 の識別子の履歴): この crate が刻んだ識別子ごとにその版が書いた store を 1 つずつ古い順に読む 識別子の無い 0.3.0-beta.1 と意味の変わった `d2209b30…` (0.3.0) は既定の読みで拒否、`135c407d…` (0.5.0) と `85e08846…` (0.5.1) は `VerifiedPrevious` で bit そのまま、現在の `51ffeb07…` (fixture `tests/fixtures/store_db_0_6_0`、公開前の 0.6.0 が書いた) は `Current` 行の順 (書いた版、読みの段階、alice-zip の以前の識別子の一覧の順) も確かめる conformance の G9 を pass に
 - CI (ALICE-Law G9): `scripts/id_move_check.py` (ALICE の識別子を持つ crate で共有、ALICE-Zip と同じ file) を追加 最新の release tag の公開版と作業 tree で `DB_SEMANTICS_ID` と residual / law record に刻む `SEMANTICS_ID` の値を読み、動いたのに破壊的な版になっていない / 公開版の値が以前の識別子の一覧に無い / CHANGELOG が両方の値を書いていない時に fail する 型が `[u8; 32]` の定数は全部、検査対象か理由付きの除外に載せる (ci.yml の clippy job と preflight)

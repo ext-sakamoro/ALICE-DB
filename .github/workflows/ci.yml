@@ -267,6 +267,14 @@ jobs:
       # OS's own bash
       - name: run_tests.sh (tests)
         run: python scripts/test_run_tests.py
+      # ALICE-Law G11 (c): the files shared with the other crates are the bytes ALICE-Law's
+      # table records (table and checker fetched at .github/shared-files-pin, both SHA-256
+      # pinned); a difference, an unlisted shared path or nothing compared fails
+      - name: Shared files equal ALICE-Law's table
+        shell: bash
+        run: |
+          python scripts/test_shared_files.py
+          scripts/shared_files.sh
       - name: Entropy guard (tests)
         run: python scripts/test_entropy_guard.py
       - name: Entropy guard (no OS entropy / wall clock in production code)

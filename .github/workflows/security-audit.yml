@@ -203,7 +203,7 @@ jobs:
           --require-file README.md --require-file README_JP.md
           --require-file tests/fixtures/store_det_math_0_4/seg_1.rkyv
           --doctests-min 1
-          "--test-in-package=--features open-file-audit --test residual_arithmetic --test blob_compaction_crash_safety"
+          "--test-in-package=--features open-file-audit --test residual_arithmetic --test blob_compaction_crash_safety --test wal_recovery_crash"
           "--locked-check-args=--all-features --all-targets"
           "--check-args=--lib --all-features"
           --expect-in-lock numpy

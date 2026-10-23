@@ -527,7 +527,7 @@ impl BlobSstable {
         let file = writer
             .into_inner()
             .map_err(std::io::IntoInnerError::into_error)?;
-        file.sync_all()?;
+        crate::fs_audit::sync_all(&file, "sstable", &tmp_path)?;
         drop(file);
 
         Ok(tmp_path)

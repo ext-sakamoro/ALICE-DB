@@ -213,6 +213,12 @@ is not a deduplication key.
 A given sequence of writes reads back bit-identically from either backend
 (`tests/storage_backend_parity.rs`).
 
+On open, the file backend cuts a torn or corrupt tail off the blob WAL at the
+last good record, so later writes are not lost behind it. The dropped bytes are
+kept in `blob.wal.dropped-<offset>` next to the WAL, written and fsynced before
+the cut, and `AliceDB::blob_wal_recovery()` reports what was cut. A WAL that
+ends on a record boundary is left as it is.
+
 ## Features
 
 | Feature | Default | Description |

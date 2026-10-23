@@ -30,8 +30,7 @@ use serde::{Deserialize, Serialize};
 /// With rkyv, this enum can be read directly from mmap without deserialization.
 /// `ArchivedModelType` provides the same interface for zero-copy access.
 #[derive(Debug, Clone, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
-#[archive(check_bytes)]
-#[archive_attr(derive(Debug))]
+#[rkyv(derive(Debug))]
 pub enum ModelType {
     /// Polynomial model: `y = c[0] + c[1]*x + c[2]*x^2 + ...`
     ///
@@ -155,8 +154,7 @@ pub enum ModelType {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(check_bytes)]
-#[archive_attr(derive(Debug, PartialEq, Eq))]
+#[rkyv(derive(Debug, PartialEq, Eq))]
 pub enum DataType {
     Float32,
     Float64,

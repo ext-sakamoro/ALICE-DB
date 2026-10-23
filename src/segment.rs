@@ -21,10 +21,9 @@
 //! License: MIT
 //! Author: Moroya Sakamoto
 
-use crate::model::{ArchivedDataType, ArchivedModelType, DataType, ModelType};
+use crate::model::{DataType, ModelType};
 use alice_core::generators;
 #[cfg(feature = "fs")]
-use memmap2::Mmap;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "fs")]
@@ -268,9 +267,17 @@ mod law {
 }
 
 /// Segment metadata
+/// Magic at the start of a stored segment file of format 1 or later
+const SEGMENT_MAGIC: &[u8; 8] = b"ALICESEG";
+/// Length of the stored segment header: magic, format (`u32` LE), 4 reserved zero bytes
+const SEGMENT_HEADER_LEN: usize = 16;
+/// The stored segment format this version writes: 1 = the header, then an rkyv 0.8 archive
+/// of [`DataSegment`]. Format 0 (no header, an rkyv 0.7 archive) is what releases before
+/// 0.6.0 wrote; it is still read.
+pub const SEGMENT_FORMAT: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
-#[archive(check_bytes)]
-#[archive_attr(derive(Debug))]
+#[rkyv(derive(Debug))]
 pub struct SegmentMetadata {
     /// Unique segment ID
     pub id: u64,
@@ -292,8 +299,7 @@ pub struct SegmentMetadata {
 /// Each segment covers a contiguous time range and stores
 /// a procedural model instead of raw data.
 #[derive(Debug, Clone, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
-#[archive(check_bytes)]
-#[archive_attr(derive(Debug))]
+#[rkyv(derive(Debug))]
 pub struct DataSegment {
     /// Start timestamp (inclusive)
     pub start_time: i64,
@@ -809,37 +815,64 @@ impl DataSegment {
         Self::from_bytes(&data)
     }
 
-    /// Serialize to rkyv format (zero-copy compatible)
+    /// The bytes of a stored segment file (stored segment format
+    /// [`SEGMENT_FORMAT`]): the 16-byte header (`ALICESEG`, the format as a
+    /// little-endian `u32`, 4 reserved zero bytes), then the rkyv 0.8 archive.
     ///
     /// # Errors
     ///
     /// Returns an error if rkyv serialization fails.
     pub fn to_rkyv_bytes(&self) -> io::Result<Vec<u8>> {
-        rkyv::to_bytes::<_, 256>(self)
-            .map(|v| v.to_vec())
-            .map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("rkyv serialize: {e:?}"))
-            })
+        let archive = rkyv::to_bytes::<rkyv::rancor::Error>(self).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("rkyv serialize: {e}"))
+        })?;
+        let mut out = Vec::with_capacity(SEGMENT_HEADER_LEN + archive.len());
+        out.extend_from_slice(SEGMENT_MAGIC);
+        out.extend_from_slice(&SEGMENT_FORMAT.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&archive);
+        Ok(out)
     }
 
-    /// Decode a stored segment file's bytes (what `write_rkyv` wrote, or a
-    /// segment file of an earlier release) into an owned segment.
+    /// Decode a stored segment file's bytes into an owned segment: format
+    /// [`SEGMENT_FORMAT`] (what [`Self::to_rkyv_bytes`] writes) through
+    /// rkyv's checked deserialization, or format 0 (the files of earlier
+    /// releases, which start without the header: an rkyv 0.7 archive)
+    /// through a built-in reader of that layout.
+    ///
+    /// Decoding never allocates more than the input's length allows: the
+    /// archive is copied once into an aligned buffer of its own size, and
+    /// every length inside it is checked against the bytes present.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidData` when the bytes are not a valid stored segment.
+    /// Returns `InvalidData` when the bytes are not a valid stored segment,
+    /// or carry a format newer than [`SEGMENT_FORMAT`].
     pub fn from_stored_bytes(bytes: &[u8]) -> io::Result<Self> {
-        let archived = rkyv::check_archived_root::<Self>(bytes).map_err(|e| {
-            io::Error::new(
+        let Some(rest) = bytes.strip_prefix(SEGMENT_MAGIC.as_slice()) else {
+            return crate::segment_v07::decode(bytes);
+        };
+        if rest.len() < SEGMENT_HEADER_LEN - SEGMENT_MAGIC.len() {
+            return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("rkyv validation: {e:?}"),
-            )
-        })?;
-        archived
-            .deserialize(&mut rkyv::Infallible)
-            .map_err(|e: std::convert::Infallible| match e {})
+                "stored segment: the header is cut short",
+            ));
+        }
+        let format = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
+        if format != SEGMENT_FORMAT || rest[4..8] != [0; 4] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "stored segment format {format} is not one this reader knows (it reads 0 and {SEGMENT_FORMAT})"
+                ),
+            ));
+        }
+        let mut archive = rkyv::util::AlignedVec::<16>::with_capacity(rest.len() - 8);
+        archive.extend_from_slice(&rest[8..]);
+        rkyv::from_bytes::<Self, rkyv::rancor::Error>(&archive).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("rkyv validation: {e}"))
+        })
     }
-
     /// Write segment to file in rkyv format
     ///
     /// # Errors
@@ -1506,37 +1539,8 @@ pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
 }
 
 // =============================================================================
-// SegmentView: Unified Zero-Copy Access (Phase 1)
+// SegmentView: a stored segment, decoded once
 // =============================================================================
-
-/// Backing storage for Zero-Copy access
-///
-/// Supports multiple memory sources while maintaining zero-copy semantics.
-/// The archived data is accessed directly without deserialization regardless
-/// of the underlying storage type.
-#[derive(Clone)]
-pub enum SegmentSource {
-    /// Memory-mapped file (best for large segments, lazy loading).
-    /// Holds `File` to keep the advisory shared lock alive until drop.
-    #[cfg(feature = "fs")]
-    Mmap(Arc<Mmap>, Arc<File>),
-    /// In-memory bytes (for freshly flushed `MemTable` data)
-    Vec(Arc<Vec<u8>>),
-    /// Static slice (for embedded/testing)
-    Slice(&'static [u8]),
-}
-
-impl AsRef<[u8]> for SegmentSource {
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            #[cfg(feature = "fs")]
-            Self::Mmap(m, _file) => m.as_ref(),
-            Self::Vec(v) => v.as_slice(),
-            Self::Slice(s) => s,
-        }
-    }
-}
 
 /// Reinterpret decompressed little-endian bytes as `f32` samples of `dtype`.
 fn decode_raw_bytes(decompressed: &[u8], dtype: DataType) -> Vec<f32> {
@@ -1561,284 +1565,141 @@ fn decode_raw_bytes(decompressed: &[u8], dtype: DataType) -> Vec<f32> {
     }
 }
 
-/// Zero-copy segment view (The "Hot" path for all queries)
+/// A stored segment read for queries.
 ///
-/// This is the unified type for accessing segment data. Whether the data
-/// comes from mmap, in-memory Vec, or static slice, queries execute with
-/// zero deserialization overhead.
+/// The segment file's bytes are decoded once, when the view is made, into an
+/// owned [`DataSegment`] (stored segment format 1 through rkyv's checked
+/// deserialization, format 0 through the built-in reader of the earlier
+/// layout, see [`DataSegment::from_stored_bytes`]); every query then runs the
+/// same [`DataSegment`] methods as an in-memory segment, so a stored segment
+/// and the segment it was written from answer from one law path.
 ///
-/// # Performance
+/// # Memory
 ///
-/// - Open: O(1) - just validate rkyv header
-/// - Query: O(1) per point - compute f(x) from archived coefficients
-/// - Memory: Zero-copy - no heap allocation during queries
-///
-/// # Safety: Field Order Matters!
-///
-/// Rust drops fields in declaration order (top to bottom).
-/// `archived` is a reference into `source`, so we MUST drop `archived` first.
-/// By declaring `archived` before `source`, we ensure:
-///   1. `archived` is dropped first (reference becomes invalid, but no use-after-free)
-///   2. `source` is dropped second (backing memory is freed safely)
-///
-/// DO NOT reorder these fields without understanding the safety implications!
-///
-/// # Lifecycle
-///
-/// ```text
-/// MemTable flush → rkyv bytes → SegmentView::from_vec() → Cache
-///                             ↓
-///                        Write to disk (async)
-///                             ↓
-/// Next startup → SegmentView::open() → mmap → Cache
-/// ```
+/// An open view holds its decoded segment: about the size of the segment
+/// file (the model's coefficients and the residual bytes). The file is not
+/// kept mapped after it is read.
 pub struct SegmentView {
-    // ⚠️ SAFETY: archived MUST be declared BEFORE source!
-    // Rust drops fields top-to-bottom. archived references source's memory,
-    // so archived must be invalidated before source is freed.
-    /// Archived segment (zero-copy reference into source) - DROPPED FIRST
-    archived: &'static ArchivedDataSegment,
-    /// Backing memory (kept alive for archived reference) - DROPPED SECOND
-    source: SegmentSource,
+    segment: DataSegment,
+    source: &'static str,
 }
 
 impl SegmentView {
-    /// Open a segment file with zero-copy mmap
+    /// Read and decode a segment file.
     ///
-    /// Best for: Reading existing segments from disk.
-    /// The OS handles page caching; only accessed pages are loaded.
+    /// The file is read under an advisory shared lock (released when the
+    /// read is done), so a concurrent writer cannot truncate it mid-read.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidData` if the file is empty or smaller than the minimum
-    /// valid rkyv archive size. An empty mmap is undefined behaviour on some
-    /// platforms; we reject it here before the `unsafe` mmap call.
+    /// Returns an error if the file cannot be read or is not a valid stored
+    /// segment.
     #[cfg(feature = "fs")]
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         #[allow(unused_imports)]
         use fs2::FileExt;
 
-        let file = File::open(path)?;
-
-        // Acquire advisory shared lock to prevent concurrent truncation/deletion.
-        // The lock is held as long as the File lives (stored in SegmentSource::Mmap).
-        // trait 経由で明示 (1.89+ の inherent File::lock_shared と MSRV 1.87 の両立、clippy incompatible_msrv)
+        let mut file = File::open(path)?;
+        // trait 経由で明示 (1.89+ の inherent File::lock_shared と MSRV の両立、clippy incompatible_msrv)
         FileExt::lock_shared(&file)?;
-
-        // Validate file size before mapping.
-        //
-        // A zero-length mmap is undefined behaviour on Linux (mmap(2) returns
-        // EINVAL) and Windows. Even a non-zero but truncated file would
-        // produce an mmap whose contents are outside the rkyv archive bounds,
-        // causing rkyv validation to fail or — if validation were skipped —
-        // undefined behaviour. We reject both cases here so that the unsafe
-        // Mmap::map call below always operates on a correctly-sized file.
-        //
-        // rkyv 0.7 archives contain at minimum an 8-byte root offset footer,
-        // so any valid archive must be larger than 0 bytes.
-        let file_len = file.metadata()?.len();
-        if file_len == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "segment file is empty (0 bytes); cannot mmap",
-            ));
-        }
-        // A minimal rkyv DataSegment archive is at least a few hundred bytes.
-        // Using 8 as the lower bound here matches the rkyv root-offset footer
-        // size and prevents the mmap call from succeeding on severely truncated
-        // files before rkyv validation catches the corruption.
-        if file_len < 8 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "segment file is too small ({file_len} bytes) to contain a valid rkyv archive"
-                ),
-            ));
-        }
-
-        // SAFETY: The file descriptor is valid and the file has been confirmed
-        // non-empty above. The resulting Mmap is stored in Arc<Mmap> inside
-        // SegmentSource::Mmap and kept alive for the lifetime of the
-        // SegmentView, ensuring the mapped pages are not unmapped while any
-        // reference into them is live.
-        let mmap = unsafe { Mmap::map(&file)? };
-
-        // Pre-fault validation: touch first and last bytes to detect
-        // SIGBUS early (file truncated/deleted between stat and mmap)
-        {
-            let bytes = mmap.as_ref();
-            let _ = bytes[0];
-            let _ = bytes[bytes.len() - 1];
-        }
-
-        let source = SegmentSource::Mmap(Arc::new(mmap), Arc::new(file));
-        Self::from_source(source)
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+        drop(file);
+        Self::decode(&data, "file")
     }
 
-    /// Open a segment file by reading into memory (no mmap)
-    ///
-    /// Use this instead of `open()` to avoid SIGBUS risk when the
-    /// underlying file might be deleted or truncated after opening.
+    /// Read a segment file without taking the shared lock.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read or contains invalid rkyv data.
+    /// Returns an error if the file cannot be read or is not a valid stored
+    /// segment.
     #[cfg(feature = "fs")]
     pub fn open_read<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let data = std::fs::read(path)?;
-        Self::from_vec(data)
+        Self::decode(&data, "file")
     }
 
-    /// Create from in-memory bytes (Zero-Copy, no disk I/O)
-    ///
-    /// Best for: Freshly flushed `MemTable` data.
-    /// Avoids waiting for disk write to complete before caching.
+    /// Decode stored segment bytes held in memory (a freshly flushed
+    /// segment, or a decrypted file).
     ///
     /// # Errors
     ///
-    /// Returns an error if the rkyv data is invalid.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let rkyv_bytes = segment.to_rkyv_bytes()?;
-    /// let view = SegmentView::from_vec(rkyv_bytes)?;
-    /// // Now queryable immediately, disk write can happen async
-    /// ```
+    /// Returns an error if the bytes are not a valid stored segment.
     pub fn from_vec(data: Vec<u8>) -> io::Result<Self> {
-        let source = SegmentSource::Vec(Arc::new(data));
-        Self::from_source(source)
+        Self::decode(&data, "vec")
     }
 
-    /// Create from `Arc<Vec<u8>>` (avoids clone if you already have Arc)
+    /// As [`Self::from_vec`], from shared bytes.
     ///
     /// # Errors
     ///
-    /// Returns an error if the rkyv data is invalid.
+    /// Returns an error if the bytes are not a valid stored segment.
     pub fn from_arc_vec(data: Arc<Vec<u8>>) -> io::Result<Self> {
-        let source = SegmentSource::Vec(data);
-        Self::from_source(source)
+        Self::decode(&data, "vec")
     }
 
-    /// Create from static slice (for embedded/testing)
+    /// As [`Self::from_vec`], from a static slice (embedded data, tests).
     ///
     /// # Errors
     ///
-    /// Returns an error if the rkyv data is invalid.
+    /// Returns an error if the bytes are not a valid stored segment.
     pub fn from_static(data: &'static [u8]) -> io::Result<Self> {
-        let source = SegmentSource::Slice(data);
-        Self::from_source(source)
+        Self::decode(data, "slice")
     }
 
-    /// Internal: Create `SegmentView` from any `SegmentSource`
-    fn from_source(source: SegmentSource) -> io::Result<Self> {
-        let data = source.as_ref();
-
-        // Validate rkyv data. `check_archived_root` verifies byte-level
-        // validity including alignment, size, and internal rkyv invariants,
-        // so the pointer we derive from it is guaranteed to be correctly
-        // aligned and to point into initialized, immutable memory within
-        // `data`.
-        let archived = rkyv::check_archived_root::<DataSegment>(data).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("rkyv validation: {e:?}"),
-            )
-        })?;
-
-        // SAFETY: Lifetime extension from &'data ArchivedDataSegment to
-        // &'static ArchivedDataSegment.
-        //
-        // Invariants that make this sound:
-        //
-        // 1. **Alignment & size**: `rkyv::check_archived_root` above has
-        //    already verified that `archived` is correctly aligned for
-        //    `ArchivedDataSegment` and that all referenced bytes are within
-        //    bounds of `data`. No type-punning occurs; we are only changing
-        //    the lifetime, not the type or the pointer value.
-        //
-        // 2. **Backing memory lifetime**: `source` is stored in the same
-        //    `SegmentView` struct immediately after this block. Rust's
-        //    ownership model guarantees that `source` is not dropped before
-        //    `SegmentView` is dropped.
-        //
-        // 3. **Drop order**: `archived` is declared as the *first* field of
-        //    `SegmentView` (see struct definition). Rust drops fields in
-        //    declaration order (top to bottom). Therefore `archived` (a plain
-        //    reference — no destructor) is "dropped" before `source`. Because
-        //    references have no destructor, this ordering ensures no
-        //    use-after-free: the reference simply becomes unreachable before
-        //    the backing memory is freed. The struct-level doc comment above
-        //    the `SegmentView` definition explicitly warns maintainers not to
-        //    reorder these fields.
-        //
-        // 4. **No interior mutability / aliasing**: `SegmentSource` variants
-        //    (Mmap, Vec, Slice) all provide shared read-only access to the
-        //    underlying bytes. No `&mut` reference to the backing bytes is
-        //    ever created while `archived` is live.
-        //
-        // 5. **No Send/Sync unsoundness**: `Arc<Mmap>` and `Arc<Vec<u8>>`
-        //    are `Send + Sync`, so `SegmentView` remains safe to share across
-        //    threads. The `&'static` annotation does not introduce additional
-        //    aliasing beyond what `Arc` already permits.
-        //
-        // Alternative considered: storing a raw pointer `*const
-        // ArchivedDataSegment` instead of `&'static`. That would be equally
-        // safe but would require unsafe derefs at every access site, making
-        // the code more verbose without any safety gain.
-        let archived: &'static ArchivedDataSegment = unsafe {
-            // We cast the pointer, not the reference, to make it explicit that
-            // only the lifetime tag changes and no reinterpretation of the
-            // pointed-to bits occurs.
-            &*std::ptr::from_ref::<ArchivedDataSegment>(archived)
-        };
-
-        Ok(Self { archived, source })
+    fn decode(data: &[u8], source: &'static str) -> io::Result<Self> {
+        Ok(Self {
+            segment: DataSegment::from_stored_bytes(data)?,
+            source,
+        })
     }
 
-    /// Get the underlying source type (for debugging/stats)
+    /// Where the bytes were read from: `"file"`, `"vec"` or `"slice"`
     #[must_use]
     pub const fn source_type(&self) -> &'static str {
-        match &self.source {
-            #[cfg(feature = "fs")]
-            SegmentSource::Mmap(..) => "mmap",
-            SegmentSource::Vec(_) => "vec",
-            SegmentSource::Slice(_) => "slice",
-        }
+        self.source
+    }
+
+    /// The decoded segment
+    #[must_use]
+    pub const fn segment(&self) -> &DataSegment {
+        &self.segment
     }
 
     /// Get start timestamp
     #[inline]
     #[must_use]
     pub const fn start_time(&self) -> i64 {
-        self.archived.start_time
+        self.segment.start_time
     }
 
     /// Get end timestamp
     #[inline]
     #[must_use]
     pub const fn end_time(&self) -> i64 {
-        self.archived.end_time
+        self.segment.end_time
     }
 
     /// Check if timestamp is in range
     #[inline]
     #[must_use]
     pub const fn contains(&self, timestamp: i64) -> bool {
-        timestamp >= self.archived.start_time && timestamp <= self.archived.end_time
+        self.segment.contains(timestamp)
     }
 
     /// Whether the segment carries a lossless residual
     #[must_use]
-    pub fn is_lossless(&self) -> bool {
-        self.archived.residual_blob.is_some()
+    pub const fn is_lossless(&self) -> bool {
+        self.segment.residual_blob.is_some()
     }
 
     /// The segment's `created_at` metadata (Unix millis, or whatever the
     /// writer passed to [`DataSegment::new`] -- this crate itself never
     /// reads the wall clock, see G10)
     #[must_use]
-    pub fn created_at(&self) -> u64 {
-        self.archived.metadata.created_at
+    pub const fn created_at(&self) -> u64 {
+        self.segment.metadata.created_at
     }
 
     /// First point of the segment's even grid at or after `timestamp`, or
@@ -1851,8 +1712,8 @@ impl SegmentView {
     #[must_use]
     pub fn grid_ceil(&self, timestamp: i64) -> Option<i64> {
         law::grid_ceil(
-            self.archived.start_time,
-            self.archived.end_time,
+            self.segment.start_time,
+            self.segment.end_time,
             self.point_count(),
             timestamp,
         )
@@ -1864,366 +1725,91 @@ impl SegmentView {
         self.grid_ceil(timestamp) == Some(timestamp)
     }
 
-    /// Zero-copy point query
-    ///
-    /// Computes f(x) directly from archived model coefficients.
-    /// No deserialization occurs - we read directly from mmap.
+    /// Point query, as [`DataSegment::query_point`]
     ///
     /// # Errors
     ///
     /// [`ResidualError`], as [`DataSegment::query_point`].
-    #[inline(always)]
     pub fn query_point(&self, timestamp: i64) -> Result<Option<f32>, ResidualError> {
-        self.read_point(timestamp, UnpinnedResiduals::Refuse)
-            .map(|read| read.map(|(value, _)| value))
+        self.segment.query_point(timestamp)
     }
 
-    /// [`Self::query_point`] that also says what the value rests on, and whether a residual
-    /// written before residuals carried an identifier ([`ResidualSemantics::Unpinned`]) is
-    /// applied ([`UnpinnedResiduals::Accept`]) or refused with [`ResidualError::Unpinned`]
+    /// As [`DataSegment::read_point`]
     ///
     /// # Errors
     ///
-    /// As [`Self::query_point`], and [`ResidualError::Unpinned`] for a residual without an
-    /// identifier under [`UnpinnedResiduals::Refuse`].
+    /// As [`DataSegment::read_point`].
     pub fn read_point(
         &self,
         timestamp: i64,
         unpinned: UnpinnedResiduals,
     ) -> Result<Option<(f32, ReadStatus)>, ResidualError> {
-        let Some(value) = self.model_point(timestamp) else {
-            return Ok(None);
-        };
-        // Lossless mode stores per-sample residuals; the in-memory path applied
-        // them, the mmap path did not until 0.2.0-beta.2.
-        let Some(residual) = checked_residual(
-            self.archived
-                .residual_blob
-                .as_ref()
-                .map(rkyv::vec::ArchivedVec::as_slice),
-            self.archived.metadata.point_count as usize,
-            self.archived.metadata.id,
-            self.archived.start_time,
-            self.archived.end_time,
-            unpinned,
-        )?
-        else {
-            // no residual: the model's value, a computed one
-            return Ok(Some((canon32(value), ReadStatus::Current)));
-        };
-        let (kind, decompressed, status) = residual;
-        let idx = self.archived_timestamp_to_index(timestamp);
-        apply_residual(value, kind, &decompressed, idx)
-            .map(|value| Some((value, status)))
-            .ok_or_else(|| {
-                missing_word(
-                    self.archived.metadata.id,
-                    self.archived.start_time,
-                    self.archived.end_time,
-                    self.archived.metadata.point_count as usize,
-                    decompressed.len(),
-                )
-            })
+        self.segment.read_point(timestamp, unpinned)
     }
 
-    /// The model's value at `timestamp`, with no residual applied (see
-    /// [`DataSegment::query_point_model_only`])
-    #[inline(always)]
+    /// The model's value at `timestamp`, with no residual applied
     #[must_use]
     pub(crate) fn model_point(&self, timestamp: i64) -> Option<f32> {
-        if !self.contains(timestamp) {
-            return None;
-        }
-        let n = self.archived.metadata.point_count as usize;
-        let i = law::sample_pos(
-            self.archived.start_time,
-            self.archived.end_time,
-            n,
-            timestamp,
-        );
-        Some(self.evaluate_archived_model(i))
+        self.segment.model_point(timestamp)
     }
 
-    /// The model's value at `timestamp` with no residual applied, a NaN as the canonical
-    /// `f32::NAN` (`0x7fc0_0000`): a computed value (ALICE-Law G4). The residual is applied
-    /// to the uncanonicalised value, so a lossless read returns the stored bits
+    /// As [`DataSegment::query_point_model_only`]
     #[must_use]
     pub fn query_point_model_only(&self, timestamp: i64) -> Option<f32> {
-        self.model_point(timestamp).map(canon32)
+        self.segment.query_point_model_only(timestamp)
     }
 
     /// Whether this segment's values come back exactly, and if not why
     #[must_use]
     pub fn residual_status(&self) -> ResidualStatus {
-        residual_status(
-            self.archived
-                .residual_blob
-                .as_ref()
-                .map(rkyv::vec::ArchivedVec::as_slice),
-            self.archived.metadata.point_count as usize,
-        )
+        self.segment.residual_status()
     }
 
-    /// Sample index of `timestamp` under the segment's uniform-spacing model
-    /// (mirror of `DataSegment::timestamp_to_index` for the archived view).
-    fn archived_timestamp_to_index(&self, timestamp: i64) -> usize {
-        law::sample_pos(
-            self.archived.start_time,
-            self.archived.end_time,
-            self.archived.metadata.point_count as usize,
-            timestamp,
-        )
-        .round() as usize
-    }
-
-    /// Zero-copy range query (Loop Unswitched + SIMD for Polynomial)
-    ///
-    /// # Performance: Same optimization as `DataSegment`
-    ///
-    /// Branch ONCE outside loop, then run tight branchless loops.
-    /// Polynomial uses SIMD (f64x4) for 4x throughput.
+    /// Range query, as [`DataSegment::query_range`]
     ///
     /// # Errors
     ///
     /// [`ResidualError`], as [`DataSegment::query_range`].
     pub fn query_range(&self, start: i64, end: i64) -> Result<Vec<(i64, f32)>, ResidualError> {
-        self.read_range(start, end, UnpinnedResiduals::Refuse)
-            .map(|(points, _)| points)
+        self.segment.query_range(start, end)
     }
 
-    /// [`Self::query_range`] that also says what the values rest on (see [`Self::read_point`])
+    /// As [`DataSegment::read_range`]
     ///
     /// # Errors
     ///
-    /// As [`Self::read_point`].
+    /// As [`DataSegment::read_range`].
     pub fn read_range(
         &self,
         start: i64,
         end: i64,
         unpinned: UnpinnedResiduals,
     ) -> Result<(Vec<(i64, f32)>, ReadStatus), ResidualError> {
-        let residual = checked_residual(
-            self.archived
-                .residual_blob
-                .as_ref()
-                .map(rkyv::vec::ArchivedVec::as_slice),
-            self.archived.metadata.point_count as usize,
-            self.archived.metadata.id,
-            self.archived.start_time,
-            self.archived.end_time,
-            unpinned,
-        )?;
-        let mut results = self.model_range(start, end);
-        // Lossless residuals (see `query_point`)
-        let mut status = ReadStatus::Current;
-        if let Some((kind, decompressed, residual_status)) = residual {
-            status = residual_status;
-            for (timestamp, value) in &mut results {
-                let idx = self.archived_timestamp_to_index(*timestamp);
-                *value = apply_residual(*value, kind, &decompressed, idx).ok_or_else(|| {
-                    missing_word(
-                        self.archived.metadata.id,
-                        self.archived.start_time,
-                        self.archived.end_time,
-                        self.archived.metadata.point_count as usize,
-                        decompressed.len(),
-                    )
-                })?;
-            }
-        } else {
-            // no residual: the model's values, computed ones
-            for (_, value) in &mut results {
-                *value = canon32(*value);
-            }
-        }
-        Ok((results, status))
+        self.segment.read_range(start, end, unpinned)
     }
 
-    /// The model's values over `[start, end]`, with no residual applied (see
-    /// [`DataSegment::query_point_model_only`])
+    /// The model's values over `[start, end]`, with no residual applied
     #[must_use]
     pub(crate) fn model_range(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
-        let query_start = start.max(self.archived.start_time);
-        let query_end = end.min(self.archived.end_time);
-
-        if query_start > query_end {
-            return Vec::new();
-        }
-
-        // Integer grid walk: at most `point_count` points (see `law::RangePlan`)
-        let n = self.archived.metadata.point_count as usize;
-        let plan = law::RangePlan::new(
-            self.archived.start_time,
-            self.archived.end_time,
-            n,
-            query_start,
-            query_end,
-        );
-        let mut results =
-            Vec::with_capacity(usize::try_from(plan.count).unwrap_or(n).min(n.max(1)));
-
-        // Branch on the model ONCE, then run one tight loop over the law
-        match &self.archived.model {
-            ArchivedModelType::Polynomial { coefficients, .. } => {
-                DataSegment::fill_range_polynomial(&mut results, &plan, coefficients.as_slice());
-            }
-            ArchivedModelType::Constant { value } => {
-                let v = *value as f32;
-                law::fill_range(&mut results, &plan, 0, |_| v);
-            }
-            ArchivedModelType::Linear {
-                start_value,
-                end_value,
-            } => law::fill_range(&mut results, &plan, 0, |i| {
-                law::linear_at(*start_value, *end_value, n, i)
-            }),
-            ArchivedModelType::SineWave {
-                frequency,
-                amplitude,
-                phase,
-                offset,
-            } => law::fill_range(&mut results, &plan, 0, |i| {
-                law::sine_at(*frequency, *amplitude, *phase, *offset, n, i)
-            }),
-            ArchivedModelType::MultiSine {
-                components,
-                dc_offset,
-            } => law::fill_range(&mut results, &plan, 0, |i| {
-                law::multisine_at(components, *dc_offset, n, i)
-            }),
-            ArchivedModelType::Fourier {
-                coefficients,
-                dc_offset,
-                sample_count,
-            } => {
-                // The archived bin index is `u32`; widen once outside the loop
-                // rather than per sample (the law takes `usize`).
-                let coefs: Vec<(usize, f32, f32)> = coefficients
-                    .iter()
-                    .map(|c| (c.0 as usize, c.1, c.2))
-                    .collect();
-                law::fill_range(&mut results, &plan, 0, |i| {
-                    law::fourier_at(&coefs, *dc_offset, *sample_count as usize, i)
-                });
-            }
-            ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
-                let all = self.materialise_archived_samples();
-                law::fill_range(&mut results, &plan, 0, |i| law::sampled_at(&all, i));
-            }
-        }
-
-        results
+        self.segment.model_range(start, end)
     }
 
-    /// The model's values over `[start, end]` with no residual applied, a NaN as the canonical
-    /// `f32::NAN` (see [`Self::query_point_model_only`])
+    /// As [`DataSegment::query_range_model_only`]
     #[must_use]
     pub fn query_range_model_only(&self, start: i64, end: i64) -> Vec<(i64, f32)> {
-        self.model_range(start, end)
-            .into_iter()
-            .map(|(t, v)| (t, canon32(v)))
-            .collect()
-    }
-
-    /// Evaluate the archived model at (fractional) sample position `i` — the
-    /// same [`law`] functions as the in-memory path, read zero-copy.
-    #[inline(always)]
-    fn evaluate_archived_model(&self, i: f64) -> f32 {
-        let n = self.archived.metadata.point_count as usize;
-        match &self.archived.model {
-            ArchivedModelType::Polynomial { coefficients, .. } => {
-                law::polynomial_at(coefficients.as_slice(), i)
-            }
-            ArchivedModelType::Constant { value } => *value as f32,
-            ArchivedModelType::Linear {
-                start_value,
-                end_value,
-            } => law::linear_at(*start_value, *end_value, n, i),
-            ArchivedModelType::SineWave {
-                frequency,
-                amplitude,
-                phase,
-                offset,
-            } => law::sine_at(*frequency, *amplitude, *phase, *offset, n, i),
-            ArchivedModelType::MultiSine {
-                components,
-                dc_offset,
-            } => law::multisine_at(components, *dc_offset, n, i),
-            ArchivedModelType::Fourier {
-                coefficients,
-                dc_offset,
-                sample_count,
-            } => {
-                let coefs: Vec<(usize, f32, f32)> = coefficients
-                    .iter()
-                    .map(|c| (c.0 as usize, c.1, c.2))
-                    .collect();
-                law::fourier_at(&coefs, *dc_offset, *sample_count as usize, i)
-            }
-            ArchivedModelType::PerlinNoise { .. } | ArchivedModelType::RawLzma { .. } => {
-                // Non-analytic models: materialise the sample vector and index it.
-                // (0.2.0-beta.1 returned 0.0 here — every value stored through the
-                // RawLzma fallback, i.e. any data no procedural model fits, read
-                // back as zero from the mmap path while the in-memory path was
-                // correct. Found by alice-physics' replay / db_bridge contract
-                // tests, 2026-09-15.)
-                law::sampled_at(&self.materialise_archived_samples(), i)
-            }
-        }
-    }
-
-    /// Decode the sample vector of a non-analytic archived model (`RawLzma` →
-    /// LZMA decompress + dtype reinterpret, `PerlinNoise` → regenerate from the
-    /// archived parameters). `point_count` samples; a corrupt blob yields zeros.
-    fn materialise_archived_samples(&self) -> Vec<f32> {
-        let n = self.archived.metadata.point_count as usize;
-        match &self.archived.model {
-            ArchivedModelType::RawLzma {
-                compressed_data,
-                dtype,
-                ..
-            } => {
-                use std::io::Cursor;
-                let mut decompressed = Vec::new();
-                if lzma_rs::lzma_decompress(
-                    &mut Cursor::new(compressed_data.as_slice()),
-                    &mut decompressed,
-                )
-                .is_err()
-                {
-                    return vec![0.0; n];
-                }
-                let dtype: DataType = match dtype {
-                    ArchivedDataType::Float32 => DataType::Float32,
-                    ArchivedDataType::Float64 => DataType::Float64,
-                    ArchivedDataType::Int32 => DataType::Int32,
-                    ArchivedDataType::Int64 => DataType::Int64,
-                    ArchivedDataType::UInt8 => DataType::UInt8,
-                };
-                decode_raw_bytes(&decompressed, dtype)
-            }
-            ArchivedModelType::PerlinNoise {
-                seed,
-                scale,
-                octaves,
-                persistence,
-                lacunarity,
-            } => generators::generate_fbm_1d(n, *seed, *scale, *octaves, *persistence, *lacunarity)
-                .unwrap_or_else(|_| vec![0.0; n]),
-            _ => Vec::new(),
-        }
+        self.segment.query_range_model_only(start, end)
     }
 
     /// Get compression ratio from metadata
     #[must_use]
     pub const fn compression_ratio(&self) -> f64 {
-        self.archived.metadata.compression_ratio
+        self.segment.metadata.compression_ratio
     }
 
     /// Get point count from metadata
     #[must_use]
     pub const fn point_count(&self) -> usize {
-        self.archived.metadata.point_count as usize
+        self.segment.metadata.point_count
     }
 }
 

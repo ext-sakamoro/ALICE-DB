@@ -112,4 +112,6 @@ skip-tree = []
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# alice-zip and alice-crypto are taken at a pinned commit of their public repositories
+# (the versions are not on crates.io)
+allow-git = ["https://github.com/ext-sakamoro/ALICE-Zip", "https://github.com/ext-sakamoro/ALICE-Crypto"]

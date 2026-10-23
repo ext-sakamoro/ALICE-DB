@@ -224,8 +224,12 @@ A given sequence of writes reads back bit-identically from either backend
 | `crypto` | no | ALICE-Crypto encryption at rest (`crypto_bridge::EncryptedDB`, implies `fs`) |
 | `sdf` | no | SDF spatial data storage with Morton-code indexing (implies `fs`) |
 
-`analytics` and `crypto` depend on the released `alice-analytics` 0.3 and
-`alice-crypto` 0.4 from crates.io.
+`alice-zip` and the `crypto` feature's `alice-crypto` 0.5 are taken by git at a
+pinned commit of their repositories (neither version is on crates.io), so a
+project can build alice-db from its manifest alone. `analytics` still takes
+`alice-analytics` 0.7 by path (`../ALICE-Analytics`): a project that enables
+`analytics` needs that checkout next to this one. Moving it to a pinned git
+dependency as well is the next step.
 
 ## Model types
 

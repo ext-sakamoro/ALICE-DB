@@ -5,6 +5,7 @@ All notable changes to ALICE-DB will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- CI: `scripts/test_git_consumer.py`: sibling の checkout を置かない一時 directory で、alice-db に依存する crate が既定の feature と `crypto` で依存を解決できること、manifest が sibling を path で名指すのは `alice-analytics` だけであることを確かめる
 - `conformance/g11-own.toml`: ALICE-Law G11 の表のうち、この crate 固有の行 (G4 / G5 の golden、G6 の識別子、G7 の law record の識別子の照合、G8 の保存した識別子の照合、比較 0 件は `scripts/run_tests.sh` の試験) 共有の検査器の行は ALICE-Law の `conformance/g11-shared-rows.toml` から生成する
 - CI (ALICE-Law G11 (c)): ほかの ALICE の crate と同じ bytes で持つ file を ALICE-Law の表と比べる `scripts/shared_files.sh` (試験 `scripts/test_shared_files.py`、ALICE-DetMath などと同じ中身) と `.github/shared-files-pin` を足し、docs-lint job (3 OS) と preflight で走らせる 表と検査器は pin の版で取得し SHA-256 を確かめる 差、表に無い共有の path、比較 0 件は失敗
 - CI: text の file の行末の検査 `scripts/check_eol.py` (試験 `scripts/test_check_eol.py`) と `.github/workflows/eol.yml` を足した `git ls-files --eol` で text の file が index か working tree で CRLF / 混在なら失敗 (`-text` と binary は除く、比べた数を出し 0 件は失敗)、workflow は ubuntu / macos / windows で走り、preflight にも同じ検査を足した (ALICE の crate で同じ中身の file)
@@ -18,6 +19,9 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- 依存 `alice-zip` を path `../ALICE-Zip` から、ALICE-Zip の commit `b279591` を固定した git 依存にした (要求 `>=0.11, <0.12` は同じ) sibling の checkout を置かずに git で alice-db を取る project が依存を解決できる `.github/alice-siblings` から ALICE-Zip を外した
+- **Breaking** (`crypto` feature): 依存 `alice-crypto` を crates.io の 0.4 から 0.5 (`>=0.5, <0.6`、ALICE-Crypto の commit `31d525a` を固定した git 依存、0.5 は crates.io に未公開) にした
+- `analytics` の `alice-analytics` は path `../ALICE-Analytics` のまま (`analytics` を有効にする project は隣にその checkout が要る) 共有の sibling の検査が、固定する sibling の無い repository を受け付けるようになったら git 依存に移す
 - CI: `scripts/alice_siblings_check.py` と試験 `scripts/test_alice_siblings_check.py` を ALICE-Analytics と同じ bytes にし、`.github/shared-files-pin` を ALICE-Law の新しい版に移す 検査は隣の repo の中の package を指す path (`../ALICE-Physics/crates/alice-physics` のような形) もその repo への依存として読み、repo の後に普通でない成分が続く path は失敗にする この repository の依存は repo の dir を直接指すので検査の結果は変わらない
 - CI: `scripts/run_tests.sh` と試験 `scripts/test_run_tests.py` を ALICE-LLM と同じ bytes にし、`.github/shared-files-pin` を ALICE-Law の新しい版に移す 名前 `lib` を library の単体試験として数えるようになったが、この repository は `lib` を名指さないので各段の試験の名前と件数は変わらない 試験 `scripts/test_public_text.py` を ALICE-SDF と同じ版にした (公開する text の検査を pin の checker で走らせ、置いた note link を tree と commit message で検出すること、pin の 3 行目 `config-sha256` が設定を承認することを確かめる、network を使う) `scripts/public_text.sh` と public-text の pin は変えないので検査の結果は変わらない
 - CI: `.gitattributes` に `* text=auto eol=lf` を置き、text の file を保存も checkout も全 OS で LF にした (共有 file は ALICE-Law の表と byte で比べるので、Windows の CRLF の checkout ではずれになる) binary と既存の行はそのまま、`git add --renormalize` で commit 済みの中身は変わらない

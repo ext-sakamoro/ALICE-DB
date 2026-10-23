@@ -75,6 +75,9 @@ step "ci.yml / docs-lint: Shared files equal ALICE-Law's table"
 python3 scripts/test_shared_files.py
 scripts/shared_files.sh
 
+step "ci.yml / test: git consumer (resolves with no sibling checkout)"
+python3 scripts/test_git_consumer.py
+
 step "ci.yml / docs-lint: ALICE siblings (each ../ALICE-* is the commit in .github/alice-siblings)"
 python3 scripts/test_alice_siblings_check.py
 python3 scripts/alice_siblings_check.py

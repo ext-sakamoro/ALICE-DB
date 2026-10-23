@@ -201,7 +201,7 @@ index に入れる `law_pointers_by_id` は 1 つの識別子に対する `(name
 | `crypto` | no | ALICE-Crypto による保存時暗号化 (`crypto_bridge::EncryptedDB`、`fs` を含む) |
 | `sdf` | no | Morton code で索引する SDF 空間データの保存 (`fs` を含む) |
 
-`analytics` と `crypto` は crates.io の公開版 `alice-analytics` 0.3 と `alice-crypto` 0.4 に依存する
+`alice-zip` と、`crypto` の `alice-crypto` 0.5 は、それぞれの repository の固定した commit を git で取る (どちらの版も crates.io に無い) ので、manifest だけで alice-db を build できる `analytics` は今も `alice-analytics` 0.7 を path (`../ALICE-Analytics`) で取るので、`analytics` を有効にする project は隣にその checkout が要る これも固定した git の依存に移すのが次の段
 
 ## モデルの種類
 

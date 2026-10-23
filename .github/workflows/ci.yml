@@ -86,6 +86,10 @@ jobs:
         run: cargo test --doc
       - name: Benches compile
         run: cargo bench --no-run
+      # a project that takes alice-db by git has no sibling checkout next to it: the default and
+      # `crypto` feature sets must resolve from the manifests alone (a copy of the tree placed alone)
+      - name: Git consumer (resolves with no sibling checkout)
+        run: python scripts/test_git_consumer.py
 
   wasm:
     name: wasm32-unknown-unknown build (${{ matrix.os }})

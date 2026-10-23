@@ -221,6 +221,12 @@ recovery at the same offset never replaces an earlier copy (it writes
 `blob.wal.dropped-<offset>.<n>`), and finished copies are never removed. A WAL
 that ends on a record boundary is left as it is.
 
+Recovery keeps the WAL up to its first bad record and nothing after it: a
+corrupt record in the middle of the log also drops every acknowledged record
+written after it from the live store. Those records are kept only in the
+dropped copy; the store does not replay past a record whose lengths it cannot
+trust.
+
 ## Features
 
 | Feature | Default | Description |

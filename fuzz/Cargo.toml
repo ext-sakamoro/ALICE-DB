@@ -46,5 +46,11 @@ name = "fuzz_law_record"
 path = "fuzz_targets/fuzz_law_record.rs"
 doc = false
 
+# arbitrary bytes as a stored segment file, both stored formats (DataSegment::from_stored_bytes)
+[[bin]]
+name = "fuzz_segment_decode"
+path = "fuzz_targets/fuzz_segment_decode.rs"
+doc = false
+
 [workspace]
 members = ["."]

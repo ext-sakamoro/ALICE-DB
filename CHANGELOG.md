@@ -4,7 +4,13 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
+
 ### Added
+- `DataSegment::from_stored_bytes` と `segment::SEGMENT_FORMAT`: segment の file の bytes を、保存形式を見分けて owned の `DataSegment` に戻す (形式 1 は rkyv 0.8 の検査つき deserialize、形式 0 は旧い layout を読む組み込みの reader) `SegmentView::segment` は decode した segment を返す
+- 試験 `tests/legacy_segment_values.rs` (過去 5 版の store の segment と、model の 8 variant それぞれの segment を、rkyv 0.7 の読み手で記録した値 (浮動小数点は bit) と比べる)、`tests/segment_view_parity.rs` (`SegmentView` を通した読み出しが、同じ segment のメモリ上の読み出しと bit 単位で一致する: RawLzma を含む、0.2.0-beta.1 で view だけが 0.0 を返した形の回帰)、`tests/segment_decode_alloc_bound.rs` (壊れた長さを持つ file でも、decode が確保する量は file の大きさに比例し、主張された長さには従わない / 新しい形式や 0 でない予約 byte は拒否)
+- fuzz target `fuzz_segment_decode`: 任意の bytes を segment の file として decode する (header 無しの形式 0 と、形式 1 の header の後ろ) decode できたものは今の形式で書き直して同じ segment に戻ることを確かめる
 - `AliceDB::blob_wal_recovery` / `BlobStorage::wal_recovery` / `BlobWal::recover` と `blob_wal::WalRecovery` / `WalTail`: 開いた時に blob の WAL の末尾から何を落としたか (切った位置、落とした byte 数、理由、落とした bytes を置いた file) を返す 回復を黙って行わない
 - `conformance/g11-own.toml`: ALICE-Law G11 の表のうち、この crate 固有の行 (G4 / G5 の golden、G6 の識別子、G7 の law record の識別子の照合、G8 の保存した識別子の照合、比較 0 件は `scripts/run_tests.sh` の試験) 共有の検査器の行は ALICE-Law の `conformance/g11-shared-rows.toml` から生成する
 - CI (ALICE-Law G11 (c)): ほかの ALICE の crate と同じ bytes で持つ file を ALICE-Law の表と比べる `scripts/shared_files.sh` (試験 `scripts/test_shared_files.py`、ALICE-DetMath などと同じ中身) と `.github/shared-files-pin` を足し、docs-lint job (3 OS) と preflight で走らせる 表と検査器は pin の版で取得し SHA-256 を確かめる 差、表に無い共有の path、比較 0 件は失敗
@@ -19,6 +25,8 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- **Breaking** (保存形式): segment の file の保存形式を 1 に上げた 16 byte の header (`ALICESEG`、形式の番号 `u32` LE、予約の 0 が 4 byte) の後に rkyv 0.8 の archive を置く 0.6.0 より前が書いた header の無い file (形式 0: rkyv 0.7 の archive) は組み込みの reader で引き続き読む (rkyv 0.7 には依存しない) 0.5.x 以前の reader は形式 1 の file を読めない
+- `SegmentView` は file を開く時に 1 度だけ decode して owned の `DataSegment` を持ち、問い合わせはメモリ上の segment と同じ `DataSegment` の method で答える これまでの view は archive を参照したまま model を別の写しの式で評価していた (unsafe な lifetime の延長つき) ので、式は 1 つになり unsafe は無くなった 代わりに、開いた segment は file とほぼ同じ大きさのメモリを使い (model の係数と residual の bytes)、file を map したままにはしない `SegmentView::open` は読む間だけ advisory の共有 lock を取り、読み終えたら放す (これまでは view が生きている間 lock を持っていた) `StorageConfig::use_mmap` はその共有 lock つきの読み出しか、lock 無しの読み出しかを選ぶ `SegmentView::source_type` は `"file"` / `"vec"` / `"slice"` を返す
 - CI: `scripts/alice_siblings_check.py` と試験 `scripts/test_alice_siblings_check.py` を ALICE-Analytics と同じ bytes にし、`.github/shared-files-pin` を ALICE-Law の新しい版に移す 検査は隣の repo の中の package を指す path (`../ALICE-Physics/crates/alice-physics` のような形) もその repo への依存として読み、repo の後に普通でない成分が続く path は失敗にする この repository の依存は repo の dir を直接指すので検査の結果は変わらない
 - CI: `scripts/run_tests.sh` と試験 `scripts/test_run_tests.py` を ALICE-LLM と同じ bytes にし、`.github/shared-files-pin` を ALICE-Law の新しい版に移す 名前 `lib` を library の単体試験として数えるようになったが、この repository は `lib` を名指さないので各段の試験の名前と件数は変わらない 試験 `scripts/test_public_text.py` を ALICE-SDF と同じ版にした (公開する text の検査を pin の checker で走らせ、置いた note link を tree と commit message で検出すること、pin の 3 行目 `config-sha256` が設定を承認することを確かめる、network を使う) `scripts/public_text.sh` と public-text の pin は変えないので検査の結果は変わらない
 - CI: `.gitattributes` に `* text=auto eol=lf` を置き、text の file を保存も checkout も全 OS で LF にした (共有 file は ALICE-Law の表と byte で比べるので、Windows の CRLF の checkout ではずれになる) binary と既存の行はそのまま、`git add --renormalize` で commit 済みの中身は変わらない
@@ -55,6 +63,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - CI: `scripts/package_integrity.py` と試験を ALICE-Analytics と同じ bytes に (隣の repo の中の package を指す path もその repo の sibling として読む)、shared-files の pin を ALICE-Law bb9f229 に移す
 
 ### Removed
+- `segment::SegmentSource` (view が読み出し元を持ち続けなくなったため)
 
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 

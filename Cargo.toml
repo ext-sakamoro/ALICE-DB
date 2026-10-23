@@ -48,7 +48,7 @@ alice_core = { package = "alice-zip", path = "../ALICE-Zip", version = ">=0.11, 
 alice-det-math = { version = "0.5.1", default-features = false, features = ["std"] }
 
 # Zero-Copy Serialization (Phase 1)
-rkyv = { version = "0.7", features = ["validation", "std"] }
+rkyv = { version = "0.8.17", default-features = false, features = ["std", "bytecheck"] }
 # File backend only (`fs` feature): zero-copy segment / blob SSTable reads
 memmap2 = { version = "0.9", optional = true }
 

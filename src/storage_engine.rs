@@ -390,7 +390,9 @@ pub struct StorageConfig {
     pub sync_writes: bool,
     /// Compaction threshold (number of segments)
     pub compaction_threshold: usize,
-    /// Use mmap for segment access (true = mmap, false = read into Vec)
+    /// How a segment file is read: `true` = under an advisory shared lock (a
+    /// concurrent truncation waits), `false` = a plain read. Either way the
+    /// file is read once and decoded into an owned segment
     pub use_mmap: bool,
     /// Enable background flush thread to avoid latency spikes on `put()`
     pub enable_background_flush: bool,
@@ -494,7 +496,7 @@ struct SharedState {
     index: RwLock<BTreeMap<u64, SegmentIndexEntry>>,
     /// Interval Tree for O(log N + K) range queries (Phase 4)
     interval_tree: RwLock<IntervalTree>,
-    /// Cached segments: `Arc<SegmentView>` for Zero-Copy access.
+    /// Cached segments: `Arc<SegmentView>`, each holding its decoded segment.
     segment_cache: RwLock<BTreeMap<u64, Arc<SegmentView>>>,
     /// Number of in-flight background flush jobs (for synchronization)
     in_flight: std::sync::atomic::AtomicUsize,
@@ -1271,13 +1273,11 @@ impl StorageEngine {
         Ok(recovered)
     }
 
-    /// Persist a segment to disk (rkyv format for Zero-Copy)
+    /// Persist a segment to disk in the stored segment format
     ///
-    /// # Performance: Zero-Copy Path
-    ///
-    /// 1. Serialize to rkyv bytes (in memory)
-    /// 2. Create `SegmentView` from bytes IMMEDIATELY (no disk I/O wait)
-    /// 3. Write bytes to disk (can be async in future)
+    /// 1. Encode the stored bytes (in memory)
+    /// 2. Create the `SegmentView` from those bytes immediately (no disk I/O wait)
+    /// 3. Write the bytes to disk (can be async in future)
     ///
     /// This ensures queries can hit the cache instantly after `MemTable` flush,
     /// without waiting for disk I/O to complete.
@@ -1285,12 +1285,10 @@ impl StorageEngine {
         Self::persist_segment_shared(&self.shared, &self.config, segment)
     }
 
-    /// Load a segment as `SegmentView` (Zero-Copy mmap)
+    /// Load a segment as a `SegmentView` (cached)
     ///
-    /// # Performance: Zero-Copy
-    ///
-    /// Returns Arc<SegmentView> which provides direct mmap access.
-    /// No deserialization occurs - model coefficients are read directly.
+    /// The file is read and decoded once; the cached view holds the decoded
+    /// segment (about the file's size in memory).
     fn load_segment(&self, entry: &SegmentIndexEntry) -> io::Result<Arc<SegmentView>> {
         // Check cache first (fast path)
         if let Some(view) = self.shared.segment_cache.read().get(&entry.id) {
@@ -1401,7 +1399,7 @@ impl StorageEngine {
 
             let segment = DataSegment::from_bytes(&data)?;
 
-            // Convert to rkyv format and save for future zero-copy access
+            // Encode in the stored segment format and save
             let segment_path = self.config.data_dir.join(format!("seg_{}.rkyv", entry.id));
             segment.write_rkyv(&segment_path)?;
 
@@ -1443,7 +1441,7 @@ impl StorageEngine {
             .collect()
     }
 
-    /// Query a single point (Zero-Copy via `SegmentView`)
+    /// Query a single point (through the cached `SegmentView`s)
     ///
     /// The newest write wins: the memtable first (latest write of the key),
     /// then the segments covering `timestamp` from the newest (highest id)
@@ -1480,7 +1478,7 @@ impl StorageEngine {
         let mut entries = self.find_segments(timestamp, timestamp);
         entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.id));
         for entry in &entries {
-            // Load segment as SegmentView and query (Zero-Copy)
+            // Load the segment's view and query it
             let view = self.load_segment(entry)?;
             // A lossless segment holds exactly its grid points; a key between
             // them was not written there (its residual belongs to a neighbour)
@@ -1512,16 +1510,16 @@ impl StorageEngine {
         )
     }
 
-    /// Query a time range (Zero-Copy via `SegmentView`)
+    /// Query a time range (through the cached `SegmentView`s)
     ///
     /// Returns the buffered (memtable) points and the segments' points in
     /// the range, one per key; where several hold the same key the newest
     /// wins, in the same order as [`Self::query_point`].
     ///
-    /// # Performance: Zero-Copy Path
+    /// # Performance
     ///
-    /// Uses `SegmentView` (mmap + SIMD) for maximum throughput.
-    /// No deserialization occurs during query.
+    /// Each segment is decoded once when it is loaded; queries evaluate the
+    /// decoded model (SIMD for polynomials) without further decoding.
     ///
     /// # Errors
     ///

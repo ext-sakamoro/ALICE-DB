@@ -9,10 +9,10 @@
 //! Traditional DB: Store 1000 floats → 4KB on disk
 //! ALICE-DB: Store `y = 0.5x + 10` → 16 bytes on disk
 //!
-//! # Zero-Copy Serialization (Phase 1)
+//! # Stored form
 //!
-//! Uses rkyv for zero-copy deserialization. When reading from mmap,
-//! no parsing or copying occurs - the archived data is accessed directly.
+//! A segment file stores its model through rkyv (see the stored segment
+//! format in `crate::segment`); a reader decodes it back into `ModelType`.
 //!
 //! License: MIT
 //! Author: Moroya Sakamoto
@@ -25,13 +25,10 @@ use serde::{Deserialize, Serialize};
 /// Each variant stores only the parameters needed to regenerate data.
 /// The actual data is never stored - only the "recipe" to create it.
 ///
-/// # Zero-Copy Access
-///
-/// With rkyv, this enum can be read directly from mmap without deserialization.
-/// `ArchivedModelType` provides the same interface for zero-copy access.
+/// A segment file stores it as an rkyv archive; [`crate::segment::DataSegment::from_stored_bytes`]
+/// decodes it back.
 #[derive(Debug, Clone, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
-#[archive(check_bytes)]
-#[archive_attr(derive(Debug))]
+#[rkyv(derive(Debug))]
 pub enum ModelType {
     /// Polynomial model: `y = c[0] + c[1]*x + c[2]*x^2 + ...`
     ///
@@ -155,8 +152,7 @@ pub enum ModelType {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(check_bytes)]
-#[archive_attr(derive(Debug, PartialEq, Eq))]
+#[rkyv(derive(Debug, PartialEq, Eq))]
 pub enum DataType {
     Float32,
     Float64,

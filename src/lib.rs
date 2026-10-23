@@ -1290,8 +1290,8 @@ mod raw_lzma_roundtrip_tests {
     use super::*;
 
     /// Arbitrary (non-procedural) values fall back to the `RawLzma` model; they
-    /// must round-trip through flush + mmap read exactly. 0.2.0-beta.1 returned
-    /// 0.0 for every such value from the zero-copy path (alice-physics
+    /// must round-trip through flush + segment read exactly. 0.2.0-beta.1 returned
+    /// 0.0 for every such value from the archived-view path (alice-physics
     /// replay / `db_bridge` contract tests, 2026-09-15).
     #[test]
     fn raw_lzma_values_round_trip_through_flush_and_mmap() {

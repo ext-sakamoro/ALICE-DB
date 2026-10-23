@@ -12,7 +12,7 @@ bit under any `i64` key, no model), a byte-keyed blob store, and a law store
 that keeps fitted laws together with their evidence, valid range and the
 verdicts of later evidence.
 
-Storage is either a directory (WAL, mmap'd segments, advisory locks; `fs`
+Storage is either a directory (WAL, segment files, advisory locks; `fs`
 feature, on by default) or process memory (`AliceDB::in_memory`, which also
 builds for `wasm32-unknown-unknown`). The API is the same for both.
 
@@ -207,11 +207,19 @@ is not a deduplication key.
 
 | Backend | Constructor | Notes |
 |---------|-------------|-------|
-| Files (`fs`) | `AliceDB::open(path)`, `AliceDB::with_config(config)` | segment files + index, time-series WAL, blob WAL and `SSTable`s, mmap'd reads, exclusive advisory lock on the blob WAL |
+| Files (`fs`) | `AliceDB::open(path)`, `AliceDB::with_config(config)` | segment files + index, time-series WAL, blob WAL and `SSTable`s, mmap'd `SSTable` reads, exclusive advisory lock on the blob WAL |
 | Memory | `AliceDB::in_memory(config)`, `AliceDB::from_bytes(config, &bytes)` | no filesystem; `to_bytes` exports a whole database (either backend) as one checksummed buffer |
 
 A given sequence of writes reads back bit-identically from either backend
 (`tests/storage_backend_parity.rs`).
+
+A segment file is decoded once when it is opened, into the same segment type
+the writer held, and queried through the same code as an in-memory segment
+(`tests/segment_view_parity.rs`). An open segment therefore costs about its
+file's size in memory (the model's coefficients and the residual bytes); the
+file is not kept mapped. Segment files carry a stored format number (format 1:
+a header, then an rkyv 0.8 archive); files written before 0.6.0 (format 0, an
+rkyv 0.7 archive without a header) are still read.
 
 On open, the file backend cuts a torn or corrupt tail off the blob WAL at the
 last good record, so later writes are not lost behind it. The dropped bytes are

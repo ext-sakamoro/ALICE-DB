@@ -24,16 +24,15 @@ fn dtype(d: DataType) -> &'static str {
 }
 
 fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    let mut o = String::with_capacity(2 * b.len());
+    for x in b {
+        let _ = write!(o, "{x:02x}");
+    }
+    o
 }
 
-/// One line per field, in declaration order.
-#[must_use]
-pub fn segment_text(s: &DataSegment) -> String {
-    let mut o = String::new();
-    let _ = writeln!(o, "start_time {}", s.start_time);
-    let _ = writeln!(o, "end_time {}", s.end_time);
-    match &s.model {
+fn model_text(o: &mut String, model: &ModelType) {
+    match model {
         ModelType::Polynomial {
             coefficients,
             degree,
@@ -100,10 +99,10 @@ pub fn segment_text(s: &DataSegment) -> String {
             persistence,
             lacunarity,
         } => {
-            let _ = writeln!(o, "model PerlinNoise seed {seed} scale {} octaves {octaves} persistence {} lacunarity {}", f32s(*scale), f32s(*persistence), f32s(*lacunarity));
+            let _ = writeln!(*o, "model PerlinNoise seed {seed} scale {} octaves {octaves} persistence {} lacunarity {}", f32s(*scale), f32s(*persistence), f32s(*lacunarity));
         }
         ModelType::Constant { value } => {
-            let _ = writeln!(o, "model Constant {}", f64s(*value));
+            let _ = writeln!(*o, "model Constant {}", f64s(*value));
         }
         ModelType::Linear {
             start_value,
@@ -129,6 +128,15 @@ pub fn segment_text(s: &DataSegment) -> String {
             );
         }
     }
+}
+
+/// One line per field, in declaration order.
+#[must_use]
+pub fn segment_text(s: &DataSegment) -> String {
+    let mut o = String::new();
+    let _ = writeln!(o, "start_time {}", s.start_time);
+    let _ = writeln!(o, "end_time {}", s.end_time);
+    model_text(&mut o, &s.model);
     match &s.residual_blob {
         None => {
             let _ = writeln!(o, "residual_blob none");

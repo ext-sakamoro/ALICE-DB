@@ -234,252 +234,85 @@ pub(crate) fn decode(bytes: &[u8]) -> io::Result<DataSegment> {
     })
 }
 
-// The decoder against the rkyv 0.7 reader it replaces, while that reader is still in the build.
+// The decoder's checks on damaged input. Its values are pinned by tests/legacy_segment_values.rs, whose
+// fixtures (every store fixture and one segment per model variant) were recorded by the rkyv 0.7 reader
+// itself, together with a cross-check of this decoder against that reader on 400 random segments of
+// every variant while rkyv 0.7 was still in the build.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ArchivedModelType, DataType, ModelType};
-    use crate::segment::{
-        ArchivedDataSegment, ArchivedSegmentMetadata, DataSegment, SegmentMetadata,
-    };
-    use std::mem::{offset_of, size_of};
+    use std::path::Path;
 
-    #[test]
-    fn the_offsets_are_the_rkyv_0_7_layout() {
-        assert_eq!(size_of::<ArchivedDataSegment>(), ROOT_SIZE);
-        assert_eq!(offset_of!(ArchivedDataSegment, model), SEG_MODEL);
-        assert_eq!(offset_of!(ArchivedDataSegment, start_time), SEG_START_TIME);
-        assert_eq!(offset_of!(ArchivedDataSegment, end_time), SEG_END_TIME);
-        assert_eq!(offset_of!(ArchivedDataSegment, metadata), SEG_METADATA);
-        assert_eq!(offset_of!(ArchivedDataSegment, residual_blob), SEG_RESIDUAL);
-        assert_eq!(offset_of!(ArchivedSegmentMetadata, id), META_ID);
-        assert_eq!(
-            offset_of!(ArchivedSegmentMetadata, created_at),
-            META_CREATED_AT
-        );
-        assert_eq!(
-            offset_of!(ArchivedSegmentMetadata, compression_ratio),
-            META_COMPRESSION_RATIO
-        );
-        assert_eq!(
-            offset_of!(ArchivedSegmentMetadata, point_count),
-            META_POINT_COUNT
-        );
-        assert_eq!(
-            offset_of!(ArchivedSegmentMetadata, original_size),
-            META_ORIGINAL_SIZE
-        );
-        assert_eq!(
-            offset_of!(ArchivedSegmentMetadata, model_size),
-            META_MODEL_SIZE
-        );
-        assert_eq!(size_of::<ArchivedModelType>(), 32);
-    }
-
-    /// A small deterministic generator (no dependency).
-    struct Lcg(u64);
-    impl Lcg {
-        fn next(&mut self) -> u64 {
-            self.0 = self
-                .0
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            self.0 >> 11
+    fn fixtures() -> Vec<Vec<u8>> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut out = Vec::new();
+        for store in [
+            "store_pre_0_3_0",
+            "store_det_math_0_4",
+            "store_db_0_5_0",
+            "store_db_0_5_1",
+            "store_db_0_6_0",
+        ] {
+            out.push(std::fs::read(root.join(store).join("seg_1.rkyv")).unwrap());
         }
-        fn f64(&mut self) -> f64 {
-            match self.next() % 8 {
-                0 => f64::NAN,
-                1 => -0.0,
-                2 => f64::INFINITY,
-                3 => f64::NEG_INFINITY,
-                _ => f64::from_bits(self.next() << 11 | self.next() & 0x7ff),
-            }
-        }
-        fn f32(&mut self) -> f32 {
-            match self.next() % 8 {
-                0 => f32::NAN,
-                1 => -0.0,
-                _ => f32::from_bits(self.next() as u32),
-            }
-        }
-        fn len(&mut self) -> usize {
-            (self.next() % 7) as usize
-        }
-        fn usize(&mut self) -> usize {
-            (self.next() as u32) as usize
-        }
-    }
-
-    fn model(r: &mut Lcg, variant: u64) -> ModelType {
-        match variant {
-            0 => ModelType::Polynomial {
-                coefficients: (0..r.len()).map(|_| r.f64()).collect(),
-                degree: r.usize(),
-                fit_error: r.f64(),
-            },
-            1 => ModelType::Fourier {
-                coefficients: (0..r.len())
-                    .map(|_| (r.usize(), r.f32(), r.f32()))
-                    .collect(),
-                dc_offset: r.f32(),
-                sample_count: r.usize(),
-            },
-            2 => ModelType::SineWave {
-                frequency: r.f32(),
-                amplitude: r.f32(),
-                phase: r.f32(),
-                offset: r.f32(),
-            },
-            3 => ModelType::MultiSine {
-                components: (0..r.len()).map(|_| (r.f32(), r.f32(), r.f32())).collect(),
-                dc_offset: r.f32(),
-            },
-            4 => ModelType::PerlinNoise {
-                seed: r.next(),
-                scale: r.f32(),
-                octaves: r.next() as u32,
-                persistence: r.f32(),
-                lacunarity: r.f32(),
-            },
-            5 => ModelType::Constant { value: r.f64() },
-            6 => ModelType::Linear {
-                start_value: r.f64(),
-                end_value: r.f64(),
-            },
-            _ => ModelType::RawLzma {
-                compressed_data: (0..r.len() * 3).map(|_| r.next() as u8).collect(),
-                dtype: [
-                    DataType::Float32,
-                    DataType::Float64,
-                    DataType::Int32,
-                    DataType::Int64,
-                    DataType::UInt8,
-                ][(r.next() % 5) as usize],
-                original_size: r.usize(),
-            },
-        }
-    }
-
-    fn segment(r: &mut Lcg, variant: u64) -> DataSegment {
-        DataSegment {
-            start_time: r.next() as i64,
-            end_time: r.next() as i64,
-            model: model(r, variant),
-            residual_blob: if r.next() % 2 == 0 {
-                None
-            } else {
-                Some((0..r.len() * 5).map(|_| r.next() as u8).collect())
-            },
-            metadata: SegmentMetadata {
-                id: r.next(),
-                created_at: r.next(),
-                point_count: r.usize(),
-                original_size: r.usize(),
-                model_size: r.usize(),
-                compression_ratio: r.f64(),
-            },
-        }
-    }
-
-    /// Bit-exact comparison through the serde form (floats compared by bits, NaN included).
-    fn same(a: &DataSegment, b: &DataSegment) -> bool {
-        format!("{a:?}") == format!("{b:?}") && bits(a) == bits(b)
-    }
-
-    fn bits(s: &DataSegment) -> Vec<u64> {
-        let mut v = vec![s.metadata.compression_ratio.to_bits()];
-        match &s.model {
-            ModelType::Polynomial {
-                coefficients,
-                fit_error,
-                ..
-            } => {
-                v.extend(coefficients.iter().map(|c| c.to_bits()));
-                v.push(fit_error.to_bits());
-            }
-            ModelType::Fourier {
-                coefficients,
-                dc_offset,
-                ..
-            } => {
-                v.extend(
-                    coefficients
-                        .iter()
-                        .flat_map(|&(_, a, b)| [u64::from(a.to_bits()), u64::from(b.to_bits())]),
-                );
-                v.push(u64::from(dc_offset.to_bits()));
-            }
-            ModelType::SineWave {
-                frequency,
-                amplitude,
-                phase,
-                offset,
-            } => {
-                v.extend([frequency, amplitude, phase, offset].map(|x| u64::from(x.to_bits())));
-            }
-            ModelType::MultiSine {
-                components,
-                dc_offset,
-            } => {
-                v.extend(
-                    components
-                        .iter()
-                        .flat_map(|&(a, b, c)| [a, b, c].map(|x| u64::from(x.to_bits()))),
-                );
-                v.push(u64::from(dc_offset.to_bits()));
-            }
-            ModelType::PerlinNoise {
-                scale,
-                persistence,
-                lacunarity,
-                ..
-            } => {
-                v.extend([scale, persistence, lacunarity].map(|x| u64::from(x.to_bits())));
-            }
-            ModelType::Constant { value } => v.push(value.to_bits()),
-            ModelType::Linear {
-                start_value,
-                end_value,
-            } => v.extend([start_value.to_bits(), end_value.to_bits()]),
-            ModelType::RawLzma { .. } => {}
-        }
-        v
-    }
-
-    #[test]
-    fn every_variant_decodes_as_the_rkyv_0_7_reader_does() {
-        let mut r = Lcg(0x5eed);
-        let mut compared = 0;
-        for round in 0..400 {
-            let seg = segment(&mut r, round % 8);
-            let bytes = seg.to_rkyv_bytes().unwrap();
-            let by_rkyv = DataSegment::from_stored_bytes(&bytes).unwrap();
-            let by_decoder = decode(&bytes).unwrap();
-            assert!(
-                same(&by_rkyv, &by_decoder),
-                "round {round}: {by_rkyv:?} != {by_decoder:?}"
+        for name in [
+            "polynomial",
+            "fourier",
+            "sine_wave",
+            "multi_sine",
+            "perlin_noise",
+            "constant",
+            "linear",
+            "raw_lzma",
+        ] {
+            out.push(
+                std::fs::read(
+                    root.join("segment_format0_variants")
+                        .join(format!("{name}.rkyv")),
+                )
+                .unwrap(),
             );
-            compared += 1;
         }
-        assert_eq!(compared, 400);
+        out
+    }
+
+    #[test]
+    fn every_fixture_decodes() {
+        let all = fixtures();
+        assert_eq!(all.len(), 13);
+        for bytes in &all {
+            decode(bytes).unwrap();
+        }
     }
 
     #[test]
     fn a_damaged_archive_is_an_error_not_a_panic() {
-        let mut r = Lcg(7);
-        for variant in 0..8 {
-            let bytes = segment(&mut r, variant).to_rkyv_bytes().unwrap();
+        for bytes in fixtures() {
             for cut in 0..bytes.len() {
                 let _ = decode(&bytes[cut..]);
                 let _ = decode(&bytes[..cut]);
             }
             for i in 0..bytes.len() {
-                let mut b = bytes.clone();
-                b[i] ^= 0xff;
-                let _ = decode(&b);
+                for flip in [0x01, 0x80, 0xff] {
+                    let mut b = bytes.clone();
+                    b[i] ^= flip;
+                    let _ = decode(&b);
+                }
             }
         }
         assert!(decode(&[]).is_err());
         assert!(decode(&[0u8; ROOT_SIZE - 1]).is_err());
+    }
+
+    #[test]
+    fn a_tag_outside_the_layout_is_an_error() {
+        let bytes = &fixtures()[0];
+        let root = bytes.len() - ROOT_SIZE;
+        let mut b = bytes.clone();
+        b[root + SEG_MODEL] = 8;
+        assert!(decode(&b).is_err(), "model tag 8");
+        let mut b = bytes.clone();
+        b[root + SEG_RESIDUAL] = 2;
+        assert!(decode(&b).is_err(), "option tag 2");
     }
 }

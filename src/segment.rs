@@ -822,6 +822,24 @@ impl DataSegment {
             })
     }
 
+    /// Decode a stored segment file's bytes (what `write_rkyv` wrote, or a
+    /// segment file of an earlier release) into an owned segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidData` when the bytes are not a valid stored segment.
+    pub fn from_stored_bytes(bytes: &[u8]) -> io::Result<Self> {
+        let archived = rkyv::check_archived_root::<Self>(bytes).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("rkyv validation: {e:?}"),
+            )
+        })?;
+        archived
+            .deserialize(&mut rkyv::Infallible)
+            .map_err(|e: std::convert::Infallible| match e {})
+    }
+
     /// Write segment to file in rkyv format
     ///
     /// # Errors

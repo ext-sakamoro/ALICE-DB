@@ -19,11 +19,17 @@
 //! runs the blob suites under the audit. It is not meant to be enabled
 //! by dependants.
 //!
+//! Every fsync of the crate goes through `sync_all` / `sync_data`
+//! here (`tests/fsync_single_place.rs` fails on a direct call anywhere
+//! else in `src/`), and under the feature each one is recorded, so tests
+//! can check that a durable step really fsynced the file it names.
+//!
 //! The module also hosts crash-injection points used by the
 //! compaction crash-safety tests: `arm_crash_point` makes the next
 //! `crash_point` call with that name on the current thread return an
 //! error, which aborts the operation exactly where a crash would.
 
+use std::fs::File;
 use std::io;
 use std::path::Path;
 
@@ -43,6 +49,15 @@ mod imp {
 
     thread_local! {
         static ARMED: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+        static SYNCS: RefCell<Vec<(String, PathBuf)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub fn note_sync(what: &str, path: &Path) {
+        SYNCS.with(|s| s.borrow_mut().push((what.to_owned(), key(path))));
+    }
+
+    pub fn take_syncs() -> Vec<(String, PathBuf)> {
+        SYNCS.with(|s| std::mem::take(&mut *s.borrow_mut()))
     }
 
     /// Canonical key for `path`: the canonical parent directory joined
@@ -169,6 +184,52 @@ pub(crate) fn check_set_len(path: &Path, append_only_handle: bool) {
     let _ = (path, append_only_handle);
 }
 
+/// Record a completed fsync of `path` (`what` names its kind: `file`,
+/// `dir`, `wal`) on the current thread, so tests can check that each
+/// durable step actually fsynced. No-op without `open-file-audit`.
+#[inline]
+pub(crate) fn note_sync(what: &str, path: &Path) {
+    #[cfg(feature = "open-file-audit")]
+    imp::note_sync(what, path);
+    #[cfg(not(feature = "open-file-audit"))]
+    let _ = (what, path);
+}
+
+/// `sync_all` on `file`, the handle of `path`, recorded as `what`.
+///
+/// This and [`sync_data`] are the only places in `src/` that call the
+/// fsync methods. The record is written after the call returns, from
+/// this function, so it shows that the step reached its fsync; it cannot
+/// observe the system call itself, so removing the `sync_all` line below
+/// would still be recorded. That line is the one fsync the recording
+/// cannot check, which is why this function is kept to it alone.
+///
+/// # Errors
+/// Propagates the `sync_all` error.
+pub(crate) fn sync_all(file: &File, what: &str, path: &Path) -> io::Result<()> {
+    file.sync_all()?;
+    note_sync(what, path);
+    Ok(())
+}
+
+/// `sync_data` on `file`, recorded like [`sync_all`] (same limit).
+///
+/// # Errors
+/// Propagates the `sync_data` error.
+pub(crate) fn sync_data(file: &File, what: &str, path: &Path) -> io::Result<()> {
+    file.sync_data()?;
+    note_sync(what, path);
+    Ok(())
+}
+
+/// The fsyncs recorded on the current thread since the last call, in
+/// order, as `(kind, canonical path)`; clears the record.
+#[cfg(feature = "open-file-audit")]
+#[must_use]
+pub fn take_syncs() -> Vec<(String, std::path::PathBuf)> {
+    imp::take_syncs()
+}
+
 /// Return an error if the crash point `name` has been armed on this
 /// thread (and disarm it). Always `Ok(())` without `open-file-audit`.
 ///
@@ -196,7 +257,7 @@ pub fn is_open(path: &Path) -> bool {
 ///
 /// Names in use: `compact:after_write`, `compact:after_swap`,
 /// `compact:before_remove`, `compact:after_first_remove`,
-/// `compact:before_wal_truncate`.
+/// `compact:before_wal_truncate`, `wal_recover:before_cut`.
 #[cfg(feature = "open-file-audit")]
 pub fn arm_crash_point(name: &str) {
     imp::arm_crash_point(name);

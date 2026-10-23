@@ -1121,7 +1121,7 @@ impl StorageEngine {
 
                 if config.sync_writes {
                     let file = File::open(&segment_path)?;
-                    file.sync_all()?;
+                    crate::fs_audit::sync_all(&file, "segment", &segment_path)?;
                 }
             }
             Store::Memory(files) => {
@@ -1179,7 +1179,7 @@ impl StorageEngine {
             }
 
             if self.config.sync_writes {
-                wal.sync_all()?;
+                crate::fs_audit::sync_all(wal, "ts-wal", &self.config.data_dir.join("wal.alice"))?;
             }
         }
         Ok(())

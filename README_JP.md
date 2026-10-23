@@ -10,7 +10,7 @@
 使わない)、byte をキーにした blob ストア、当てはめた法則を証拠・成立範囲・後から来た証拠の
 判定と一緒に保存する law ストアを持つ
 
-保存先はディレクトリ (WAL、mmap したセグメント、advisory lock、既定で有効な `fs` feature)
+保存先はディレクトリ (WAL、セグメントのファイル、advisory lock、既定で有効な `fs` feature)
 かプロセスのメモリ (`AliceDB::in_memory`、`wasm32-unknown-unknown` でもビルドできる)
 のどちらかで、API は両者で同じ
 
@@ -184,11 +184,13 @@ index に入れる `law_pointers_by_id` は 1 つの識別子に対する `(name
 
 | 保存先 | コンストラクタ | 備考 |
 |--------|----------------|------|
-| ファイル (`fs`) | `AliceDB::open(path)`、`AliceDB::with_config(config)` | セグメントファイル + index、時系列 WAL、blob WAL と `SSTable`、mmap 読み出し、blob WAL の排他 advisory lock |
+| ファイル (`fs`) | `AliceDB::open(path)`、`AliceDB::with_config(config)` | セグメントファイル + index、時系列 WAL、blob WAL と `SSTable`、`SSTable` の mmap 読み出し、blob WAL の排他 advisory lock |
 | メモリ | `AliceDB::in_memory(config)`、`AliceDB::from_bytes(config, &bytes)` | ファイルシステム不要 `to_bytes` はデータベース全体 (どちらの保存先でも) をチェックサム付きの 1 つのバッファとして書き出す |
 
 同じ書き込み列はどちらの保存先からもビット単位で同じに読み戻せる
 (`tests/storage_backend_parity.rs`)
+
+セグメントのファイルは開く時に 1 度だけ、書いた側と同じセグメントの型に decode し、メモリ上のセグメントと同じ code で問い合わせる (`tests/segment_view_parity.rs`) そのため開いたセグメントはファイルとほぼ同じ大きさのメモリを使う (model の係数と residual の bytes) ファイルを map したままにはしない セグメントのファイルは保存形式の番号を持つ (形式 1: header の後に rkyv 0.8 の archive) 0.6.0 より前が書いたファイル (形式 0: header の無い rkyv 0.7 の archive) も読む
 
 ファイルの保存先は、開く時に blob の WAL の末尾の切れた record や壊れた record を、最後の正しい record の位置で切る (その後の書き込みが壊れた部分の後ろに隠れて失われないように) 落とす bytes は切る前に WAL の隣の `blob.wal.dropped-<offset>` に書いて fsync し、`AliceDB::blob_wal_recovery()` が何を切ったかを返す 同じ位置での後の回復は前の写しを置き換えず (`blob.wal.dropped-<offset>.<n>` に書く)、書き終えた写しは消さない 記録の境界で終わる WAL は触らない
 

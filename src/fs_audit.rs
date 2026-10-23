@@ -43,6 +43,15 @@ mod imp {
 
     thread_local! {
         static ARMED: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+        static SYNCS: RefCell<Vec<(String, PathBuf)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub fn note_sync(what: &str, path: &Path) {
+        SYNCS.with(|s| s.borrow_mut().push((what.to_owned(), key(path))));
+    }
+
+    pub fn take_syncs() -> Vec<(String, PathBuf)> {
+        SYNCS.with(|s| std::mem::take(&mut *s.borrow_mut()))
     }
 
     /// Canonical key for `path`: the canonical parent directory joined
@@ -169,6 +178,25 @@ pub(crate) fn check_set_len(path: &Path, append_only_handle: bool) {
     let _ = (path, append_only_handle);
 }
 
+/// Record a completed fsync of `path` (`what` names its kind: `file`,
+/// `dir`, `wal`) on the current thread, so tests can check that each
+/// durable step actually fsynced. No-op without `open-file-audit`.
+#[inline]
+pub(crate) fn note_sync(what: &str, path: &Path) {
+    #[cfg(feature = "open-file-audit")]
+    imp::note_sync(what, path);
+    #[cfg(not(feature = "open-file-audit"))]
+    let _ = (what, path);
+}
+
+/// The fsyncs recorded on the current thread since the last call, in
+/// order, as `(kind, canonical path)`; clears the record.
+#[cfg(feature = "open-file-audit")]
+#[must_use]
+pub fn take_syncs() -> Vec<(String, std::path::PathBuf)> {
+    imp::take_syncs()
+}
+
 /// Return an error if the crash point `name` has been armed on this
 /// thread (and disarm it). Always `Ok(())` without `open-file-audit`.
 ///
@@ -196,7 +224,7 @@ pub fn is_open(path: &Path) -> bool {
 ///
 /// Names in use: `compact:after_write`, `compact:after_swap`,
 /// `compact:before_remove`, `compact:after_first_remove`,
-/// `compact:before_wal_truncate`.
+/// `compact:before_wal_truncate`, `wal_recover:before_cut`.
 #[cfg(feature = "open-file-audit")]
 pub fn arm_crash_point(name: &str) {
     imp::arm_crash_point(name);

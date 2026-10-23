@@ -41,7 +41,7 @@ use crate::blob_sstable::{
     BlobSstable, FlushMode, LoadedSstable,
 };
 #[cfg(feature = "fs")]
-use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord};
+use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord, WalRecovery};
 
 /// Default byte threshold above which a subsequent `put` / `delete`
 /// triggers an implicit flush of the WAL into an `SSTable`.
@@ -225,9 +225,21 @@ pub struct BlobStorage {
     /// on the counter.
     #[cfg(feature = "fs")]
     next_sstable_seq: Arc<parking_lot::Mutex<u64>>,
+    /// What opening the WAL cut off its end, if anything (see
+    /// [`BlobWal::recover`]).
+    #[cfg(feature = "fs")]
+    wal_recovery: Option<WalRecovery>,
 }
 
 impl BlobStorage {
+    /// What opening this store cut off the end of its WAL: `None` when
+    /// the WAL ended on a record boundary (or the store is in-memory).
+    #[cfg(feature = "fs")]
+    #[must_use]
+    pub fn wal_recovery(&self) -> Option<&WalRecovery> {
+        self.wal_recovery.as_ref()
+    }
+
     /// Create an ephemeral in-memory blob store.
     ///
     /// No WAL is attached; data does not survive process exit. Use
@@ -302,7 +314,8 @@ impl BlobStorage {
         // Replay the WAL into the memtable. Reads see WAL state on top of
         // the mmap'd SSTables.
         let mut memtable: BTreeMap<Vec<u8>, BlobValue> = BTreeMap::new();
-        for record in wal.replay()? {
+        let (records, wal_recovery) = wal.recover()?;
+        for record in records {
             match record {
                 WalRecord::Put(key, value) => {
                     memtable.insert(key, value);
@@ -327,6 +340,7 @@ impl BlobStorage {
             flush_mode: config.flush_mode,
             max_sstables_before_compaction: config.max_sstables_before_compaction,
             next_sstable_seq: Arc::new(parking_lot::Mutex::new(next_seq)),
+            wal_recovery,
         })
     }
 

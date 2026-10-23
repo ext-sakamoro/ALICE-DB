@@ -38,6 +38,20 @@
 //! - An empty or missing WAL file yields no records; the store opens
 //!   with an empty state.
 //!
+//! [`BlobWal::recover`] (what [`crate::blob::BlobStorage`] calls on open)
+//! reads the same records and then makes the file end at the last good
+//! record, so the next append is not written behind bytes that replay
+//! will stop at again. It first copies the bytes it drops to
+//! `<wal>.dropped-<offset>` (written through `.tmp`, fsynced, renamed,
+//! the directory fsynced), then cuts the WAL and fsyncs it. A crash
+//! between the two steps leaves the copy and the uncut WAL, and the next
+//! open does the same cut again, reusing the copy that already holds
+//! exactly those bytes. A later recovery at the same offset with other
+//! bytes never replaces an earlier copy: it writes
+//! `<wal>.dropped-<offset>.<n>` with the lowest free `n`. Stale `.tmp`
+//! files of an interrupted copy are removed on open; finished copies are
+//! never removed. A WAL that ends on a record boundary is never touched.
+//!
 //! # Concurrency and durability
 //!
 //! [`BlobWal::append_put`] / [`BlobWal::append_delete`] serialise the
@@ -128,6 +142,33 @@ pub enum WalRecord {
     /// Tombstone a key. The corresponding in-memory entry becomes
     /// invisible to readers.
     Delete(Vec<u8>),
+}
+
+/// Why replay stopped before the end of the WAL file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WalTail {
+    /// The file ends inside a record (a write that did not finish).
+    Torn,
+    /// A complete record whose CRC-32 does not match its bytes. Nothing
+    /// after it is read, since its lengths are not trustworthy.
+    BadChecksum,
+}
+
+/// What [`BlobWal::recover`] cut off the end of the WAL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WalRecovery {
+    /// Length the WAL was cut to: the end of the last good record.
+    pub offset: u64,
+    /// Number of bytes dropped from `offset` to the old end of the file.
+    pub dropped_len: u64,
+    /// Why replay stopped at `offset`.
+    pub tail: WalTail,
+    /// File holding exactly the dropped bytes (`<wal>.dropped-<offset>`,
+    /// or `<wal>.dropped-<offset>.<n>` when an earlier copy with other
+    /// bytes already has that name).
+    pub dropped_copy: PathBuf,
 }
 
 /// Append-only write-ahead log for the blob store.
@@ -381,6 +422,203 @@ impl BlobWal {
             out.push(rec);
         }
         Ok(out)
+    }
+
+    /// Replay the WAL like [`Self::replay`], then cut a torn or corrupt
+    /// tail off the file so later appends follow the last good record.
+    ///
+    /// The dropped bytes are first written to `<wal>.dropped-<offset>`
+    /// and made durable (file and directory fsync), then the WAL is cut
+    /// and fsynced. Returns the records and, when something was cut, the
+    /// [`WalRecovery`] describing it. A WAL that ends on a record
+    /// boundary is left as it is.
+    ///
+    /// # Errors
+    /// Propagates read, write, rename, `set_len` and fsync errors. On an
+    /// error the WAL is either uncut or cut after the copy is durable.
+    pub fn recover(&self) -> io::Result<(Vec<WalRecord>, Option<WalRecovery>)> {
+        let mut state = self.state.lock();
+        remove_stale_dropped_tmp(&self.path)?;
+        state.file.seek(SeekFrom::Start(0))?;
+        let mut reader = Counting {
+            inner: BufReader::new(&state.file),
+            pos: 0,
+        };
+        let mut out = Vec::new();
+        let mut good_end = 0_u64;
+        let tail = loop {
+            match read_one(&mut reader)? {
+                ReadOutcome::Record(rec) => {
+                    out.push(rec);
+                    good_end = reader.pos;
+                }
+                ReadOutcome::Eof => break None,
+                ReadOutcome::Truncated => break Some(WalTail::Torn),
+                ReadOutcome::BadChecksum => break Some(WalTail::BadChecksum),
+            }
+        };
+        drop(reader);
+        let Some(tail) = tail else {
+            return Ok((out, None));
+        };
+
+        let mut dropped = Vec::new();
+        state.file.seek(SeekFrom::Start(good_end))?;
+        state.file.read_to_end(&mut dropped)?;
+        let dropped_copy = keep_dropped(&self.path, good_end, &dropped)?;
+        crate::fs_audit::crash_point("wal_recover:before_cut")?;
+
+        crate::fs_audit::check_set_len(&self.path, OPEN_WITH_APPEND);
+        state.file.set_len(good_end)?;
+        sync_all(&state.file, "wal", &self.path)?;
+        Ok((
+            out,
+            Some(WalRecovery {
+                offset: good_end,
+                dropped_len: dropped.len() as u64,
+                tail,
+                dropped_copy,
+            }),
+        ))
+    }
+}
+
+/// The prefix every dropped copy of `wal` starts with: `<wal>.dropped-`.
+fn dropped_prefix(wal: &Path) -> std::ffi::OsString {
+    let mut name = wal
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    name.push(".dropped-");
+    name
+}
+
+/// The candidate names for the copy of the bytes dropped at `offset`, in
+/// order: `<wal>.dropped-<offset>`, then `<wal>.dropped-<offset>.<n>` for
+/// n = 1, 2, ...
+fn dropped_copy_name(wal: &Path, offset: u64, n: u64) -> PathBuf {
+    let mut name = dropped_prefix(wal);
+    name.push(offset.to_string());
+    if n > 0 {
+        name.push(format!(".{n}"));
+    }
+    wal.with_file_name(name)
+}
+
+/// Make `bytes` durable as the copy of what recovery drops at `offset`,
+/// and return its path. A copy that already holds exactly `bytes` (the
+/// same recovery redone after a crash before the cut) is reused; a copy
+/// with other bytes (an earlier recovery at the same offset) is never
+/// replaced, and the new copy takes the lowest free `.<n>` name. The
+/// caller holds the WAL lock, so no other writer picks a name meanwhile.
+fn keep_dropped(wal: &Path, offset: u64, bytes: &[u8]) -> io::Result<PathBuf> {
+    let mut n = 0;
+    loop {
+        let path = dropped_copy_name(wal, offset, n);
+        match std::fs::read(&path) {
+            Ok(existing) if existing == bytes => return Ok(path),
+            Ok(_) => n += 1,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                write_durable(&path, bytes)?;
+                return Ok(path);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Write `bytes` to the free name `path` through `<path>.tmp` (created
+/// with `create_new`): write, fsync, rename, then fsync the directory so
+/// the name survives a crash too.
+fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut tmp_name = path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    {
+        let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(bytes)?;
+        sync_all(&f, "file", &tmp)?;
+    }
+    crate::fs_audit::check_replace_target(path);
+    std::fs::rename(&tmp, path)?;
+    sync_dir(path)
+}
+
+/// Remove `<wal>.dropped-*.tmp` left by a copy that was interrupted
+/// before its rename. Finished copies (no `.tmp`) are never removed. The
+/// caller holds the WAL lock, so no copy is being written meanwhile.
+fn remove_stale_dropped_tmp(wal: &Path) -> io::Result<()> {
+    let dir = match wal.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let prefix = dropped_prefix(wal);
+    let prefix = prefix.to_string_lossy();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(prefix.as_ref()) && name.ends_with(".tmp") {
+            let path = entry.path();
+            crate::fs_audit::check_remove(&path);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// fsync the directory holding `path` (Unix; Windows has no handle for a
+/// directory fsync and makes the rename durable through the file system's
+/// own metadata journal).
+fn sync_dir(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        sync_all(&File::open(dir)?, "dir", dir)?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// `sync_all` on `file` (the handle of `path`), recorded for the
+/// open-file audit as `what` so tests can see each durable step fsynced.
+fn sync_all(file: &File, what: &str, path: &Path) -> io::Result<()> {
+    file.sync_all()?;
+    crate::fs_audit::note_sync(what, path);
+    Ok(())
+}
+
+/// A reader that counts the bytes it has handed out, so recovery knows
+/// where the last good record ends.
+struct Counting<R> {
+    inner: R,
+    pos: u64,
+}
+
+impl<R: Read> Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.pos += n as u64;
+        Ok(n)
     }
 }
 

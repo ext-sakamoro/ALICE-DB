@@ -752,6 +752,16 @@ impl AliceDB {
         self.blob.len()
     }
 
+    /// What opening this database cut off the end of the blob WAL: `None`
+    /// when the WAL ended on a record boundary. When it is `Some`, the
+    /// dropped bytes are kept in the file it names (see
+    /// [`blob_wal::BlobWal::recover`]).
+    #[cfg(feature = "fs")]
+    #[must_use]
+    pub fn blob_wal_recovery(&self) -> Option<&blob_wal::WalRecovery> {
+        self.blob.wal_recovery()
+    }
+
     /// Whether the blob store contains any live entries.
     #[must_use]
     pub fn blob_is_empty(&self) -> bool {

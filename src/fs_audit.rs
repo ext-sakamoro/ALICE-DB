@@ -196,7 +196,7 @@ pub fn is_open(path: &Path) -> bool {
 ///
 /// Names in use: `compact:after_write`, `compact:after_swap`,
 /// `compact:before_remove`, `compact:after_first_remove`,
-/// `compact:before_wal_truncate`.
+/// `compact:before_wal_truncate`, `wal_recover:before_cut`.
 #[cfg(feature = "open-file-audit")]
 pub fn arm_crash_point(name: &str) {
     imp::arm_crash_point(name);

@@ -129,6 +129,10 @@ open-file-audit = []
 name = "blob_compaction_crash_safety"
 required-features = ["fs", "open-file-audit"]
 
+[[test]]
+name = "wal_recovery_crash"
+required-features = ["fs", "open-file-audit"]
+
 [[bench]]
 name = "db_benchmark"
 harness = false

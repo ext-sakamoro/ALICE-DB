@@ -190,6 +190,8 @@ index に入れる `law_pointers_by_id` は 1 つの識別子に対する `(name
 同じ書き込み列はどちらの保存先からもビット単位で同じに読み戻せる
 (`tests/storage_backend_parity.rs`)
 
+ファイルの保存先は、開く時に blob の WAL の末尾の切れた record や壊れた record を、最後の正しい record の位置で切る (その後の書き込みが壊れた部分の後ろに隠れて失われないように) 落とす bytes は切る前に WAL の隣の `blob.wal.dropped-<offset>` に書いて fsync し、`AliceDB::blob_wal_recovery()` が何を切ったかを返す 記録の境界で終わる WAL は触らない
+
 ## Feature
 
 | Feature | 既定 | 説明 |

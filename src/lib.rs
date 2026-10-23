@@ -227,6 +227,7 @@ pub mod replication;
 #[cfg(feature = "sdf")]
 pub mod sdf_bridge;
 pub mod segment;
+mod segment_v07;
 pub mod semantics;
 pub mod seqlock;
 pub mod series;

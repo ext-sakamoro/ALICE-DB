@@ -1,0 +1,5 @@
+start_time -2000
+end_time 9223372036854775805
+model SineWave 0x3e000000 0xc0400000 0x7f800000 0x00800000
+residual_blob none
+metadata id 2 created_at 1792000000002 point_count 64 original_size 256 model_size 40 compression_ratio 0x8000000000000000

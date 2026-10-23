@@ -1,0 +1,5 @@
+start_time -4000
+end_time 9223372036854775803
+model PerlinNoise seed 18446744073709551615 scale 0x3f400000 octaves 6 persistence 0x3f000000 lacunarity 0x40000000
+residual_blob none
+metadata id 4 created_at 1792000000004 point_count 64 original_size 256 model_size 40 compression_ratio 0x8000000000000000

@@ -1,0 +1,5 @@
+start_time -1000
+end_time 9223372036854775806
+model Fourier coefficients [(3 0x3fa00000 0xc0200000) (4294967295 0x7fc00000 0x80000000)] dc_offset 0x3f000000 sample_count 64
+residual_blob 00010203040506070809
+metadata id 1 created_at 1792000000001 point_count 64 original_size 256 model_size 40 compression_ratio 0x8000000000000000

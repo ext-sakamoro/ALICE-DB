@@ -1,0 +1,5 @@
+start_time -3000
+end_time 9223372036854775804
+model MultiSine components [(0x3f800000 0x40000000 0x40400000) (0x80000000 0x7fc00000 0x40900000)] dc_offset 0xbf800000
+residual_blob 000102030405060708090a0b0c0d0e0f101112131415161718191a1b
+metadata id 3 created_at 1792000000003 point_count 64 original_size 256 model_size 40 compression_ratio 0x8000000000000000

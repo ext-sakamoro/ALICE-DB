@@ -1,0 +1,5 @@
+start_time 0
+end_time 9223372036854775807
+model Polynomial coefficients [0x3ff8000000000000 0x8000000000000000 0x7ff8000000000000 0x7ff0000000000000] degree 3 fit_error 0x0010000000000000
+residual_blob none
+metadata id 0 created_at 1792000000000 point_count 64 original_size 256 model_size 40 compression_ratio 0x8000000000000000

@@ -33,9 +33,9 @@ name = "alice_db"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# ALICE-Zip core (crates.io): procedural generators, zlib, and `law::SignalLaw`
+# ALICE-Zip core: procedural generators, zlib, and `law::SignalLaw`
 # (stored by `law_store`, 0.5.2+ for `law::SignalLaw::law_id`)
-alice_core = { package = "alice-zip", path = "../ALICE-Zip", version = ">=0.11, <0.12" }
+alice_core = { package = "alice-zip", git = "https://github.com/ext-sakamoro/ALICE-Zip", rev = "3d75fcf316684df07195f2edabc64c5921f2cf83", version = ">=0.11, <0.12" }
 
 # Every transcendental this crate evaluates itself (bloom filter sizing, model
 # selection error) goes through `alice-det-math`, whose kernels are built from
@@ -43,9 +43,8 @@ alice_core = { package = "alice-zip", path = "../ALICE-Zip", version = ">=0.11, 
 # The generation alice-zip folds into its own identifier, which is the one this
 # crate stamps (`alice_core::law::SEMANTICS_ID`, pinned in
 # tests/determinism_golden.rs; DB_SEMANTICS_ID is keyed by it). This crate always
-# builds with `std`. 0.5.1, the generation alice-zip 0.11 and alice-analytics
-# require.
-alice-det-math = { version = "0.5.1", default-features = false, features = ["std"] }
+# builds with `std`. The same source as alice-zip and alice-analytics.
+alice-det-math = { git = "https://github.com/ext-sakamoro/ALICE-DetMath", rev = "6384856c8b00f1615e1cd6b5c74d88036c1a8706", version = "0.5.2", default-features = false, features = ["std"] }
 
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.8.17", default-features = false, features = ["std", "bytecheck"] }
@@ -74,12 +73,10 @@ rayon = "1.10"
 parking_lot = "0.12"
 
 # ALICE-Analytics bridge (optional)
-# by path until 0.7 is on crates.io (CI clones it at the commit in .github/alice-siblings);
-# 0.7 only: the published 0.6 requires alice-zip 0.10, which a range accepting it would resolve
-alice-analytics = { path = "../ALICE-Analytics", version = ">=0.7, <0.8", optional = true }
+alice-analytics = { git = "https://github.com/ext-sakamoro/ALICE-Analytics", rev = "ca4cf39ffbb3572db5357b22057157482bd6a10e", version = ">=0.7, <0.8", optional = true }
 
 # ALICE-Crypto bridge (optional)
-alice-crypto = { version = "0.4", optional = true, default-features = false, features = ["std"] }
+alice-crypto = { git = "https://github.com/ext-sakamoro/ALICE-Crypto", rev = "cbe0c3ea97f85edc2561ae2dd4a981261f411e59", version = ">=0.6, <0.7", optional = true, default-features = false, features = ["std"] }
 
 # Advisory file locking (cross-platform, `fs` feature only)
 fs2 = { version = "0.4", optional = true }

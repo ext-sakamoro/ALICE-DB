@@ -207,7 +207,7 @@ index に入れる `law_pointers_by_id` は 1 つの識別子に対する `(name
 | `crypto` | no | ALICE-Crypto による保存時暗号化 (`crypto_bridge::EncryptedDB`、`fs` を含む) |
 | `sdf` | no | Morton code で索引する SDF 空間データの保存 (`fs` を含む) |
 
-`analytics` と `crypto` は crates.io の公開版 `alice-analytics` 0.3 と `alice-crypto` 0.4 に依存する
+`analytics` と `crypto` は `alice-analytics` 0.7 と `alice-crypto` 0.6 を各 repository の固定した commit から git で引く
 
 ## モデルの種類
 
@@ -292,7 +292,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` と
 | | |
 |---|---|
 | release train | alice-db 0.5.1 (published)、Law への依存: あり |
-| 算術 | train の alice-det-math 0.5.1、算術の識別子 `85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315` この crate の要求は `alice-det-math = "0.5.1"` |
+| 算術 | train の alice-det-math 0.5.1、算術の識別子 `85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315` この crate の要求は `alice-det-math = "0.5.2"` |
 | end to end 検査 | 対象 (`alice-db = "0.5"`)、digest `9f7cf676708a272e3817ebbf0727c610f391e1547747af4307ee44d5523267c2`、aarch64 と x86_64 で同じ |
 
 ### 適合 (G1-G14)
@@ -332,8 +332,6 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` と
 
 ## ライセンス
 
-この版から `LicenseRef-Proprietary`: ソースは閲覧用に公開しており、利用・複製・改変・配布には
-著作権者との書面での合意が必要 条文は [LICENSE-Proprietary](LICENSE-Proprietary)
-それより前に公開した版は、公開時のライセンスのまま
+`LicenseRef-Proprietary` 条文は [LICENSE-Proprietary](LICENSE-Proprietary)
 
-ライセンスの問い合わせ: <contact@extoria.co.jp>
+Enquiries: https://extoria.co.jp/

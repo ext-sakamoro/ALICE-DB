@@ -12,6 +12,8 @@ name: Fuzz
 # - fuzz_index_lookup: blob put / get / delete / prefix scan against a BTreeMap
 # - fuzz_query_parse: the query builder with arbitrary ranges, aggregations,
 #   group-by, limit and offset
+# - fuzz_segment_bytes: DataSegment::from_bytes (alice_serial), and the same
+#   bytes as a legacy data.alice entry read through the store (bincode layout)
 #
 # cargo-fuzz is installed with `cargo install`: the prebuilt binaries target
 # musl, which the sanitizer build refuses.
@@ -106,6 +108,7 @@ jobs:
           - fuzz_index_lookup
           - fuzz_law_record
           - fuzz_segment_decode
+          - fuzz_segment_bytes
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:

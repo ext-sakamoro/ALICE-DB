@@ -22,8 +22,6 @@ yanked = "deny"
 ignore = [
     # rkyv 0.7 Rc/Arc archive validation OOB (RUSTSEC-2026-0235): archived 型に Rc/Arc 無し = 非該当
     "RUSTSEC-2026-0235",
-    # bincode 2.x unmaintained (postcard 移行コスト高)
-    "RUSTSEC-2025-0141",
     # paste 1.0.15 unmaintained (pyo3-macros / bytemuck transitive)
     "RUSTSEC-2024-0436",
     # ttf-parser unmaintained (font 描画系 transitive、alice-db 直接無使用だが transitive 出現時 guard)
@@ -110,4 +108,4 @@ skip-tree = []
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/ext-sakamoro/ALICE-Analytics", "https://github.com/ext-sakamoro/ALICE-Crypto", "https://github.com/ext-sakamoro/ALICE-DetMath", "https://github.com/ext-sakamoro/ALICE-Zip"]
+allow-git = ["https://github.com/ext-sakamoro/ALICE-Analytics", "https://github.com/ext-sakamoro/ALICE-Crypto", "https://github.com/ext-sakamoro/ALICE-DetMath", "https://github.com/ext-sakamoro/ALICE-Serial", "https://github.com/ext-sakamoro/ALICE-Zip"]

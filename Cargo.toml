@@ -51,9 +51,11 @@ rkyv = { version = "0.8.17", default-features = false, features = ["std", "bytec
 # File backend only (`fs` feature): zero-copy segment / blob SSTable reads
 memmap2 = { version = "0.9", optional = true }
 
-# Legacy Serialization (for compatibility)
+# Serialize / Deserialize on the public data types
 serde = { version = "1.0", features = ["derive"] }
-bincode = "1.3"
+# DataSegment::to_bytes / from_bytes: alice_serial format 1 (src/segment_codec.rs); the bounded
+# lengths of the legacy data-file reader (src/legacy_bincode.rs)
+alice-serial = { git = "https://github.com/ext-sakamoro/ALICE-Serial", rev = "16b34ebcaf3a195fe6500defb4d1e6002cb3d09d", version = "0.2" }
 
 # Compression
 lzma-rs = "0.3"
@@ -100,8 +102,6 @@ tempfile = "3.10"
 rand = "0.8"
 # tests/determinism_golden.rs: digests over the exact IEEE 754 encodings
 sha2 = "0.10"
-# tests/segment_serial.rs: the stated layout of a segment, encoded independently
-alice-serial = { git = "https://github.com/ext-sakamoro/ALICE-Serial", rev = "16b34ebcaf3a195fe6500defb4d1e6002cb3d09d", version = "0.2" }
 # Enables the open-file audit for every test build of this crate (src/fs_audit.rs)
 alice-db = { path = ".", default-features = false, features = ["open-file-audit"] }
 

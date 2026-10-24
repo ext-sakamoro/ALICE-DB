@@ -5,9 +5,13 @@ All notable changes to ALICE-DB will be documented in this file.
 ## [Unreleased]
 
 ### Security
+- 依存 `bincode` (1.3、RUSTSEC-2025-0141 unmaintained) を外し、`deny.toml` と cargo audit (`security-audit.yml` と preflight) のその ignore を削除
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
 ### Added
+- 依存 `alice-serial` (git rev 16b34eb、0.2)
+- 試験 `tests/segment_serial.rs` (segment の alice_serial の形を試験の側で書いて 8 model × residual の有無で照合、1 つの segment の bytes を golden で固定、旧い bytes と壊れた形を断る) と `tests/legacy_data_file.rs` (旧 `data.alice` の segment を data file の経路で読んで rkyv の file に書き直す、切れた bytes・長すぎる長さ・不明な model / residual の tag・末尾の余り・file より長い entry を断り何も書かない)
+- fuzz target `fuzz_segment_bytes`: 任意の bytes を `DataSegment::from_bytes` と、旧 `data.alice` の entry として store から読む
 - `DataSegment::from_stored_bytes` と `segment::SEGMENT_FORMAT`: segment の file の bytes を、保存形式を見分けて owned の `DataSegment` に戻す (形式 1 は rkyv 0.8 の検査つき deserialize、形式 0 は旧い layout を読む組み込みの reader) `SegmentView::segment` は decode した segment を返す
 - 試験 `tests/legacy_segment_values.rs` (過去 5 版の store の segment と、model の 8 variant それぞれの segment を、rkyv 0.7 の読み手で記録した値 (浮動小数点は bit) と比べる)、`tests/segment_view_parity.rs` (`SegmentView` を通した読み出しが、同じ segment のメモリ上の読み出しと bit 単位で一致する: RawLzma を含む、0.2.0-beta.1 で view だけが 0.0 を返した形の回帰)、`tests/segment_decode_alloc_bound.rs` (壊れた長さを持つ file でも、decode が確保する量は file の大きさに比例し、主張された長さには従わない / 新しい形式や 0 でない予約 byte は拒否)
 - fuzz target `fuzz_segment_decode`: 任意の bytes を segment の file として decode する (header 無しの形式 0 と、形式 1 の header の後ろ) decode できたものは今の形式で書き直して同じ segment に戻ることを確かめる
@@ -25,6 +29,8 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- `DataSegment::to_bytes` / `from_bytes` / `write_to` / `read_from` の bytes を bincode から alice_serial format 1 に変更 (`segment_codec`、形は `["alice-db/segment/v1", start_time, end_time, model, residual, metadata]`) `from_bytes` は旧い bincode の bytes を `InvalidData` で断る 保存形式 (segment の file、rkyv、`SEGMENT_FORMAT` 1) は変わらない
+- 旧 `data.alice` の segment は data file の経路でだけ、手で書いた bincode 1 の読み手 (`legacy_bincode`) で読む 長さは残りの bytes で縛り (`alice_serial::bounded`)、末尾の余り・不明な tag は断る data file の entry の長さも file の大きさで縛る
 - 依存: `alice-zip` (`alice_core`) と `alice-analytics` を sibling の path から git の rev (`3d75fcf3…` / `ca4cf39f…`) に、`alice-det-math` を crates.io の 0.5.1 から git の rev (`6384856c…`、version 0.5.2) に、`alice-crypto` (`crypto` feature) を crates.io の 0.4 から git の rev (`cbe0c3ea…`、version 0.6) に変更 `.github/alice-siblings` と各 workflow の clone の step と trigger の path を削除 `scripts/alice_siblings_check.py` と `scripts/test_alice_siblings_check.py` を ALICE-Analytics と同じ bytes に変更 `deny.toml` の allow-git に ALICE-Analytics / ALICE-Crypto / ALICE-DetMath / ALICE-Zip を追加 試験 `scripts/test_git_consumer.py` (sibling の checkout の無い所に置いた tree が default / `crypto` / `analytics` で解決できる) を追加 shared-files の pin を ALICE-Law 1fc131d に変更
 - CI: `semver-checks.yml` を dispatch の時だけ走るように変更 package integrity の job を `security-audit.yml` から dispatch 専用の `package-integrity.yml` に移動 `scripts/test_package_integrity.py` を ci.yml で実行
 - Licence: `AGPL-3.0-or-later OR LicenseRef-Commercial` → `LicenseRef-Proprietary`

@@ -52,5 +52,11 @@ name = "fuzz_segment_decode"
 path = "fuzz_targets/fuzz_segment_decode.rs"
 doc = false
 
+# arbitrary bytes as a segment: DataSegment::from_bytes and a legacy data.alice entry read through the store
+[[bin]]
+name = "fuzz_segment_bytes"
+path = "fuzz_targets/fuzz_segment_bytes.rs"
+doc = false
+
 [workspace]
 members = ["."]

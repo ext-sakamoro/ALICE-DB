@@ -1,7 +1,7 @@
 # ALICE-DB Expansion Proposal — General LSM-KV Path Alongside Time-Series
 
 **Status**: Design proposal (2026-07-08)
-**Author**: Moroya Sakamoto (`sakamoro@alicelaw.net`)
+**Author**: Moroya Sakamoto
 **Motivation**: ALICE-CodeTracker v0.4.0 needed a general blob store backend but ALICE-DB v0.1.0 only exposes `(i64 timestamp, f32 value)` time-series semantics. Rather than reach for `sled` / `redb` / `rocksdb`, this proposal sketches how ALICE-DB itself can grow a general LSM-KV path while preserving its time-series marquee feature.
 
 ## 1. Current scope (v0.1.0)

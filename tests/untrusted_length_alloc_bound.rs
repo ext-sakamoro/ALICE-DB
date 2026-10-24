@@ -2,7 +2,8 @@
 //! the WAL record header (key and value lengths) and the index entry's model-name length are checked
 //! against the bytes that remain before anything is allocated for them. Recovery of such a WAL ends on
 //! the cut and a second recovery finds nothing to cut (no loop over the same bad record).
-//! Measured with a counting global allocator (peak live bytes while the reader runs).
+//! Measured with a capped global allocator: the peak of live bytes while the reader runs, and the
+//! largest single request, which may not exceed 16 MiB (a request above it is refused, not made).
 
 #![cfg(feature = "fs")]
 
@@ -13,25 +14,41 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
-struct Counting;
+/// Largest single request the readers may make in this binary. A request above it is refused (null),
+/// so a reader that sizes a buffer by a claimed length stops the process with "memory allocation of N
+/// bytes failed" before anything that large is reserved, the same on every OS.
+const CAP: usize = 16 * 1024 * 1024;
+
+struct Capped;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+static LARGEST: AtomicUsize = AtomicUsize::new(0);
+
+fn admit(size: usize) -> bool {
+    LARGEST.fetch_max(size, Ordering::SeqCst);
+    size <= CAP
+}
 
 fn note(size: usize) {
     let now = LIVE.fetch_add(size, Ordering::SeqCst) + size;
     PEAK.fetch_max(now, Ordering::SeqCst);
 }
 
-unsafe impl GlobalAlloc for Counting {
+unsafe impl GlobalAlloc for Capped {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if !admit(layout.size()) {
+            return std::ptr::null_mut();
+        }
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
             note(layout.size());
         }
         p
     }
-    // forwarded so that a zeroed allocation of a claimed length stays lazy (the pages are not touched)
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if !admit(layout.size()) {
+            return std::ptr::null_mut();
+        }
         let p = unsafe { System.alloc_zeroed(layout) };
         if !p.is_null() {
             note(layout.size());
@@ -45,7 +62,7 @@ unsafe impl GlobalAlloc for Counting {
 }
 
 #[global_allocator]
-static ALLOC: Counting = Counting;
+static ALLOC: Capped = Capped;
 
 /// The tests of this binary measure one process-wide counter, so they run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -54,14 +71,17 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn peak_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
     let base = LIVE.load(Ordering::SeqCst);
     PEAK.store(base, Ordering::SeqCst);
+    LARGEST.store(0, Ordering::SeqCst);
     let out = f();
+    let largest = LARGEST.load(Ordering::SeqCst);
+    assert!(largest <= CAP, "a single request of {largest} bytes");
     (out, PEAK.load(Ordering::SeqCst) - base)
 }
 
 /// Fixed cost of a reader apart from what it decodes (buffered reader, records, paths).
 const SLACK: usize = 256 * 1024;
 
-/// A length that no file in these tests holds: 1 GiB.
+/// A length that no file in these tests holds: 1 GiB, far above the cap.
 const CLAIMED: u32 = 0x4000_0000;
 
 /// One WAL record frame as the writer lays it out: type, key length, value length, value kind, key,

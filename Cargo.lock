@@ -87,6 +87,7 @@ dependencies = [
  "alice-crypto",
  "alice-db",
  "alice-det-math",
+ "alice-serial",
  "alice-zip",
  "bincode",
  "crc32fast",
@@ -113,6 +114,11 @@ dependencies = [
 name = "alice-det-math"
 version = "0.5.2"
 source = "git+https://github.com/ext-sakamoro/ALICE-DetMath?rev=6384856c8b00f1615e1cd6b5c74d88036c1a8706#6384856c8b00f1615e1cd6b5c74d88036c1a8706"
+
+[[package]]
+name = "alice-serial"
+version = "0.2.0"
+source = "git+https://github.com/ext-sakamoro/ALICE-Serial?rev=16b34ebcaf3a195fe6500defb4d1e6002cb3d09d#16b34ebcaf3a195fe6500defb4d1e6002cb3d09d"
 
 [[package]]
 name = "alice-zip"

@@ -22,8 +22,6 @@ scripts/stub_guard.sh
 scripts/changed_paths.py
 .github/paths/security-audit.txt
 # the sibling repositories the build takes by path, and the action that clones them
-.github/alice-siblings
-.github/actions/alice-siblings/**
 # the package-integrity job runs these, and the sibling list they read
 scripts/package_integrity.py
 scripts/test_package_integrity.py

@@ -30,6 +30,7 @@ dependencies = [
 [[package]]
 name = "alice-analytics"
 version = "0.7.0"
+source = "git+https://github.com/ext-sakamoro/ALICE-Analytics?rev=ca4cf39ffbb3572db5357b22057157482bd6a10e#ca4cf39ffbb3572db5357b22057157482bd6a10e"
 dependencies = [
  "alice-det-math",
  "libm",
@@ -80,13 +81,13 @@ dependencies = [
 
 [[package]]
 name = "alice-det-math"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2857e06dcc3838a2138f4c8ed7b30cf8515a223eeb6d5fbd068dd13d45cb4ff4"
+version = "0.5.2"
+source = "git+https://github.com/ext-sakamoro/ALICE-DetMath?rev=6384856c8b00f1615e1cd6b5c74d88036c1a8706#6384856c8b00f1615e1cd6b5c74d88036c1a8706"
 
 [[package]]
 name = "alice-zip"
 version = "0.11.0"
+source = "git+https://github.com/ext-sakamoro/ALICE-Zip?rev=3d75fcf316684df07195f2edabc64c5921f2cf83#3d75fcf316684df07195f2edabc64c5921f2cf83"
 dependencies = [
  "alice-det-math",
  "flate2",

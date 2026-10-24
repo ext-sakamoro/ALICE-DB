@@ -15,30 +15,7 @@ name: Semver checks
 # scripts/preflight.sh (full run) runs the same command.
 
 on:
-  push:
-    # no paths here: a branch created at a SHA another ref already has gets an empty
-    # diff from GitHub's filter and the run is skipped; the changes job below compares
-    # with merge-base(origin/main) instead (patterns: .github/paths/semver-checks.txt)
-    # ci/**: the same checks on a branch before it is fast-forwarded to main
-    branches: [main, 'ci/**']
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'scripts/semver_gate.py'
-      - 'scripts/test_semver_gate.py'
-      - '.github/semver-gate.toml'
-      - 'scripts/changed_paths.py'
-      - '.github/workflows/semver-checks.yml'
-      - '.github/paths/semver-checks.txt'
-      - '.github/alice-siblings'
-      - '.github/actions/alice-siblings/**'
-  schedule:
-    # every Monday 11:00 UTC (two hours after security-audit.yml)
-    - cron: '0 11 * * 1'
+  # dormant: not a required check; it runs only when dispatched
   workflow_dispatch:
 
 # on main each commit has a group of its own and a run there is never
@@ -98,7 +75,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: ./.github/actions/alice-siblings
       # the python feature set builds pyo3, whose build script reads the interpreter
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:

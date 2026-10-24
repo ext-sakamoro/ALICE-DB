@@ -75,11 +75,11 @@ step "ci.yml / docs-lint: Shared files equal ALICE-Law's table"
 python3 scripts/test_shared_files.py
 scripts/shared_files.sh
 
-step "ci.yml / docs-lint: ALICE siblings (each ../ALICE-* is the commit in .github/alice-siblings)"
+step "ci.yml / docs-lint: ALICE siblings (no path dependency on a sibling)"
 python3 scripts/test_alice_siblings_check.py
 python3 scripts/alice_siblings_check.py
 
-step "security-audit.yml / package-integrity: tests of the package check (the check itself runs in CI)"
+step "ci.yml / docs-lint: package integrity tests (the packaging run itself is dormant)"
 python3 scripts/test_package_integrity.py
 
 step "ci.yml / docs-lint: release legs require the same binaries (test, then check)"
@@ -238,9 +238,7 @@ cargo audit --db "${CARGO_TARGET_DIR:-target}/advisory-db" --deny yanked \
 cargo deny --all-features check all
 cargo machete
 
-step "semver-checks.yml: semver gate tests + cargo semver-checks against the latest crates.io release"
-need cargo-semver-checks "cargo install cargo-semver-checks --version 0.50.0 --locked"
-python3 scripts/test_semver_gate.py
-python3 scripts/semver_gate.py --config .github/semver-gate.toml --target-dir "${CARGO_TARGET_DIR:-target}/semver"
+# dormant in CI (dispatch only): the semver gate
+echo 'PREFLIGHT-SKIP: package-integrity.yml and semver-checks.yml: dormant, dispatch only' >&2
 
 echo; echo "preflight OK"

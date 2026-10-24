@@ -14,4 +14,6 @@ fuzz_index_lookup 1000
 fuzz_query_parse 1000
 fuzz_law_record 250
 # fuzz_segment_decode, empty corpus, 60 s on 2026-10-24: cov 730, 4.8M runs, no crash (floor 350)
+# fuzz_segment_bytes, empty corpus, 60 s on 2026-10-25: cov 1359, 72886 runs, no crash (floor 650)
 fuzz_segment_decode 350
+fuzz_segment_bytes 650

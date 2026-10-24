@@ -84,6 +84,20 @@ fn refused_on_the_data_file_path(bytes: &[u8]) -> std::io::Error {
 }
 
 #[test]
+fn an_entry_longer_than_the_data_file_is_refused_before_it_is_read() {
+    let tmp = tempfile::tempdir().expect("temp");
+    legacy_store(tmp.path(), 0, 8, "SineWave", &unhex(OLD_SINE));
+    // the entry's own length prefix claims far more than the file holds
+    let path = tmp.path().join("data.alice");
+    let mut data = std::fs::read(&path).expect("data");
+    data[0..8].copy_from_slice(&(u64::MAX / 2).to_le_bytes());
+    std::fs::write(&path, data).expect("data");
+    let e = open(tmp.path()).scan(0, 8).expect_err("refused");
+    assert!(e.to_string().contains("exceeds the data file"), "{e}");
+    assert!(!tmp.path().join("seg_1.rkyv").exists());
+}
+
+#[test]
 fn truncated_legacy_bytes_are_refused() {
     let full = unhex(OLD_SINE);
     for cut in [0, 1, 16, 20, full.len() / 2, full.len() - 1] {
@@ -99,6 +113,7 @@ fn an_oversize_length_is_refused_before_it_sizes_anything() {
     b[37..45].copy_from_slice(&(u64::MAX / 2).to_le_bytes());
     let e = refused_on_the_data_file_path(&b);
     assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{e}");
+    assert!(e.to_string().contains("length exceeds"), "{e}");
 }
 
 #[test]
@@ -107,6 +122,16 @@ fn a_bad_model_tag_is_refused() {
     b[16..20].copy_from_slice(&99u32.to_le_bytes());
     let e = refused_on_the_data_file_path(&b);
     assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{e}");
+    assert!(e.to_string().contains("model tag"), "{e}");
+}
+
+#[test]
+fn a_bad_residual_tag_is_refused() {
+    // the residual tag (offset 36) is neither 0 (none) nor 1 (bytes follow)
+    let mut b = unhex(OLD_SINE);
+    b[36] = 2;
+    let e = refused_on_the_data_file_path(&b);
+    assert!(e.to_string().contains("residual tag"), "{e}");
 }
 
 #[test]
@@ -115,4 +140,5 @@ fn trailing_bytes_after_a_legacy_segment_are_refused() {
     b.push(0);
     let e = refused_on_the_data_file_path(&b);
     assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{e}");
+    assert!(e.to_string().contains("bytes remain"), "{e}");
 }

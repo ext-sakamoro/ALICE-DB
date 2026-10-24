@@ -9,8 +9,9 @@
 //! The flush therefore stores such a buffer with a model that evaluates to a constant, and
 //! the residual holds the stored bits.
 //!
-//! The golden below is a segment written by this crate; every CI OS writes the same bytes and
-//! reads the stored bits back from them.
+//! The golden below is a segment written by this crate (alice_serial format 1); every CI OS
+//! writes the same bytes and reads the stored bits back from them. The same segment as an older
+//! release wrote it (bincode) is read back through a legacy data file.
 
 #![allow(clippy::cast_precision_loss, clippy::unreadable_literal)]
 
@@ -101,6 +102,15 @@ fn the_model_of_an_exact_buffer_evaluates_finite_at_every_key() {
 /// `inf_then_line` through the default (lossy) memtable, as written by this crate
 const INF_THEN_LINE_SEGMENT: &str = include_str!("fixtures/residual_base/inf_then_line.hex");
 
+/// The same segment as alice-db wrote it before alice_serial (bincode)
+#[cfg(feature = "fs")]
+const INF_THEN_LINE_BINCODE: &str =
+    include_str!("fixtures/residual_base/inf_then_line.bincode.hex");
+
+#[cfg(feature = "fs")]
+#[path = "common/legacy_data_file.rs"]
+mod legacy_data_file;
+
 fn unhex(s: &str) -> Vec<u8> {
     let s = s.trim();
     assert!(s.len().is_multiple_of(2), "odd hex length");
@@ -133,6 +143,25 @@ fn the_committed_segment_reads_back_the_stored_bits() {
     let points = inf_then_line();
     let mut compared = 0;
     for &(k, stored) in &points {
+        let read = segment.query_point(k).expect("residual").expect("in range");
+        assert_eq!(read.to_bits(), stored.to_bits(), "key {k}");
+        compared += 1;
+    }
+    assert_eq!(compared, 64);
+}
+
+#[cfg(feature = "fs")]
+#[test]
+fn the_segment_an_older_release_wrote_reads_back_the_same_bits() {
+    let segment = legacy_data_file::read_through_data_file(&unhex(INF_THEN_LINE_BINCODE));
+    let new = DataSegment::from_bytes(&unhex(INF_THEN_LINE_SEGMENT)).expect("decode");
+    assert_eq!(
+        segment.to_bytes().expect("bytes"),
+        new.to_bytes().expect("bytes"),
+        "the bincode segment and the alice_serial segment are not the same segment"
+    );
+    let mut compared = 0;
+    for &(k, stored) in &inf_then_line() {
         let read = segment.query_point(k).expect("residual").expect("in range");
         assert_eq!(read.to_bits(), stored.to_bits(), "key {k}");
         compared += 1;

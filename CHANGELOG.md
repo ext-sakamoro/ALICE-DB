@@ -25,6 +25,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- CI: `scripts/id_move_check.py` と試験 `scripts/test_id_move_check.py` を ALICE-Law の表の計画の bytes にし、`scripts/release_baseline.py` を足して、`.github/shared-files-pin` を ALICE-Law の新しい版に移す 手元に sibling の clone が無い時は依存の url から取る
 - 依存: `alice-zip` (`alice_core`) と `alice-analytics` を sibling の path から git の rev (`3d75fcf3…` / `ca4cf39f…`) に、`alice-det-math` を crates.io の 0.5.1 から git の rev (`6384856c…`、version 0.5.2) に、`alice-crypto` (`crypto` feature) を crates.io の 0.4 から git の rev (`cbe0c3ea…`、version 0.6) に変更 `.github/alice-siblings` と各 workflow の clone の step と trigger の path を削除 `scripts/alice_siblings_check.py` と `scripts/test_alice_siblings_check.py` を ALICE-Analytics と同じ bytes に変更 `deny.toml` の allow-git に ALICE-Analytics / ALICE-Crypto / ALICE-DetMath / ALICE-Zip を追加 試験 `scripts/test_git_consumer.py` (sibling の checkout の無い所に置いた tree が default / `crypto` / `analytics` で解決できる) を追加 shared-files の pin を ALICE-Law 1fc131d に変更
 - CI: `semver-checks.yml` を dispatch の時だけ走るように変更 package integrity の job を `security-audit.yml` から dispatch 専用の `package-integrity.yml` に移動 `scripts/test_package_integrity.py` を ci.yml で実行
 - Licence: `AGPL-3.0-or-later OR LicenseRef-Commercial` → `LicenseRef-Proprietary`

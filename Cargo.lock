@@ -117,7 +117,7 @@ source = "git+https://github.com/ext-sakamoro/ALICE-DetMath?rev=6384856c8b00f161
 [[package]]
 name = "alice-zip"
 version = "0.11.0"
-source = "git+https://github.com/ext-sakamoro/ALICE-Zip?rev=3d75fcf316684df07195f2edabc64c5921f2cf83#3d75fcf316684df07195f2edabc64c5921f2cf83"
+source = "git+https://github.com/ext-sakamoro/ALICE-Zip?rev=226194131a524cc2a836a8c8049969a607427f72#226194131a524cc2a836a8c8049969a607427f72"
 dependencies = [
  "alice-det-math",
  "flate2",

@@ -35,7 +35,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # ALICE-Zip core: procedural generators, zlib, and `law::SignalLaw`
 # (stored by `law_store`, 0.5.2+ for `law::SignalLaw::law_id`)
-alice_core = { package = "alice-zip", git = "https://github.com/ext-sakamoro/ALICE-Zip", rev = "3d75fcf316684df07195f2edabc64c5921f2cf83", version = ">=0.11, <0.12" }
+alice_core = { package = "alice-zip", git = "https://github.com/ext-sakamoro/ALICE-Zip", rev = "226194131a524cc2a836a8c8049969a607427f72", version = "0.11" }
 
 # Every transcendental this crate evaluates itself (bloom filter sizing, model
 # selection error) goes through `alice-det-math`, whose kernels are built from

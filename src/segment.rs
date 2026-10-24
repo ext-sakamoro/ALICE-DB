@@ -770,22 +770,24 @@ impl DataSegment {
         decode_raw_bytes(&decompressed, dtype)
     }
 
-    /// Serialize segment to bytes
+    /// The segment as alice_serial format 1 ([`crate::segment_codec`])
     ///
     /// # Errors
     ///
-    /// Returns an error if serialization fails.
+    /// Returns an error if the segment has a list longer than `u32::MAX` items.
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        crate::segment_codec::to_bytes(self)
     }
 
-    /// Deserialize segment from bytes
+    /// The segment in [`Self::to_bytes`] bytes
     ///
     /// # Errors
     ///
-    /// Returns an error if deserialization fails.
+    /// Returns [`io::ErrorKind::InvalidData`] for bytes that are not exactly that encoding,
+    /// including the bincode bytes older releases wrote (those are read only from a legacy data
+    /// file, by the storage engine).
     pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
-        bincode::deserialize(data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        crate::segment_codec::from_bytes(data)
     }
 
     /// Write segment to file

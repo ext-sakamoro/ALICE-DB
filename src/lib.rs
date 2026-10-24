@@ -222,6 +222,8 @@ pub mod crypto_bridge;
 #[doc(hidden)]
 pub mod fs_audit;
 pub mod law_store;
+#[cfg(feature = "fs")]
+mod legacy_bincode;
 pub mod memtable;
 pub mod model;
 pub mod query_engine;
@@ -229,6 +231,7 @@ pub mod replication;
 #[cfg(feature = "sdf")]
 pub mod sdf_bridge;
 pub mod segment;
+pub mod segment_codec;
 mod segment_v07;
 pub mod semantics;
 pub mod seqlock;

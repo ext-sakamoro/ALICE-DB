@@ -1388,16 +1388,30 @@ impl StorageEngine {
         if let Some(ref mut file) = *data_file {
             file.seek(SeekFrom::Start(entry.offset))?;
 
-            // Read size
+            // Read size, bounded by what the file still holds
             let mut size_bytes = [0u8; 8];
             file.read_exact(&mut size_bytes)?;
-            let size = u64::from_le_bytes(size_bytes) as usize;
+            let remaining = file
+                .metadata()?
+                .len()
+                .saturating_sub(entry.offset.saturating_add(8));
+            let size = alice_serial::bounded::len_within(
+                u64::from_le_bytes(size_bytes),
+                1,
+                usize::try_from(remaining).unwrap_or(usize::MAX),
+            )
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "legacy segment: its length exceeds the data file",
+                )
+            })?;
 
-            // Read segment data
+            // Read segment data (the bincode 1 layout older releases wrote)
             let mut data = vec![0u8; size];
             file.read_exact(&mut data)?;
 
-            let segment = DataSegment::from_bytes(&data)?;
+            let segment = crate::legacy_bincode::decode_segment(&data)?;
 
             // Encode in the stored segment format and save
             let segment_path = self.config.data_dir.join(format!("seg_{}.rkyv", entry.id));

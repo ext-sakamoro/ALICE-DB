@@ -48,7 +48,13 @@
     clippy::too_many_lines,
     clippy::unreadable_literal
 )]
+#![cfg(feature = "fs")]
+
+#[path = "common/legacy_data_file.rs"]
+mod legacy_data_file;
+
 use alice_db::segment::{DataSegment, ReadStatus, ResidualError, UnpinnedResiduals};
+use legacy_data_file::read_through_data_file;
 
 fn unhex(s: &str) -> Vec<u8> {
     assert!(s.len().is_multiple_of(2), "hex の長さが奇数");
@@ -91,8 +97,7 @@ fn old_lossless_segments_still_read_back_exactly() {
     let mut wrong: Vec<String> = Vec::new();
 
     for (name, bytes, originals, _) in fixtures() {
-        let segment = DataSegment::from_bytes(&bytes)
-            .unwrap_or_else(|e| panic!("{name}: 旧 byte の deserialise が失敗 ({e})"));
+        let segment = read_through_data_file(&bytes);
         assert_eq!(
             segment.metadata.point_count,
             originals.len(),
@@ -177,7 +182,7 @@ fn the_fixture_really_carries_the_old_law_values() {
     let mut total = 0_usize;
 
     for (name, bytes, originals, model_bits) in fixtures() {
-        let segment = DataSegment::from_bytes(&bytes).expect("deserialise");
+        let segment = read_through_data_file(&bytes);
         // 残差を外した素の segment = 法則そのもの
         let bare = DataSegment::new(
             2,
@@ -275,7 +280,7 @@ fn a_freshly_written_residual_names_the_arithmetic_it_was_measured_against() {
 fn residuals_written_before_the_identifier_report_themselves_as_unpinned() {
     let mut checked = 0_usize;
     for (name, bytes, _, _) in fixtures() {
-        let segment = DataSegment::from_bytes(&bytes).expect("deserialise");
+        let segment = read_through_data_file(&bytes);
         let blob = segment.residual_blob.as_ref().expect("lossless fixture");
         assert_eq!(
             residual_semantics(blob),

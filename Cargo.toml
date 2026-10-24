@@ -47,6 +47,10 @@ alice_core = { package = "alice-zip", path = "../ALICE-Zip", version = ">=0.11, 
 # require.
 alice-det-math = { version = "0.5.1", default-features = false, features = ["std"] }
 
+# Lengths read from a file are bounded by the bytes that remain before they
+# size an allocation (`alice_serial::bounded`).
+alice-serial = { git = "https://github.com/ext-sakamoro/ALICE-Serial", rev = "16b34ebcaf3a195fe6500defb4d1e6002cb3d09d", version = "0.2.0", default-features = false }
+
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.8.17", default-features = false, features = ["std", "bytecheck"] }
 # File backend only (`fs` feature): zero-copy segment / blob SSTable reads

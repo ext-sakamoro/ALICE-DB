@@ -5,7 +5,8 @@ All notable changes to ALICE-DB will be documented in this file.
 ## [Unreleased]
 
 ### Security
-- 試験 `tests/untrusted_length_alloc_bound.rs` (修正前、この版では失敗する): 細工した長さを持つ blob の WAL の record header (key / value の長さ 1 GiB) と `index.alice` の entry (model 名の長さ 1 GiB) を読む時、確保が file の残りの bytes を超えないこと、復旧が切った位置で終わり 2 回目の復旧は何も切らないことを上限つきの global allocator (1 回の要求が 16 MiB を超えたら拒み、確保しない) で確かめる 今の読み手は header の長さだけで 1 GiB を要求する (33 byte の WAL と 63 byte の index で、上限で拒まれて process が止まる)
+- file から読んだ長さは、残りの bytes と比べてから確保に使う (`alice_serial::bounded::len_within`): blob の WAL の record の key / value の長さ (file に残る bytes より長いと言う record は末尾の切れた record として扱い、復旧はそこで切る)、`index.alice` の entry の model 名の長さと、古い `data.alice` の segment の大きさ (どちらも `InvalidData` で返す) 試験 `tests/legacy_segment_size_bound.rs` は `data.alice` の segment の大きさ (1 GiB / u32::MAX / u64::MAX) で、16 byte の file に対する確保が残りの bytes を超えないことと `InvalidData` を確かめる (修正前は 1 GiB を確保していた) `alice-serial` を git の rev で引く (deny.toml の許可と例外を足した)
+- 試験 `tests/untrusted_length_alloc_bound.rs`: 細工した長さを持つ blob の WAL の record header (key / value の長さ 1 GiB) と `index.alice` の entry (model 名の長さ 1 GiB) を読む時、確保が file の残りの bytes を超えないこと、復旧が切った位置で終わり 2 回目の復旧は何も切らないことを上限つきの global allocator (1 回の要求が 16 MiB を超えたら拒み、確保しない) で確かめる 修正前の読み手は header の長さだけで 1 GiB を要求していた (33 byte の WAL と 63 byte の index で、上限で拒まれて process が止まっていた)
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
 ### Added

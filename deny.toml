@@ -86,6 +86,10 @@ ignore = true
 
 # AGPL の依存 (crypto feature): 例外は pin した rev の宣言どおり、pin を上げる commit で一緒に変える
 [[licenses.exceptions]]
+name = "alice-serial"
+allow = ["LicenseRef-Proprietary"]
+
+[[licenses.exceptions]]
 name = "alice-crypto"
 allow = ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]
 
@@ -110,4 +114,4 @@ skip-tree = []
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = ["https://github.com/ext-sakamoro/ALICE-Serial"]

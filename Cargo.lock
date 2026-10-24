@@ -56,6 +56,7 @@ dependencies = [
  "alice-crypto",
  "alice-db",
  "alice-det-math",
+ "alice-serial",
  "alice-zip",
  "bincode",
  "crc32fast",
@@ -83,6 +84,11 @@ name = "alice-det-math"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2857e06dcc3838a2138f4c8ed7b30cf8515a223eeb6d5fbd068dd13d45cb4ff4"
+
+[[package]]
+name = "alice-serial"
+version = "0.2.0"
+source = "git+https://github.com/ext-sakamoro/ALICE-Serial?rev=16b34ebcaf3a195fe6500defb4d1e6002cb3d09d#16b34ebcaf3a195fe6500defb4d1e6002cb3d09d"
 
 [[package]]
 name = "alice-zip"

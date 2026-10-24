@@ -32,6 +32,7 @@
 
 use crate::memtable::{FitConfig, MemTable};
 use crate::segment::{DataSegment, SegmentView};
+use alice_serial::bounded::len_within;
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
 #[cfg(feature = "fs")]
@@ -889,7 +890,20 @@ impl StorageEngine {
 
             let mut model_len_bytes = [0u8; 4];
             std::io::Read::read_exact(&mut reader, &mut model_len_bytes)?;
-            let model_len = u32::from_le_bytes(model_len_bytes) as usize;
+            // a length read from the index file: bounded by the index bytes that
+            // remain before it sizes the buffer
+            let remaining = data
+                .len()
+                .saturating_sub(usize::try_from(reader.position()).unwrap_or(usize::MAX));
+            let model_len =
+                len_within(u64::from(u32::from_le_bytes(model_len_bytes)), 1, remaining).map_err(
+                    |e| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("segment index: model name {e}"),
+                        )
+                    },
+                )?;
 
             let mut model_type_bytes = vec![0u8; model_len];
             std::io::Read::read_exact(&mut reader, &mut model_type_bytes)?;
@@ -1388,10 +1402,19 @@ impl StorageEngine {
         if let Some(ref mut file) = *data_file {
             file.seek(SeekFrom::Start(entry.offset))?;
 
-            // Read size
+            // Read size: a length read from the file, bounded by the bytes of
+            // data.alice that follow it before it sizes the buffer
             let mut size_bytes = [0u8; 8];
             file.read_exact(&mut size_bytes)?;
-            let size = u64::from_le_bytes(size_bytes) as usize;
+            let after = entry.offset.saturating_add(8);
+            let remaining =
+                usize::try_from(file.metadata()?.len().saturating_sub(after)).unwrap_or(usize::MAX);
+            let size = len_within(u64::from_le_bytes(size_bytes), 1, remaining).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("data.alice segment {}: size {e}", entry.id),
+                )
+            })?;
 
             // Read segment data
             let mut data = vec![0u8; size];

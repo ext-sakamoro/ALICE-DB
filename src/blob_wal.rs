@@ -79,6 +79,7 @@
 //! canonical way to detect a running writer; multi-writer coordination
 //! (leases, coordinator process) is out of scope for alpha.
 
+use alice_serial::bounded::len_within;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -414,11 +415,15 @@ impl BlobWal {
         let mut state = self.state.lock();
         // Seek to start; `write_frame` seeks back to the end before each
         // write, so wherever we leave the read cursor does not matter.
+        let file_len = state.file.metadata()?.len();
         state.file.seek(SeekFrom::Start(0))?;
-        let mut reader = BufReader::new(&state.file);
+        let mut reader = Counting {
+            inner: BufReader::new(&state.file),
+            pos: 0,
+        };
 
         let mut out = Vec::new();
-        while let ReadOutcome::Record(rec) = read_one(&mut reader)? {
+        while let ReadOutcome::Record(rec) = read_one(&mut reader, file_len)? {
             out.push(rec);
         }
         Ok(out)
@@ -439,6 +444,7 @@ impl BlobWal {
     pub fn recover(&self) -> io::Result<(Vec<WalRecord>, Option<WalRecovery>)> {
         let mut state = self.state.lock();
         remove_stale_dropped_tmp(&self.path)?;
+        let file_len = state.file.metadata()?.len();
         state.file.seek(SeekFrom::Start(0))?;
         let mut reader = Counting {
             inner: BufReader::new(&state.file),
@@ -447,7 +453,7 @@ impl BlobWal {
         let mut out = Vec::new();
         let mut good_end = 0_u64;
         let tail = loop {
-            match read_one(&mut reader)? {
+            match read_one(&mut reader, file_len)? {
                 ReadOutcome::Record(rec) => {
                     out.push(rec);
                     good_end = reader.pos;
@@ -669,7 +675,12 @@ enum ReadOutcome {
     BadChecksum,
 }
 
-fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
+/// One record from `reader`, which is at byte `reader.pos` of a WAL of
+/// `file_len` bytes. The key and value lengths in the header are claims
+/// about the bytes that follow: each is checked against the bytes that
+/// remain before anything is allocated for it, and a record that claims
+/// more than remains is a torn tail (`Truncated`), like one cut short.
+fn read_one<R: Read>(reader: &mut Counting<R>, file_len: u64) -> io::Result<ReadOutcome> {
     let mut header = [0_u8; HEADER_LEN];
     match read_exact_or_eof(reader, &mut header)? {
         ReadResult::Full => {}
@@ -678,9 +689,17 @@ fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
     }
 
     let record_type = header[0];
-    let key_len = u32::from_le_bytes([header[1], header[2], header[3], header[4]]) as usize;
-    let value_len = u32::from_le_bytes([header[5], header[6], header[7], header[8]]) as usize;
+    let key_claim = u32::from_le_bytes([header[1], header[2], header[3], header[4]]);
+    let value_claim = u32::from_le_bytes([header[5], header[6], header[7], header[8]]);
     let value_kind = header[9];
+
+    let remaining = usize::try_from(file_len.saturating_sub(reader.pos)).unwrap_or(usize::MAX);
+    let Ok(key_len) = len_within(u64::from(key_claim), 1, remaining) else {
+        return Ok(ReadOutcome::Truncated);
+    };
+    let Ok(value_len) = len_within(u64::from(value_claim), 1, remaining - key_len) else {
+        return Ok(ReadOutcome::Truncated);
+    };
 
     let mut key = vec![0_u8; key_len];
     match read_exact_or_eof(reader, &mut key)? {

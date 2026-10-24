@@ -25,7 +25,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
-- Licence: from `AGPL-3.0-or-later OR LicenseRef-Commercial` to `LicenseRef-Proprietary` from this version (the source stays published for reading; using it needs a written agreement); published versions keep their licence
+- Licence: `AGPL-3.0-or-later OR LicenseRef-Commercial` → `LicenseRef-Proprietary`
 - **Breaking** (保存形式): segment の file の保存形式を 1 に上げた 16 byte の header (`ALICESEG`、形式の番号 `u32` LE、予約の 0 が 4 byte) の後に rkyv 0.8 の archive を置く 0.6.0 より前が書いた header の無い file (形式 0: rkyv 0.7 の archive) は組み込みの reader で引き続き読む (rkyv 0.7 には依存しない) 0.5.x 以前の reader は形式 1 の file を読めない
 - `SegmentView` は file を開く時に 1 度だけ decode して owned の `DataSegment` を持ち、問い合わせはメモリ上の segment と同じ `DataSegment` の method で答える これまでの view は archive を参照したまま model を別の写しの式で評価していた (unsafe な lifetime の延長つき) ので、式は 1 つになり unsafe は無くなった 代わりに、開いた segment は file とほぼ同じ大きさのメモリを使い (model の係数と residual の bytes)、file を map したままにはしない `SegmentView::open` は読む間だけ advisory の共有 lock を取り、読み終えたら放す (これまでは view が生きている間 lock を持っていた) `StorageConfig::use_mmap` はその共有 lock つきの読み出しか、lock 無しの読み出しかを選ぶ `SegmentView::source_type` は `"file"` / `"vec"` / `"slice"` を返す
 - CI: `scripts/alice_siblings_check.py` と試験 `scripts/test_alice_siblings_check.py` を ALICE-Analytics と同じ bytes にし、`.github/shared-files-pin` を ALICE-Law の新しい版に移す 検査は隣の repo の中の package を指す path (`../ALICE-Physics/crates/alice-physics` のような形) もその repo への依存として読み、repo の後に普通でない成分が続く path は失敗にする この repository の依存は repo の dir を直接指すので検査の結果は変わらない
@@ -311,7 +311,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **Breaking:** new default feature `fs` holds the file backend (`fs2`, `memmap2`): `AliceDB::open*` / `with_config*`, `compact_blob_sstable`, `compact_all_blob_sstables`, `blob_sstable_count`, `StorageEngine::new` / `open`, `SegmentView::open` / `open_read`, `SegmentSource::Mmap`, `DataSegment::write_rkyv`, `BlobStorage::open*` and the `blob_wal` / `blob_sstable` modules; default builds are unchanged, `default-features = false` users add `features = ["fs"]` to keep them
 - `ffi`, `python`, `analytics`, `crypto` and `sdf` now enable `fs`
 - `StorageEngine` with `enable_background_flush` returns the thread spawn error instead of panicking
-- **License: `AGPL-3.0-or-later` → `AGPL-3.0-or-later OR LicenseRef-Commercial` (dual-licensed、2026-09-27)** AGPL 側の条件は変更なし (既存 AGPL 利用者への影響ゼロ)、商用という選択肢が追加されただけ SPDX が AGPL 単独だと cargo-deny / FOSSA / SBOM に「商用オプションなし」と見えるため宣言を dual に 変更点: SPDX / `LICENSE` → `LICENSE-AGPL` rename / `LICENSE-COMMERCIAL.md` (商用トリガー 6 条件 = クローズド製品・商用 SaaS・エッジ・ファームウェア配布・plugin 再配布・プラットフォーム NDA・保証、社内利用は AGPL 側で無償と明記) / README の選択肢表 商用窓口は法人 `contact@extoria.co.jp`
+- License: `AGPL-3.0-or-later` → `AGPL-3.0-or-later OR LicenseRef-Commercial` (2026-09-27)
 
 ### Fixed
 - Windows: opening a database whose blob WAL another handle holds returned the raw `os error 33` kind instead of `WouldBlock` (contention is now matched against `fs2::lock_contended_error()` on every platform; other I/O errors keep their kind)

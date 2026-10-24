@@ -5,6 +5,7 @@ All notable changes to ALICE-DB will be documented in this file.
 ## [Unreleased]
 
 ### Security
+- 試験 `tests/untrusted_length_alloc_bound.rs` (修正前、この版では失敗する): 細工した長さを持つ blob の WAL の record header (key / value の長さ 1 GiB) と `index.alice` の entry (model 名の長さ 1 GiB) を読む時、確保が file の残りの bytes を超えないこと、復旧が切った位置で終わり 2 回目の復旧は何も切らないことを数える global allocator で確かめる 今の読み手は header の長さだけで 1 GiB を確保する (33 byte の WAL で 1073750191 byte、63 byte の index で 1073780982 byte)
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
 ### Added

@@ -1092,8 +1092,11 @@ class BaseBeforePins(unittest.TestCase):
     not later than the base commit's, what CI cloned when the base was built"""
 
     def env(self, date: str) -> dict:
+        # no system or global git config: a host's init.defaultBranch (or anything else) must not
+        # decide what the fixture repositories look like
         return dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
-                    GIT_COMMITTER_EMAIL="t@t", GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
+                    GIT_COMMITTER_EMAIL="t@t", GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date,
+                    GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
 
     @classmethod
     def setUpClass(cls):
@@ -1131,11 +1134,11 @@ class BaseBeforePins(unittest.TestCase):
         self.parent = Path(tempfile.mkdtemp(prefix="id-move-prepin-"))
         bare = self.parent / "remote" / "ALICE-Up.git"
         bare.mkdir(parents=True)
-        self.git(bare, "init", "-q", "--bare")
+        self.git(bare, "init", "-q", "--bare", "-b", "main")
         self.up = self.parent / "ALICE-Up"
         (self.up / "src").mkdir(parents=True)
         (self.up / "src" / "lib.rs").write_text("pub fn f() {}\n")
-        self.git(self.up, "init", "-q")
+        self.git(self.up, "init", "-q", "-b", "main")
         self.git(self.up, "config", "maintenance.auto", "false")
         self.git(self.up, "remote", "add", "origin", str(bare))
         self.v1 = self.up_commit("1.0.0", "2026-02-01T00:00:00Z")
@@ -1149,7 +1152,7 @@ class BaseBeforePins(unittest.TestCase):
         (self.d / "src" / "lib.rs").write_text("pub const SEMANTICS_ID: [u8; 32] = [0x11; 32];\n")
         (self.d / "CHANGELOG.md").write_text("# Changelog\n")
         self.probe("0.3.0", "^1")
-        self.git(self.d, "init", "-q")
+        self.git(self.d, "init", "-q", "-b", "main")
         self.release("2026-03-01T00:00:00Z")
         # later: the sibling takes a major version, and the working tree follows it with a pin
         self.v2 = self.up_commit("2.0.0", "2026-04-01T00:00:00Z")
@@ -1247,8 +1250,13 @@ class BaseBeforePins(unittest.TestCase):
 
     def test_a_shallow_sibling_fails(self):
         shutil.rmtree(self.up)
-        subprocess.run(["git", "clone", "-q", "--depth", "1", (self.parent / "remote" / "ALICE-Up.git").as_uri(),
-                        str(self.up)], check=True, capture_output=True)
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", "main",
+                        (self.parent / "remote" / "ALICE-Up.git").as_uri(), str(self.up)],
+                       check=True, capture_output=True, env=self.env("2026-05-01T00:00:00Z"))
+        # the sibling really is a shallow clone with its tree checked out, so the check below can
+        # only fail for the reason this test names
+        self.assertEqual(self.git(self.up, "rev-parse", "--is-shallow-repository"), "true")
+        self.assertTrue((self.up / "Cargo.toml").is_file())
         with self.assertRaises(imc.CheckError) as e:
             imc.check(self.d, None, "tag")
         self.assertIn("shallow", str(e.exception))

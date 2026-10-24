@@ -1,0 +1,53 @@
+name: Package integrity
+
+# Dormant: runs only when dispatched (its own workflow, so the Security & Hygiene gate covers every
+# job it has). The shared script's tests run in ci.yml.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "5"
+
+jobs:
+  package-integrity:
+    name: Package integrity (publish される .crate が build できるか)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
+
+      # the published .crate builds on its own (scripts/package_integrity.py, the same file in
+      # every crate that takes an unpublished ALICE sibling by path): it packages the crate,
+      # unpacks it and builds it standalone with the shipped lock and with a fresh resolution;
+      # a dependency only an unpublished sibling satisfies (alice-zip 0.11 today) is built
+      # against that sibling and reported as blocked, and the publish gate refuses it
+      #
+      # include_str! / include_bytes! crossing the package boundary, an over-wide exclude or a
+      # missing file pass cargo build / test / clippy / preflight in the repository and fail
+      # only for users of the published crate
+      - name: Package integrity (tests)
+        run: python3 scripts/test_package_integrity.py
+      # the package holds only this crate's files, and the README doctest input (src/lib.rs
+      # cfg(doctest) include_str!) and the fixtures the packaged tests read; the README doctest
+      # runs in the unpacked crate (a README left out of the package is not seen by cargo
+      # check); the fixture-reading and open-file-audit tests run there too (the standalone
+      # package has no dev self-dependency, so the feature is named); the fresh resolution
+      # checks the library with every feature and must resolve numpy (the python feature)
+      - name: Package integrity (the .crate builds on its own)
+        run: >-
+          python3 scripts/package_integrity.py
+          --forbid-prefix .github/ --forbid-prefix docs/ --forbid-prefix scripts/ --forbid-prefix fuzz/
+          --require-file README.md --require-file README_JP.md
+          --require-file tests/fixtures/store_det_math_0_4/seg_1.rkyv
+          --doctests-min 1
+          "--test-in-package=--features open-file-audit --test residual_arithmetic --test blob_compaction_crash_safety --test wal_recovery_crash"
+          "--locked-check-args=--all-features --all-targets"
+          "--check-args=--lib --all-features"
+          --expect-in-lock numpy

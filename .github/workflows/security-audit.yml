@@ -4,7 +4,8 @@ name: Security & Hygiene
 # - dependency licenses / sources (cargo-deny)
 # - unused dependencies (cargo-machete)
 # - stubs left in production code (todo! / unimplemented! / panic!(STUB) / dbg!)
-# - the packaged .crate builds on its own (package-integrity)
+# The packaged .crate (package-integrity.yml) and the public API check (semver-checks.yml) are
+# dormant: they run only when dispatched.
 #
 # scripts/preflight.sh runs the same commands with the same arguments.
 
@@ -30,8 +31,6 @@ on:
       - 'scripts/stub_guard.sh'
       - 'scripts/changed_paths.py'
       - '.github/paths/security-audit.txt'
-      - '.github/alice-siblings'
-      - '.github/actions/alice-siblings/**'
       - 'scripts/package_integrity.py'
       - 'scripts/test_package_integrity.py'
       - 'scripts/alice_siblings_check.py'
@@ -96,7 +95,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cargo-audit
@@ -129,7 +127,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
       - name: Install cargo-deny
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
@@ -147,7 +144,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: ./.github/actions/alice-siblings
       - name: Install cargo-machete
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
@@ -167,46 +163,6 @@ jobs:
       - name: Detect todo! / unimplemented! / panic!(STUB) / dbg! in src/**
         run: scripts/stub_guard.sh
 
-  package-integrity:
-    needs: changes
-    if: needs.changes.outputs.run == 'true'
-    name: Package integrity (publish される .crate が build できるか)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/alice-siblings
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
-
-      # the published .crate builds on its own (scripts/package_integrity.py, the same file in
-      # every crate that takes an unpublished ALICE sibling by path): it packages the crate,
-      # unpacks it and builds it standalone with the shipped lock and with a fresh resolution;
-      # a dependency only an unpublished sibling satisfies (alice-zip 0.11 today) is built
-      # against that sibling and reported as blocked, and the publish gate refuses it
-      #
-      # include_str! / include_bytes! crossing the package boundary, an over-wide exclude or a
-      # missing file pass cargo build / test / clippy / preflight in the repository and fail
-      # only for users of the published crate
-      - name: Package integrity (tests)
-        run: python3 scripts/test_package_integrity.py
-      # the package holds only this crate's files, and the README doctest input (src/lib.rs
-      # cfg(doctest) include_str!) and the fixtures the packaged tests read; the README doctest
-      # runs in the unpacked crate (a README left out of the package is not seen by cargo
-      # check); the fixture-reading and open-file-audit tests run there too (the standalone
-      # package has no dev self-dependency, so the feature is named); the fresh resolution
-      # checks the library with every feature and must resolve numpy (the python feature)
-      - name: Package integrity (the .crate builds on its own)
-        run: >-
-          python3 scripts/package_integrity.py
-          --forbid-prefix .github/ --forbid-prefix docs/ --forbid-prefix scripts/ --forbid-prefix fuzz/
-          --require-file README.md --require-file README_JP.md
-          --require-file tests/fixtures/store_det_math_0_4/seg_1.rkyv
-          --doctests-min 1
-          "--test-in-package=--features open-file-audit --test residual_arithmetic --test blob_compaction_crash_safety --test wal_recovery_crash"
-          "--locked-check-args=--all-features --all-targets"
-          "--check-args=--lib --all-features"
-          --expect-in-lock numpy
   coverage:
     needs: changes
     if: needs.changes.outputs.run == 'true'
@@ -217,7 +173,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: ./.github/actions/alice-siblings
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
         with:
           components: llvm-tools-preview
@@ -249,7 +204,7 @@ jobs:
   gate:
     name: Gate
     if: always()
-    needs: [changes, audit, deny, unused-deps, stub-guard, package-integrity, coverage]
+    needs: [changes, audit, deny, unused-deps, stub-guard, coverage]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

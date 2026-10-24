@@ -18,5 +18,3 @@ scripts/changed_paths.py
 .github/workflows/fuzz.yml
 .github/paths/fuzz.txt
 # the sibling repositories the build takes by path, and the action that clones them
-.github/alice-siblings
-.github/actions/alice-siblings/**

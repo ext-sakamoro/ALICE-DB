@@ -26,6 +26,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 - Licence: `AGPL-3.0-or-later OR LicenseRef-Commercial` → `LicenseRef-Proprietary`
+- `CONTRIBUTING.md` を削除した
 - **Breaking** (保存形式): segment の file の保存形式を 1 に上げた 16 byte の header (`ALICESEG`、形式の番号 `u32` LE、予約の 0 が 4 byte) の後に rkyv 0.8 の archive を置く 0.6.0 より前が書いた header の無い file (形式 0: rkyv 0.7 の archive) は組み込みの reader で引き続き読む (rkyv 0.7 には依存しない) 0.5.x 以前の reader は形式 1 の file を読めない
 - `SegmentView` は file を開く時に 1 度だけ decode して owned の `DataSegment` を持ち、問い合わせはメモリ上の segment と同じ `DataSegment` の method で答える これまでの view は archive を参照したまま model を別の写しの式で評価していた (unsafe な lifetime の延長つき) ので、式は 1 つになり unsafe は無くなった 代わりに、開いた segment は file とほぼ同じ大きさのメモリを使い (model の係数と residual の bytes)、file を map したままにはしない `SegmentView::open` は読む間だけ advisory の共有 lock を取り、読み終えたら放す (これまでは view が生きている間 lock を持っていた) `StorageConfig::use_mmap` はその共有 lock つきの読み出しか、lock 無しの読み出しかを選ぶ `SegmentView::source_type` は `"file"` / `"vec"` / `"slice"` を返す
 - CI: `scripts/alice_siblings_check.py` と試験 `scripts/test_alice_siblings_check.py` を ALICE-Analytics と同じ bytes にし、`.github/shared-files-pin` を ALICE-Law の新しい版に移す 検査は隣の repo の中の package を指す path (`../ALICE-Physics/crates/alice-physics` のような形) もその repo への依存として読み、repo の後に普通でない成分が続く path は失敗にする この repository の依存は repo の dir を直接指すので検査の結果は変わらない

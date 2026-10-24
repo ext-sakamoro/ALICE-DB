@@ -27,7 +27,7 @@
 //!   move data between them. No WAL is kept in memory (there is no crash
 //!   to recover from); this backend is what wasm32-unknown-unknown builds use.
 //!
-//! License: MIT
+//! License: LicenseRef-Proprietary
 //! Author: Moroya Sakamoto
 
 use crate::memtable::{FitConfig, MemTable};

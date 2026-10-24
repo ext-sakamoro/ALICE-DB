@@ -14,7 +14,7 @@
 かプロセスのメモリ (`AliceDB::in_memory`、`wasm32-unknown-unknown` でもビルドできる)
 のどちらかで、API は両者で同じ
 
-License: AGPL-3.0-or-later OR LicenseRef-Commercial
+License: LicenseRef-Proprietary
 
 ## 向かない用途
 
@@ -332,14 +332,8 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` と
 
 ## ライセンス
 
-`AGPL-3.0-or-later OR LicenseRef-Commercial` のデュアルライセンスで、どちらかを選ぶ
+この版から `LicenseRef-Proprietary`: ソースは閲覧用に公開しており、利用・複製・改変・配布には
+著作権者との書面での合意が必要 条文は [LICENSE-Proprietary](LICENSE-Proprietary)
+それより前に公開した版は、公開時のライセンスのまま
 
-| 選択肢 | 条件 | 使う場面 |
-|--------|------|----------|
-| **AGPL-3.0-or-later** | [LICENSE-AGPL](LICENSE-AGPL)、無償 | 自分のプロジェクトも AGPL 互換のオープンソースである、または内部でのみ使う |
-| **Commercial License** | [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)、有償、コピーレフトを外す | クローズドソース製品、プロプライエタリな SaaS、ファームウェアやプラグインの配布 |
-
-AGPL は強いコピーレフトで、`alice-db` をリンクして配布する、または利用者にサービスとして
-提供する製品・ファームウェア・サービスは AGPL で公開する必要がある
-
-商用ライセンスの問い合わせ: <contact@extoria.co.jp>
+ライセンスの問い合わせ: <contact@extoria.co.jp>

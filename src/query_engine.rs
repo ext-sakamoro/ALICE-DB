@@ -14,7 +14,7 @@
 //! ALICE-DB:       Load model → Compute f(x) for x∈[100,200] → Return
 //! ```
 //!
-//! License: MIT
+//! License: LicenseRef-Proprietary
 //! Author: Moroya Sakamoto
 
 use crate::storage_engine::StorageEngine;

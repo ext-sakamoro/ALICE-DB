@@ -172,7 +172,7 @@
 //!
 //! # License
 //!
-//! AGPL-3.0-or-later OR LicenseRef-Commercial
+//! LicenseRef-Proprietary (see `LICENSE-Proprietary`)
 //!
 //! # Author
 //!

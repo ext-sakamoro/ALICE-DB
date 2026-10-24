@@ -20,7 +20,7 @@
 //!
 //! This is 10-100x faster for append-only workloads.
 //!
-//! License: MIT
+//! License: LicenseRef-Proprietary
 //! Author: Moroya Sakamoto
 
 use crate::model::{DataType, FitResult, ModelType};

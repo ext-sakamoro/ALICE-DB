@@ -14,7 +14,7 @@
 //! A segment file stores its model through rkyv (see the stored segment
 //! format in `crate::segment`); a reader decodes it back into `ModelType`.
 //!
-//! License: MIT
+//! License: LicenseRef-Proprietary
 //! Author: Moroya Sakamoto
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};

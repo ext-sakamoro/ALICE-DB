@@ -12,7 +12,7 @@ ALICE-DB is a **Model-Based LSM-Tree Database** for numerical time-series data:
 - **Core insight**: Kolmogorov complexity-inspired compression — store the mathematical model (`y = 0.5x + 10`) that generates the data, not the raw points
 - **Compression ratio**: 50–1000× for structured numerical data (sensor readings, financial ticks, physics simulation output)
 - **Architecture**: MemTable (`BTreeMap<i64, f32>`) → Fitter Competition (Polynomial / Fourier / Perlin / …) → Segment SSTable (model + residual)
-- **License**: AGPL-3.0-only (private repo, `publish = false`)
+- **License**: LicenseRef-Proprietary (`publish = false`)
 
 ## 2. The gap ALICE-CodeTracker v0.4.0 surfaced
 

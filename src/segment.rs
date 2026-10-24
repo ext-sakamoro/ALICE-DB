@@ -19,7 +19,7 @@
 //! the same methods as an in-memory segment, so both read through one law
 //! path. An open view holds the decoded segment (about the file's size).
 //!
-//! License: MIT
+//! License: LicenseRef-Proprietary
 //! Author: Moroya Sakamoto
 
 use crate::model::{DataType, ModelType};

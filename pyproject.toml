@@ -10,9 +10,9 @@ dynamic = ["version"]
 description = "Model-Based LSM-Tree Database powered by ALICE-Zip procedural generation"
 readme = "README.md"
 # the SPDX expression from Cargo.toml (checked by scripts/check_py_license.py);
-# the crate is dual-licensed, the two files below are the terms
-license = "AGPL-3.0-or-later OR LicenseRef-Commercial"
-license-files = ["LICENSE-AGPL", "LICENSE-COMMERCIAL.md"]
+# the file below is the text
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE-Proprietary"]
 authors = [
     { name = "Moroya Sakamoto" }
 ]

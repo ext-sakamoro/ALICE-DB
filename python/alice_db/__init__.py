@@ -31,7 +31,7 @@ For numpy integration:
     >>> result = db.scan_numpy(0, 999)  # Returns (N, 2) array
 
 Author: Moroya Sakamoto
-License: MIT
+License: LicenseRef-Proprietary
 """
 
 # Import from Rust extension

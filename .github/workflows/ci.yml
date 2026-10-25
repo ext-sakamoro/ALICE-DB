@@ -279,6 +279,15 @@ jobs:
       - name: G11 table matches the declared gates
         shell: bash
         run: scripts/g11_table.sh
+      # ALICE-Law G11 self-check: the table, its rows, the shared copies and the manifest, from an ALICE-Law
+      # checkout at the revision .github/shared-files-pin names (the script refuses another revision)
+      - name: G11 self-check (ALICE-Law at the pinned revision)
+        shell: bash
+        run: |
+          rev=$(awk '$1 == "rev" { print $2 }' .github/shared-files-pin)
+          git clone --quiet https://github.com/ext-sakamoro/ALICE-Law "$RUNNER_TEMP/alice-law"
+          git -C "$RUNNER_TEMP/alice-law" checkout --quiet --detach "$rev"
+          python3 "$RUNNER_TEMP/alice-law/scripts/g11_self_check.py" --repo . --name ALICE-DB
       - name: Entropy guard (tests)
         run: python scripts/test_entropy_guard.py
       - name: Entropy guard (no OS entropy / wall clock in production code)

@@ -26,6 +26,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 - CI: `.github/shared-files-pin` と `.github/g11-table-pin` を ALICE-Law main eb9a8ca に移した (gen_clippy_canary_calls.py と changed_paths.py の行に目標が計画された表)
+- CI: 2 つの pin を ALICE-Law main 0a5de01 に移し、`scripts/law_readme_block_check.py` と試験を行の目標の bytes (ALICE-Analytics) にした README の ALICE-Law の block はその revision で生成する G9 の note の anchor を今の CHANGELOG の文に合わせた
 - CI (ALICE-Law G11): `conformance/g11.toml` (pass の gate ごとに検査器、canary、比較 0 件で失敗する試験、共有の行、16 行、ALICE-Law の `scripts/g11_table_gen.py` が生成) を足し、ALICE-Law の `scripts/g11_table_check.py` を `.github/g11-table-pin` の revision で SHA-256 を確かめて取る `scripts/g11_table.sh` (ALICE-LOL と同じ bytes) を ci.yml の docs-lint job と preflight で走らせる 行の無い pass の gate、解決しない参照、比較 0 件は失敗
 - 共有の file を ALICE-Law の表の目標の bytes にした: `scripts/fneg_fma_ir_check.py` (ALICE-Edge)、`scripts/semver_gate.py` と試験 (ALICE-DetMath)、`scripts/workflow_concurrency.py` と試験 (ALICE-SDF)、`scripts/stub_guard.sh`・`scripts/test_check_eol.py`・`scripts/test_tracked_binaries.py` (ALICE-Analytics)、`scripts/id_move_check.py` と試験 (ALICE-Physics) `src/blob.rs` の試験と `src/lib.rs` の doc の例の byte 列は stub の macro 名を綴らない (`to-do(...)`)
 - 試験 `tests/segment_decode_alloc_bound.rs` は確保量を計る thread の分だけを数える (以前は global の counter で、同じ binary の別の試験が並行して確保した分も decode の peak に入り、macOS の CI で上限を超えた) 別の thread の確保を数えないことの試験と、decode が計られたこと (peak > 0) の検査を足した `scripts/run_tests.sh` の件数は 2 から 3

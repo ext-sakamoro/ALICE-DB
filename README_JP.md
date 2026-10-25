@@ -284,10 +284,10 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | 保存時暗号化 (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | 組込み機器でのモデル当てはめ |
 
-<!-- law-integration:begin law=68dc0c3c26591798325f73da79762b95d2d663ae -->
+<!-- law-integration:begin law=0a5de013ca1268eac22fe44908138d09a431fce0 -->
 ## ALICE-Law との統合
 
-ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
+ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `0a5de013ca12` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
 
 | | |
 |---|---|
@@ -309,7 +309,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `68dc0c3c2659` と
 | G8 persisted-semantics-id | 適合 | every durable form that carries a value computed under an arithmetic carries that arithmetic's identifier: lossless segment residuals since 0.3.0 (the … |
 | G9 persisted-meaning-change-is-major | 適合 | the audit covers the identifier this crate persists and finds no violation, and tests/identifier_history.rs reads a committed store stamped with each earlier … |
 | G10 no-run-varying-artifacts | 適合 | no ambient clock or OS-entropy read is known in a Law-bearing path: `python3 scripts/entropy_guard.py` reports `24 files, 10 patterns, 0 problems` … |
-| G11 gate-self-tests | 未達 | unmet: clause (c) for 4 checkers whose shared row is still pending in ALICE-Law's table (at the .github/shared-files-pin revision, eb9a8cab): … |
+| G11 gate-self-tests | 未達 | unmet: clause (c) for 4 checkers whose shared row is still pending in ALICE-Law's table (at the .github/shared-files-pin revision, 0a5de013): … |
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
 | G13 no-unspecified-order | 適合 | the order-dependent outputs found earlier (model_distribution, detect_deadlock) were fixed with an oracle each; the remaining HashMap / HashSet sites, … |
 | G14 float-environment-invariants | 適合 | the static scan covers the files of this repository and the dynamic check covers the builds CI runs on ubuntu and macOS; a flag passed by a build outside this … |

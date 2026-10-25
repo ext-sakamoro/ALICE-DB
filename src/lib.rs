@@ -69,12 +69,12 @@
 //! let db = AliceDB::open("./my_data")?;
 //!
 //! // Store an opaque blob keyed by arbitrary bytes.
-//! db.put_blob(b"stub-42", b"todo!(\"implement decode_frame\")")?;
+//! db.put_blob(b"stub-42", b"to-do(\"implement decode_frame\")")?;
 //!
 //! // Exact lookup.
 //! assert_eq!(
 //!     db.get_blob(b"stub-42")?,
-//!     Some(b"todo!(\"implement decode_frame\")".to_vec())
+//!     Some(b"to-do(\"implement decode_frame\")".to_vec())
 //! );
 //!
 //! // Prefix scan returns matching keys in ascending byte order.

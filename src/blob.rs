@@ -1018,7 +1018,7 @@ mod tests {
 
     #[test]
     fn compress_if_worthwhile_declines_short_payload() {
-        assert!(compress_if_worthwhile(b"todo!()").is_none());
+        assert!(compress_if_worthwhile(b"to-do()").is_none());
     }
 
     #[test]
@@ -1039,7 +1039,7 @@ mod tests {
 
     #[test]
     fn compress_if_worthwhile_accepts_repetitive_payload() {
-        let payload = b"todo!(\"repetitive stub message; XPBD warm-start diagonal\")\n".repeat(4);
+        let payload = b"to-do(\"repetitive stub message; XPBD warm-start diagonal\")\n".repeat(4);
         assert!(payload.len() >= COMPRESS_THRESHOLD_BYTES);
         let compressed =
             compress_if_worthwhile(&payload).expect("repetitive input should compress");

@@ -25,6 +25,8 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- `deny.toml`: crypto feature の alice-crypto の例外を、pin した rev (`cbe0c3e`) が宣言する `LicenseRef-Proprietary` にした
+- CI: `scripts/id_move_check.py` と試験を ALICE-Law 0e8c14e の表の bytes に、shared-files と G11 の表の pin を 0e8c14e に、ALICE-Law の `scripts/g11_self_check.py` を固定した revision で走らせる step を足した
 - CI: `.github/shared-files-pin` と `.github/g11-table-pin` を ALICE-Law main eb9a8ca に移した (gen_clippy_canary_calls.py と changed_paths.py の行に目標が計画された表)
 - CI: 2 つの pin を ALICE-Law main 0a5de01 に移し、`scripts/law_readme_block_check.py` と試験を行の目標の bytes (ALICE-Analytics) にした README の ALICE-Law の block はその revision で生成する G9 の note の anchor を今の CHANGELOG の文に合わせた
 - CI (ALICE-Law G11): `conformance/g11.toml` (pass の gate ごとに検査器、canary、比較 0 件で失敗する試験、共有の行、16 行、ALICE-Law の `scripts/g11_table_gen.py` が生成) を足し、ALICE-Law の `scripts/g11_table_check.py` を `.github/g11-table-pin` の revision で SHA-256 を確かめて取る `scripts/g11_table.sh` (ALICE-LOL と同じ bytes) を ci.yml の docs-lint job と preflight で走らせる 行の無い pass の gate、解決しない参照、比較 0 件は失敗

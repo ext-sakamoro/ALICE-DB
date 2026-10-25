@@ -84,10 +84,10 @@ license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 [licenses.private]
 ignore = true
 
-# AGPL の依存 (crypto feature): 例外は pin した rev の宣言どおり、pin を上げる commit で一緒に変える
+# crypto feature の alice-crypto: 例外は pin した rev の宣言 (LicenseRef-Proprietary) どおり、pin を上げる commit で一緒に変える
 [[licenses.exceptions]]
 name = "alice-crypto"
-allow = ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]
+allow = ["LicenseRef-Proprietary"]
 
 # ---------------------------------------------------------------------------
 # Bans (banned crate / duplicate / wildcard)

@@ -30,13 +30,13 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
-            add(layout.size() as isize);
+            add(isize::try_from(layout.size()).unwrap_or(isize::MAX));
         }
         p
     }
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
         unsafe { System.dealloc(p, layout) };
-        add(-(layout.size() as isize));
+        add(-isize::try_from(layout.size()).unwrap_or(isize::MAX));
     }
 }
 
@@ -48,7 +48,7 @@ fn peak_during(f: impl FnOnce()) -> usize {
     COUNT.with(|c| c.set(Some((0, 0))));
     f();
     let (_, peak) = COUNT.with(|c| c.replace(None)).expect("measuring");
-    peak as usize
+    usize::try_from(peak).unwrap_or(0)
 }
 
 #[test]

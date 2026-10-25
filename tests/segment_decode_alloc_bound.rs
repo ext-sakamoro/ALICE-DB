@@ -1,40 +1,54 @@
 //! Decoding a stored segment allocates in proportion to the bytes it is given, never to a length a damaged
 //! header claims: a corrupt file cannot make the reader reserve gigabytes. Measured with a counting global
-//! allocator (peak live bytes during the decode).
+//! allocator (peak live bytes during the decode, counted on the measuring thread only: the harness runs the tests
+//! of this binary in parallel).
 
 use alice_db::segment::DataSegment;
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Counting;
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// bytes this thread allocated minus those it freed since `peak_during` started, and their peak; `None` when
+    /// the thread is not measuring
+    static COUNT: Cell<Option<(isize, isize)>> = const { Cell::new(None) };
+}
+
+fn add(delta: isize) {
+    // `try_with`: a thread being torn down may allocate after its locals are gone
+    let _ = COUNT.try_with(|c| {
+        if let Some((live, peak)) = c.get() {
+            let live = live + delta;
+            c.set(Some((live, peak.max(live))));
+        }
+    });
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
-            let now = LIVE.fetch_add(layout.size(), Ordering::SeqCst) + layout.size();
-            PEAK.fetch_max(now, Ordering::SeqCst);
+            add(layout.size() as isize);
         }
         p
     }
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
         unsafe { System.dealloc(p, layout) };
-        LIVE.fetch_sub(layout.size(), Ordering::SeqCst);
+        add(-(layout.size() as isize));
     }
 }
 
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
-/// Peak bytes allocated above the starting level while `f` runs.
+/// Peak bytes this thread holds above its starting level while `f` runs.
 fn peak_during(f: impl FnOnce()) -> usize {
-    let base = LIVE.load(Ordering::SeqCst);
-    PEAK.store(base, Ordering::SeqCst);
+    COUNT.with(|c| c.set(Some((0, 0))));
     f();
-    PEAK.load(Ordering::SeqCst) - base
+    let (_, peak) = COUNT.with(|c| c.replace(None)).expect("measuring");
+    peak as usize
 }
 
 #[test]
@@ -49,6 +63,7 @@ fn decoding_never_allocates_beyond_what_the_bytes_hold() {
         let peak = peak_during(|| {
             DataSegment::from_stored_bytes(bytes).unwrap();
         });
+        assert!(peak > 0, "{what}: the decode was not measured");
         assert!(
             peak <= 16 * bytes.len() + 4096,
             "{what}: {peak} bytes for a {}-byte file",
@@ -110,5 +125,32 @@ fn a_newer_or_unknown_format_is_refused() {
     assert!(
         DataSegment::from_stored_bytes(&current).is_err(),
         "a reserved byte that is not zero"
+    );
+}
+
+/// The counter sees only the measuring thread: another test of this binary allocating meanwhile (the harness runs
+/// them in parallel) is not part of the decode's peak
+#[test]
+fn another_threads_allocation_is_not_counted() {
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    let (held, done) = std::sync::mpsc::channel::<()>();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a second thread that allocates while this one measures, joined; it computes nothing (ALICE-Law G13)"
+    )]
+    let other = std::thread::spawn(move || {
+        wait.recv().unwrap();
+        let v = vec![1u8; 1 << 20];
+        held.send(()).unwrap();
+        std::hint::black_box(v);
+    });
+    let peak = peak_during(|| {
+        go.send(()).unwrap();
+        done.recv().unwrap();
+    });
+    other.join().unwrap();
+    assert!(
+        peak < 1 << 16,
+        "peak {peak} counts the other thread's 1 MiB"
     );
 }

@@ -25,6 +25,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- 試験 `tests/segment_decode_alloc_bound.rs` は確保量を計る thread の分だけを数える (以前は global の counter で、同じ binary の別の試験が並行して確保した分も decode の peak に入り、macOS の CI で上限を超えた) 別の thread の確保を数えないことの試験と、decode が計られたこと (peak > 0) の検査を足した `scripts/run_tests.sh` の件数は 2 から 3
 - CI: `scripts/test_id_move_check.py` の BaseBeforePins の fixture を host の git 設定に依らないようにした (system と global の config を読まない、bare と sibling を `main` で作り `--branch main` で clone、shallow の試験は clone が shallow で tree があることを先に確かめる) 既定の branch が `main` でない host では clone が空になり、shallow の試験が別の理由で失敗していた
 - CI: `scripts/package_integrity.py` と試験を ALICE-Analytics の、`scripts/changed_paths.py` と試験を ALICE-Crypto の、表の target の bytes にする (Windows で path の escape を TOML の basic string として比べる / 試験の git の fixture で自動の gc と maintenance を止める)
 - CI: `scripts/id_move_check.py` と試験 `scripts/test_id_move_check.py` を ALICE-Law の表の計画の bytes にし、`scripts/release_baseline.py` を足して、`.github/shared-files-pin` を ALICE-Law の新しい版に移す 手元に sibling の clone が無い時は依存の url から取る

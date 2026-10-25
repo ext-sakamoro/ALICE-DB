@@ -25,6 +25,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- CI: `.github/shared-files-pin` と `.github/g11-table-pin` を ALICE-Law main eb9a8ca に移した (gen_clippy_canary_calls.py と changed_paths.py の行に目標が計画された表)
 - CI (ALICE-Law G11): `conformance/g11.toml` (pass の gate ごとに検査器、canary、比較 0 件で失敗する試験、共有の行、16 行、ALICE-Law の `scripts/g11_table_gen.py` が生成) を足し、ALICE-Law の `scripts/g11_table_check.py` を `.github/g11-table-pin` の revision で SHA-256 を確かめて取る `scripts/g11_table.sh` (ALICE-LOL と同じ bytes) を ci.yml の docs-lint job と preflight で走らせる 行の無い pass の gate、解決しない参照、比較 0 件は失敗
 - 共有の file を ALICE-Law の表の目標の bytes にした: `scripts/fneg_fma_ir_check.py` (ALICE-Edge)、`scripts/semver_gate.py` と試験 (ALICE-DetMath)、`scripts/workflow_concurrency.py` と試験 (ALICE-SDF)、`scripts/stub_guard.sh`・`scripts/test_check_eol.py`・`scripts/test_law_readme_block_check.py`・`scripts/test_tracked_binaries.py` (ALICE-Analytics)、`scripts/id_move_check.py` と試験 (ALICE-Physics) `src/blob.rs` の試験と `src/lib.rs` の doc の例の byte 列は stub の macro 名を綴らない (`to-do(...)`)
 - 試験 `tests/segment_decode_alloc_bound.rs` は確保量を計る thread の分だけを数える (以前は global の counter で、同じ binary の別の試験が並行して確保した分も decode の peak に入り、macOS の CI で上限を超えた) 別の thread の確保を数えないことの試験と、decode が計られたこと (peak > 0) の検査を足した `scripts/run_tests.sh` の件数は 2 から 3

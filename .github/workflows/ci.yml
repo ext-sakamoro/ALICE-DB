@@ -272,6 +272,13 @@ jobs:
         run: |
           python scripts/test_shared_files.py
           scripts/shared_files.sh
+      # ALICE-Law G11: every gate alice-law-conformance.toml declares pass has a row in
+      # conformance/g11.toml (checker, canary, the test that fails on nothing compared, shared
+      # rows), checked by ALICE-Law's checker fetched at .github/g11-table-pin (SHA-256 pinned);
+      # a missing row, an unresolved reference or nothing compared fails
+      - name: G11 table matches the declared gates
+        shell: bash
+        run: scripts/g11_table.sh
       - name: Entropy guard (tests)
         run: python scripts/test_entropy_guard.py
       - name: Entropy guard (no OS entropy / wall clock in production code)

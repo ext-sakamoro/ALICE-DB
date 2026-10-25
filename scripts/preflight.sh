@@ -75,6 +75,9 @@ step "ci.yml / docs-lint: Shared files equal ALICE-Law's table"
 python3 scripts/test_shared_files.py
 scripts/shared_files.sh
 
+step "ci.yml / docs-lint: G11 table matches the declared gates"
+scripts/g11_table.sh
+
 step "ci.yml / docs-lint: ALICE siblings (no path dependency on a sibling)"
 python3 scripts/test_alice_siblings_check.py
 python3 scripts/alice_siblings_check.py

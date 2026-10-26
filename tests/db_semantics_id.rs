@@ -46,13 +46,21 @@ fn fold(entries: &[(&str, [u8; 32])]) -> [u8; 32] {
 /// 64-hex literals of the golden file that are not folded digests, each
 /// with its reason
 const UNFOLDED_DIGESTS: &[&str] = &[
-    // alice-zip 0.11's identifier, folded as the alice-zip entry
-    "51ffeb079769ea34bd3cb3df756b6cb940b8d2d6a6a0f1e1115ab8139415935e",
+    // alice-zip's identifier over alice-det-math 0.5.2, folded as the alice-zip entry
+    "50a40cf64625018acc99c940e544353b901457b4a7a80bf903544ed4ef9af406",
     // the law identifiers of the three fits: `law_scenario` hashes them into
     // the bits of "law_id and evaluate", so they are folded through it
+    "a11f53737a6c31784fb8d3c89ad03e0287e9dd6af6fe9da3d5e8157cd41ed1e2",
+    "e6bd8b720cc2ff228ba128ef53f1eaf2998f23d549965ae216a7c8f28254a7bb",
+    "33c17a35376fc72ab9e13c3ddab38a0ca9c54718970e9cc9d41c49bc9c822e79",
+    // alice-zip 0.11's identifier over alice-det-math 0.5.1 (stamped by 0.6.0
+    // before alice-det-math 0.5.2) and what it gave (law identifiers, the law
+    // scenario's digest): history, not a current output
+    "51ffeb079769ea34bd3cb3df756b6cb940b8d2d6a6a0f1e1115ab8139415935e",
     "f7435747535332868e9d80b415766e1a9d2d5bdf22cf73ed70d901181de99784",
     "995dbbc08d8f19fe0d2d4b61b27f6f3f24dd0dbe24bbafe5065db0a304966a0e",
     "f3fbe5f39f54c82fa25f140ee86aba9aa914532f17d98077144b502245975744",
+    "42a9c52669170b8a9246dc5e9a217a7621c5a7ca4214dfc9bb89c3015e11ed2f",
     // alice-det-math 0.5.1's identifier (stamped up to alice-zip 0.10) and what
     // it gave (law identifiers, the law scenario's digest): history, not a
     // current output
@@ -78,9 +86,13 @@ const UNFOLDED_GOLDENS: &[(&str, usize)] = &[
     // the checker's own canaries: a fixed digest of eight zero bytes and a
     // wrong one, no scenario of the crate
     ("canary", 4),
-    // the same scenario under the identifiers stamped before alice-zip 0.11
-    // (alice-det-math 0.5.1's and 0.5.0's), kept to show that the identifier is
-    // what moved the digest; not current outputs
+    // the same scenario under the identifiers stamped before (alice-zip 0.11's
+    // over alice-det-math 0.5.1, and alice-det-math 0.5.1's and 0.5.0's), kept to
+    // show that the identifier is what moved the digest; not current outputs
+    (
+        "law_id and evaluate under 0.6.0's identifier before alice-det-math 0.5.2",
+        1,
+    ),
     ("law_id and evaluate under 0.5.1's identifier", 1),
     ("law_id and evaluate under 0.5.0's identifier", 1),
 ];
@@ -419,9 +431,9 @@ fn the_identifier_is_the_recorded_value() {
     assert_eq!(
         hex(&DB_SEMANTICS_ID),
         // the fold recomputed outside this toolchain from the documented
-        // procedure, which also reproduces the previous aab1eb3d… from the
-        // previous table (alice-det-math entry, law digest 703f17b1…)
-        "e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce"
+        // procedure, which also reproduces the previous e1a82c64… from the
+        // previous table (alice-zip entry 51ffeb07…, law digest 42a9c526…)
+        "6e8b456ac72cbfad294beb0f79104762555660ff8f3c40ac61d7d8358e655095"
     );
 }
 

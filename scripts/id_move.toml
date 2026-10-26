@@ -25,7 +25,7 @@ previous = "alice_db::PREVIOUS_SEMANTICS_IDS"
 # the tests that read data stamped with a previous identifier back exact: each must pass, and
 # fail once the old value is taken out of the list
 previous-tests = [
-    "tests/previous_identifier_store.rs::values_written_before_alice_zip_0_11_read_back_exact_as_verified_previous",
+    "tests/previous_identifier_store.rs::values_stamped_with_a_previous_identifier_read_back_exact_as_verified_previous",
     "tests/determinism_golden.rs::law_id_under_the_previous_identifiers_is_unchanged",
 ]
 

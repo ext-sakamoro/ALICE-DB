@@ -19,10 +19,10 @@
 //! residual or law record was measured against (`alice-zip`'s), which is what a
 //! reader compares a stored value with.
 //!
-//! # Hex form (with `alice-zip` 0.11)
+//! # Hex form (with `alice-zip` 0.11 at 8065587c, over `alice-det-math` 0.5.2 at 39507d1b)
 //!
 //! ```text
-//! e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce
+//! 6e8b456ac72cbfad294beb0f79104762555660ff8f3c40ac61d7d8358e655095
 //! ```
 //!
 //! # Fold
@@ -95,7 +95,7 @@ pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
     ),
     (
         "law_id and evaluate",
-        hex32("42a9c52669170b8a9246dc5e9a217a7621c5a7ca4214dfc9bb89c3015e11ed2f"),
+        hex32("649b5e823dfaabbeb28032e2d522f7a3e702d538fddd7f713a2df18f03c88052"),
     ),
     // the resolved alice-zip's own identifier, not a copy of it: the
     // identifier below is looked up by it
@@ -119,6 +119,11 @@ pub const DB_SEMANTICS_BY_ZIP: &[([u8; 32], [u8; 32])] = &[
     (
         hex32("51ffeb079769ea34bd3cb3df756b6cb940b8d2d6a6a0f1e1115ab8139415935e"),
         hex32("e1a82c6407b1a880267b354647891271929bf2a5765a93dc48944ff64237c4ce"),
+    ),
+    // alice-zip at 8065587c (over alice-det-math 0.5.2 at 39507d1b)
+    (
+        hex32("50a40cf64625018acc99c940e544353b901457b4a7a80bf903544ed4ef9af406"),
+        hex32("6e8b456ac72cbfad294beb0f79104762555660ff8f3c40ac61d7d8358e655095"),
     ),
 ];
 

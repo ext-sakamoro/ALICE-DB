@@ -1,4 +1,4 @@
-//! Stores written by the published releases before alice-zip 0.11 read back exact
+//! Stores stamped with an earlier identifier read back exact
 //!
 //! `tests/fixtures/store_db_0_5_1` and `tests/fixtures/store_db_0_5_0` were written by
 //! the published `alice-db` 0.5.1 and 0.5.0 (on `alice-zip` 0.10.0, `alice-det-math`
@@ -9,6 +9,12 @@
 //! every value comes back with its stored bits and `ReadStatus::VerifiedPrevious`, and the
 //! law is found by the law identifier it had under the stamped identifier. A stamp that is
 //! neither the current identifier nor a previous one is refused by the default read.
+//!
+//! `tests/fixtures/store_db_0_6_0` was written by 0.6.0 before its release (`2789c41`, alice-zip
+//! 0.11 with alice-det-math 0.5.1, `51ffeb07…`). This build stamps `50a40cf6…` (alice-det-math
+//! 0.5.2 at 39507d1b) and alice-zip lists `51ffeb07…` as previous, so its values read back as
+//! `VerifiedPrevious` too; its law record is format 2 and carries `51ffeb07…` itself, so it reads
+//! as `RecordSemantics::VerifiedPrevious` rather than `Unpinned`.
 
 #![cfg(feature = "fs")]
 #![allow(clippy::cast_precision_loss)]
@@ -18,8 +24,12 @@ use alice_db::segment::ReadStatus;
 use alice_db::{AliceDB, StorageConfig};
 use std::path::{Path, PathBuf};
 
-/// `(fixture directory, the identifier its writer stamped)`
-const FIXTURES: [(&str, &str); 2] = [
+/// `(fixture directory, the identifier its writer stamped)`, newest first
+const FIXTURES: [(&str, &str); 3] = [
+    (
+        "store_db_0_6_0",
+        "51ffeb079769ea34bd3cb3df756b6cb940b8d2d6a6a0f1e1115ab8139415935e",
+    ),
     (
         "store_db_0_5_1",
         "85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315",
@@ -90,7 +100,7 @@ fn the_previous_identifiers_are_not_the_current_one() {
 }
 
 #[test]
-fn values_written_before_alice_zip_0_11_read_back_exact_as_verified_previous() {
+fn values_stamped_with_a_previous_identifier_read_back_exact_as_verified_previous() {
     let mut compared = 0;
     for (name, stamp) in FIXTURES {
         let (_tmp, dir) = copy_fixture(name);
@@ -115,7 +125,17 @@ fn values_written_before_alice_zip_0_11_read_back_exact_as_verified_previous() {
             }
         }
     }
-    assert_eq!(compared, 2 * 2 * 64);
+    assert_eq!(compared, FIXTURES.len() * 2 * 64);
+}
+
+/// The stores whose law record is format 1 (written by the 0.5 releases)
+const FORMAT_1_LAW_FIXTURES: [&str; 2] = ["store_db_0_5_1", "store_db_0_5_0"];
+
+fn stamp_of(name: &str) -> &'static str {
+    FIXTURES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map_or_else(|| panic!("{name} is not a fixture"), |(_, s)| *s)
 }
 
 /// The 0.5 releases wrote law records in format 1, which carries no identifier, so the
@@ -125,7 +145,8 @@ fn values_written_before_alice_zip_0_11_read_back_exact_as_verified_previous() {
 #[test]
 fn a_law_written_before_alice_zip_0_11_is_found_by_its_previous_law_identifier() {
     let mut compared = 0;
-    for (name, stamp) in FIXTURES {
+    for name in FORMAT_1_LAW_FIXTURES {
+        let stamp = stamp_of(name);
         let (_tmp, dir) = copy_fixture(name);
         let db = open(&dir, false);
         let stored = db
@@ -147,7 +168,34 @@ fn a_law_written_before_alice_zip_0_11_is_found_by_its_previous_law_identifier()
         assert!((value.value - 6.0).abs() < 1e-12, "{name}: {}", value.value);
         compared += 1;
     }
-    assert_eq!(compared, FIXTURES.len());
+    assert_eq!(compared, FORMAT_1_LAW_FIXTURES.len());
+}
+
+/// 0.6.0 writes law records in format 2, which carry the identifier they were written under: the
+/// record of `store_db_0_6_0` reads as `VerifiedPrevious` with `51ffeb07…` (also under a
+/// pinned-only read), and the law is found by the law identifier it had under that identifier
+#[test]
+fn a_format_2_law_with_a_previous_identifier_reads_as_verified_previous() {
+    let name = "store_db_0_6_0";
+    let stamp = unhex32(stamp_of(name));
+    let (_tmp, dir) = copy_fixture(name);
+    let db = open(&dir, false);
+    let stored = db
+        .get_law("ohm")
+        .expect("read")
+        .unwrap_or_else(|| panic!("{name}: the law record is missing"));
+    assert_eq!(stored.semantics, RecordSemantics::VerifiedPrevious(stamp));
+    let pinned = db
+        .get_law_with("ohm", LawReadPolicy::RequirePinned)
+        .expect("a pinned record is read under a pinned-only read")
+        .expect("present");
+    assert_eq!(pinned.semantics, RecordSemantics::VerifiedPrevious(stamp));
+    let previous_id = stored.law.law_id(&stamp);
+    assert_ne!(previous_id, stored.law.law_id(&alice_db::SEMANTICS_ID));
+    let value = db
+        .evaluate_by_id(&previous_id, 2.5)
+        .unwrap_or_else(|e| panic!("{name}: not found by its previous law identifier: {e}"));
+    assert!((value.value - 6.0).abs() < 1e-12, "{name}: {}", value.value);
 }
 
 /// The law-identifier index of a 0.5 store was written under the identifier it stamped: a
@@ -227,5 +275,5 @@ fn an_unknown_stamp_in_a_fixture_is_refused() {
             refused += 1;
         }
     }
-    assert_eq!(refused, 4);
+    assert_eq!(refused, FIXTURES.len() * 2);
 }

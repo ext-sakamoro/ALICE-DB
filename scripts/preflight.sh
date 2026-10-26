@@ -78,6 +78,17 @@ scripts/shared_files.sh
 step "ci.yml / docs-lint: G11 table matches the declared gates"
 scripts/g11_table.sh
 
+step "ci.yml / docs-lint: G11 self-check (ALICE-Law at the pinned revision)"
+(
+  set -euo pipefail
+  rev=$(awk '$1 == "rev" { print $2 }' .github/shared-files-pin)
+  law=$(mktemp -d)
+  trap 'rm -rf "$law"' EXIT
+  git -c core.autocrlf=false clone --quiet --filter=blob:none https://github.com/ext-sakamoro/ALICE-Law.git "$law/alice-law"
+  git -C "$law/alice-law" checkout --quiet --detach "$rev"
+  python3 "$law/alice-law/scripts/g11_self_check.py" --repo . --name ALICE-DB
+)
+
 step "ci.yml / docs-lint: ALICE siblings (no path dependency on a sibling)"
 python3 scripts/test_alice_siblings_check.py
 python3 scripts/alice_siblings_check.py

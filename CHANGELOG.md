@@ -26,6 +26,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 - `deny.toml`: crypto feature の alice-crypto の例外を、pin した rev (`cbe0c3e`) が宣言する `LicenseRef-Proprietary` にした
+- CI (ALICE-Law G11): shared-files と G11 の表の pin を ALICE-Law 9cb423c に上げ (self-check が pin と crate の tree を commit した bytes で読み、subprocess の出力を UTF-8 で読む)、self-check を preflight でも走らせ、README の ALICE-Law の節を 9cb423c から作り直した 共有の写しの bytes は同じ
 - CI: `scripts/id_move_check.py` と試験を ALICE-Law 0e8c14e の表の bytes に、shared-files と G11 の表の pin を 0e8c14e に、ALICE-Law の `scripts/g11_self_check.py` を固定した revision で走らせる step を足した
 - CI: `.github/shared-files-pin` と `.github/g11-table-pin` を ALICE-Law main eb9a8ca に移した (gen_clippy_canary_calls.py と changed_paths.py の行に目標が計画された表)
 - CI: 2 つの pin を ALICE-Law main 0a5de01 に移し、`scripts/law_readme_block_check.py` と試験を行の目標の bytes (ALICE-Analytics) にした README の ALICE-Law の block はその revision で生成する G9 の note の anchor を今の CHANGELOG の文に合わせた

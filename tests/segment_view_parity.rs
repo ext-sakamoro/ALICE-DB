@@ -86,6 +86,7 @@ fn every_stored_fixture_answers_through_the_view_as_in_memory() {
         "store_db_0_5_1",
         "store_db_0_6_0",
         "store_db_0_6_0_det_math_0_5_2",
+        "store_db_0_6_0_det_math_2d01c63f",
     ] {
         files.push(root.join(store).join("seg_1.rkyv"));
     }
@@ -120,5 +121,5 @@ fn every_stored_fixture_answers_through_the_view_as_in_memory() {
             &format!("{} (format 1)", file.display()),
         );
     }
-    assert_eq!(files.len(), 14);
+    assert_eq!(files.len(), 15);
 }

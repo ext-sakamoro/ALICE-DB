@@ -42,7 +42,7 @@ enum Writer {
 
 /// `(fixture, the alice-db version that wrote it, the commit whose build wrote it, the identifier
 /// it stamped, the read)`, oldest first
-const HISTORY: [(&str, &str, Writer, Option<&str>, Expect); 6] = [
+const HISTORY: [(&str, &str, Writer, Option<&str>, Expect); 7] = [
     (
         "store_pre_0_3_0",
         "0.3.0-beta.1",
@@ -81,8 +81,15 @@ const HISTORY: [(&str, &str, Writer, Option<&str>, Expect); 6] = [
     (
         "store_db_0_6_0_det_math_0_5_2",
         "0.6.0",
-        Writer::AddingCommit,
+        Writer::At("f2a8968"),
         Some("50a40cf64625018acc99c940e544353b901457b4a7a80bf903544ed4ef9af406"),
+        Expect::Previous,
+    ),
+    (
+        "store_db_0_6_0_det_math_2d01c63f",
+        "0.6.0",
+        Writer::AddingCommit,
+        Some("17d0df1d7c0a6e63d1a7380129f12386b677ac96e7ac193dece546805f4fe84c"),
         Expect::Current,
     ),
 ];

@@ -15,6 +15,11 @@
 //! 0.5.2 at 39507d1b) and alice-zip lists `51ffeb07…` as previous, so its values read back as
 //! `VerifiedPrevious` too; its law record is format 2 and carries `51ffeb07…` itself, so it reads
 //! as `RecordSemantics::VerifiedPrevious` rather than `Unpinned`.
+//!
+//! `tests/fixtures/store_db_0_6_0_det_math_0_5_2` was written by the build of `f2a8968`
+//! (alice-zip at 8065587c over alice-det-math 0.5.2 at 39507d1b, `50a40cf6…`). This build stamps
+//! `17d0df1d…` (alice-det-math 0.5.2 at 2d01c63f) and alice-zip lists `50a40cf6…` as previous, so
+//! its values and its format 2 law record read back as `VerifiedPrevious` as well.
 
 #![cfg(feature = "fs")]
 #![allow(clippy::cast_precision_loss)]
@@ -25,7 +30,11 @@ use alice_db::{AliceDB, StorageConfig};
 use std::path::{Path, PathBuf};
 
 /// `(fixture directory, the identifier its writer stamped)`, newest first
-const FIXTURES: [(&str, &str); 3] = [
+const FIXTURES: [(&str, &str); 4] = [
+    (
+        "store_db_0_6_0_det_math_0_5_2",
+        "50a40cf64625018acc99c940e544353b901457b4a7a80bf903544ed4ef9af406",
+    ),
     (
         "store_db_0_6_0",
         "51ffeb079769ea34bd3cb3df756b6cb940b8d2d6a6a0f1e1115ab8139415935e",

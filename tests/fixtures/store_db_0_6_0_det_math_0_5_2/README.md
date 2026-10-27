@@ -10,5 +10,7 @@ Against `store_db_0_6_0`, the decoded segment (`tests/support/segment_text.rs`) 
 (and the record checksum over it). The segment file is in the current stored format, which
 `store_db_0_6_0` predates, so the files themselves are not compared byte for byte.
 
-Read by `tests/identifier_history.rs` as the current row of the identifier history: every value
-reads back exact as `ReadStatus::Current`.
+Read by `tests/identifier_history.rs` as a previous row of the identifier history and by
+`tests/previous_identifier_store.rs`: alice-zip lists `50a40cf6…` as a previous identifier (the
+move to `alice-det-math` 0.5.2 at 2d01c63f changed none of the functions it calls), so every value
+reads back exact as `ReadStatus::VerifiedPrevious`.

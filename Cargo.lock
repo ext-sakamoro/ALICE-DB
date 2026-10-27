@@ -55,7 +55,7 @@ dependencies = [
 [[package]]
 name = "alice-analytics"
 version = "0.7.0"
-source = "git+https://github.com/ext-sakamoro/ALICE-Analytics?rev=48eae0ee928042679c5aa8b2bcc965edfd61e577#48eae0ee928042679c5aa8b2bcc965edfd61e577"
+source = "git+https://github.com/ext-sakamoro/ALICE-Analytics?rev=c70ff0439d3630e9b81dcf4404726f57d11b3686#c70ff0439d3630e9b81dcf4404726f57d11b3686"
 dependencies = [
  "alice-det-math",
  "libm",
@@ -112,12 +112,12 @@ dependencies = [
 [[package]]
 name = "alice-det-math"
 version = "0.5.2"
-source = "git+https://github.com/ext-sakamoro/ALICE-DetMath?rev=39507d1b99960f260a0b760b3fba6cb60823340d#39507d1b99960f260a0b760b3fba6cb60823340d"
+source = "git+https://github.com/ext-sakamoro/ALICE-DetMath?rev=2d01c63ff0849cf0ab82eafb89f87f1b729bd2a8#2d01c63ff0849cf0ab82eafb89f87f1b729bd2a8"
 
 [[package]]
 name = "alice-zip"
 version = "0.11.0"
-source = "git+https://github.com/ext-sakamoro/ALICE-Zip?rev=8065587c8b0c3da6537091146b1a9517f27e25d8#8065587c8b0c3da6537091146b1a9517f27e25d8"
+source = "git+https://github.com/ext-sakamoro/ALICE-Zip?rev=19f6f2c1ff5537642cefca006e37e2f00570d6ba#19f6f2c1ff5537642cefca006e37e2f00570d6ba"
 dependencies = [
  "alice-det-math",
  "flate2",

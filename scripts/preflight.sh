@@ -137,6 +137,10 @@ step "ci.yml / clippy: clippy external coverage (tests, then every public functi
 python3 scripts/test_clippy_external_coverage.py
 python3 scripts/clippy_external_coverage.py
 
+step "ci.yml / clippy: feature-gated tests are run (tests, then the check)"
+python3 scripts/test_gated_tests.py
+python3 scripts/gated_tests.py
+
 step "security-audit.yml / stub-guard"
 scripts/stub_guard.sh
 

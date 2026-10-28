@@ -284,15 +284,15 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | 保存時暗号化 (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | 組込み機器でのモデル当てはめ |
 
-<!-- law-integration:begin law=9cb423c95a03bf34b845933190d1b5bce68fbde6 -->
+<!-- law-integration:begin law=521d56dfa150c94342b728cf4d19b7dd7d0f9724 -->
 ## ALICE-Law との統合
 
-ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `9cb423c95a03` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
+ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `521d56dfa150` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
 
 | | |
 |---|---|
 | release train | alice-db 0.5.1 (published)、Law への依存: あり |
-| 算術 | train の alice-det-math 0.5.1、算術の識別子 `85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315` この crate の要求は `alice-det-math = "0.5.2"` |
+| 算術 | train の alice-det-math 0.5.1、算術の識別子 `85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315` この crate の要求は `alice-det-math = "0.6.0"` |
 | end to end 検査 | 対象 (`alice-db = "0.5"`)、digest `9f7cf676708a272e3817ebbf0727c610f391e1547747af4307ee44d5523267c2`、aarch64 と x86_64 で同じ |
 
 ### 適合 (G1-G14)
@@ -309,7 +309,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `9cb423c95a03` と
 | G8 persisted-semantics-id | 適合 | every durable form that carries a value computed under an arithmetic carries that arithmetic's identifier: lossless segment residuals since 0.3.0 (the … |
 | G9 persisted-meaning-change-is-major | 適合 | the audit covers the identifier this crate persists and finds no violation, and tests/identifier_history.rs reads a committed store stamped with each earlier … |
 | G10 no-run-varying-artifacts | 適合 | no ambient clock or OS-entropy read is known in a Law-bearing path: `python3 scripts/entropy_guard.py` reports `24 files, 10 patterns, 0 problems` … |
-| G11 gate-self-tests | 適合 | clause (c) passes per crate: every copy this crate carries is at the target ALICE-Law 9cb423c's shared-files table records (scripts/shared_files.sh: 0 … |
+| G11 gate-self-tests | 適合 | clause (c) passes per crate: every copy this crate carries is at the target ALICE-Law 521d56d's shared-files table records (scripts/shared_files.sh: 0 … |
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
 | G13 no-unspecified-order | 適合 | the order-dependent outputs found earlier (model_distribution, detect_deadlock) were fixed with an oracle each; the remaining HashMap / HashSet sites, … |
 | G14 float-environment-invariants | 適合 | the static scan covers the files of this repository and the dynamic check covers the builds CI runs on ubuntu and macOS; a flag passed by a build outside this … |

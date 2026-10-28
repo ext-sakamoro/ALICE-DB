@@ -165,6 +165,15 @@ jobs:
         run: python3 scripts/test_clippy_external_coverage.py
       - name: Clippy external coverage (every public function of a named module is banned or allowed)
         run: python3 scripts/clippy_external_coverage.py
+      # a feature-gated test file (#![cfg(feature = ...)] or a gated mod) that no workflow command
+      # runs is never tested: scripts/gated_tests.py (shared with ALICE-GameEngine; the settings in
+      # scripts/gated_tests.toml are this repository's) reads the gates from tests/ and the cargo test
+      # commands from the workflows and preflight.sh, and fails on a gated file none of them runs
+      # (nothing compared fails too)
+      - name: Feature-gated tests are run (tests, then the check)
+        run: |
+          python3 scripts/test_gated_tests.py
+          python3 scripts/gated_tests.py
       # G9: an identifier (DB_SEMANTICS_ID) moves only with a breaking version and with
       # both values named in CHANGELOG.md; the released value is read from the published
       # crate at the newest release tag (scripts/id_move_check.py, shared with the other

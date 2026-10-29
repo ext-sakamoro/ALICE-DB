@@ -7,12 +7,16 @@ workflow with exactly one thing broken and assert that it is reported.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import workflow_pin_check as wpc  # noqa: E402
 
 SHA = "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"
@@ -278,9 +282,17 @@ class BaseTest(unittest.TestCase):
         base = wpc.resolve_base("HEAD")
         self.assertEqual(wpc.pins_at(base, self.wf, None), {("actions/checkout", SHA, "v5.1.0", False)})
 
+    def refused(self, call) -> str:
+        """The message of a refusal: exit 2 (no judgement), the reason on stderr"""
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            call()
+        self.assertEqual(cm.exception.code, 2, err.getvalue())
+        self.assertTrue(err.getvalue().startswith("error: "), err.getvalue())
+        return err.getvalue()
+
     def test_an_unknown_base_fails_instead_of_checking_everything(self):
-        with self.assertRaises(SystemExit):
-            wpc.resolve_base("0" * 40)
+        self.assertIn("no base commit", self.refused(lambda: wpc.resolve_base("0" * 40)))
         event = os.path.join(self.root, "event.json")
         with open(event, "w", encoding="utf-8") as f:
             f.write('{"before": "' + "0" * 40 + '"}')
@@ -288,8 +300,7 @@ class BaseTest(unittest.TestCase):
         os.environ["GITHUB_EVENT_PATH"] = event
         try:
             # no origin/main in this repository and `before` is the zero SHA
-            with self.assertRaises(SystemExit):
-                wpc.resolve_base("auto")
+            self.assertIn("no base commit", self.refused(lambda: wpc.resolve_base("auto")))
         finally:
             if old is None:
                 del os.environ["GITHUB_EVENT_PATH"]
@@ -297,16 +308,20 @@ class BaseTest(unittest.TestCase):
                 os.environ["GITHUB_EVENT_PATH"] = old
 
     def auto(self, event_name: str, ref: str, before: str):
-        """resolve_base("auto") under a GitHub event: the commit, or the SystemExit it raised"""
+        """resolve_base("auto") under a GitHub event: the commit, or the refusal's message"""
         event = os.path.join(self.root, "event.json")
         with open(event, "w", encoding="utf-8") as f:
             f.write('{"before": "' + before + '"}')
         saved = {k: os.environ.get(k) for k in ("GITHUB_EVENT_PATH", "GITHUB_EVENT_NAME", "GITHUB_REF")}
         os.environ.update(GITHUB_EVENT_PATH=event, GITHUB_EVENT_NAME=event_name, GITHUB_REF=ref)
         try:
-            return wpc.resolve_base("auto")
-        except SystemExit as e:
-            return e
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    return wpc.resolve_base("auto")
+            except SystemExit as e:
+                self.assertEqual(e.code, 2, err.getvalue())
+                return Refusal(err.getvalue())
         finally:
             for k, v in saved.items():
                 if v is None:
@@ -330,19 +345,32 @@ class BaseTest(unittest.TestCase):
         self.two_commits()
         for before, why in (("0" * 40, "all-zero before"), ("ab" * 20, "is not in this clone"), ("", "as a full SHA")):
             got = self.auto("push", "refs/heads/main", before)
-            self.assertIsInstance(got, SystemExit, before)
+            self.assertIsInstance(got, Refusal, before)
             self.assertIn(why, str(got), before)
 
     def test_auto_on_main_never_compares_the_commit_with_itself(self):
         _, head = self.two_commits()
         got = self.auto("push", "refs/heads/main", head)
-        self.assertIsInstance(got, SystemExit)
+        self.assertIsInstance(got, Refusal)
         self.assertIn("is the commit under test", str(got))
 
     def test_auto_off_main_takes_the_merge_base(self):
         first, _ = self.two_commits()
         self.assertEqual(self.auto("push", "refs/heads/ci/x", "0" * 40), first)
         self.assertEqual(self.auto("pull_request", "refs/pull/1/merge", ""), first)
+
+    def test_the_command_exits_2_when_it_cannot_name_a_base(self):
+        # end to end: the refusal reaches the process exit code (2, not 1), before any network call
+        r = subprocess.run([sys.executable, "-B", os.path.join(HERE, "workflow_pin_check.py"), "--online", "--base", "0" * 40],
+                           cwd=os.path.dirname(HERE), capture_output=True, text=True,
+                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("error: no base commit", r.stderr)
+
+
+class Refusal(str):
+    """The stderr of a resolve_base that stopped with exit 2"""
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -49,6 +49,7 @@ import os
 import re
 import subprocess
 import sys
+from typing import NoReturn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ci_base  # noqa: E402  (scripts/ci_base.py, a shared file)
@@ -248,6 +249,13 @@ def git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)
 
 
+def refuse(message: str) -> NoReturn:
+    """Stop the check with exit 2 (no judgement: the comparison could not be set up), as
+    scripts/ci_base.py does; exit 1 stays for pins that were compared and are wrong"""
+    print(f"error: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
 def resolve_base(base: str) -> str:
     """A commit to compare with: `base` itself, or for `auto` the one scripts/ci_base.py names from the
     GitHub event (shared with the other ALICE crates): on a push to main the commit main stood at before
@@ -256,7 +264,7 @@ def resolve_base(base: str) -> str:
     if base != "auto":
         if base and set(base) != {"0"} and git("cat-file", "-e", f"{base}^{{commit}}").returncode == 0:
             return git("rev-parse", base).stdout.strip()
-        raise SystemExit(f"error: no base commit to compare with ({base}; fetch the history: fetch-depth 0)")
+        refuse(f"no base commit to compare with ({base}; fetch the history: fetch-depth 0)")
     before = ""
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if event_path and os.path.exists(event_path):
@@ -268,12 +276,12 @@ def resolve_base(base: str) -> str:
     try:
         commit, rule = ci_base.ci_base(event, ref, before)
     except ValueError as e:
-        raise SystemExit(f"error: no base commit to compare with: {e}") from None
+        refuse(f"no base commit to compare with: {e}")
     finally:
         os.chdir(cwd)
     print(f"workflow_pin_check: {ci_base.describe(commit, rule, event, ref)}")
     if commit == git("rev-parse", "HEAD").stdout.strip():
-        raise SystemExit(f"error: the base {commit} is the commit under test (nothing would be compared)")
+        refuse(f"the base {commit} is the commit under test (nothing would be compared)")
     return commit
 
 

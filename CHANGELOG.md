@@ -92,7 +92,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `scripts/run_tests.sh` は `Doc-tests <crate>` の結果を最後に走った試験 binary に足していた (`verdict_record_semantics` が 3 件のところ 12 件と数えられ、`=3` の下限が doctest の件数で満たされていた) doctest は独自の節として数えて要約に `N doctests` と出し、節の見出しは cargo の字下げの後でだけ認める (試験の出力に出た `Running` で数え先が移らない) 試験は binary 複数 + doctest の log を再生し、旧版で red になることを確かめた
 - 残差と法則の記録の識別子の不一致 (`ResidualMismatch` / `ResidualStatus::Mismatch` / `LawStoreError::LawRecordMismatch`) は、`running` に読みが実際に比べた識別子 (`alice_det_math::SEMANTICS_ID`) を入れる これまでは印に使う `alice-zip` の `law::SEMANTICS_ID` を入れていたので、両者が別の値になる `alice-zip` で build すると `stored` と `running` が同じ値の不一致を報告した 印 (`SEMANTICS_ID`) が `alice_det_math::check_semantics` の受け取る識別子であることは compile 時の assert で固定し、違う `alice-zip` (自分の識別子を持つ 0.11) では build が止まる 試験 `a_mismatch_reports_the_identifier_the_read_compared_with` (`tests/legacy_segment_compat.rs`)
 
-- `scripts/workflow_pin_check.py --base auto`: 比較の基準を `scripts/ci_base.py` (他の ALICE crate と同じ bytes で共有する file) から取る main への push は push 前の main (`github.event.before`)、それ以外は origin/main との merge-base これまでは before が無い・全 0・この clone に無い時に merge-base へ黙って落ちていた 基準を決められない時と、基準が試験対象の commit そのものになる時は exit 2 で止める
+- `scripts/workflow_pin_check.py --base auto`: 比較の基準を `scripts/ci_base.py` (他の ALICE crate と同じ bytes で共有する file) から取る main への push は push 前の main (`github.event.before`)、それ以外は origin/main との merge-base これまでは before が無い・全 0・この clone に無い時に merge-base へ黙って落ちていた 基準を決められない時と、基準が試験対象の commit そのものになる時は exit 2 で止める (理由は stderr、exit 1 は比べた pin の誤りだけ)
 ## [0.5.1] - 2026-10-15
 
 ### Added

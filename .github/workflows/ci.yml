@@ -349,6 +349,8 @@ jobs:
       # every remote action is pinned to a commit SHA with its tag as a
       # comment, every workflow sets top-level permissions, a job that grants
       # write says why (0 workflows or 0 `uses:` compared is red)
+      - name: Base selector (scripts/ci_base.py, shared; tests)
+        run: python scripts/test_ci_base.py
       - name: Workflow pins (tests)
         run: python scripts/test_workflow_pin_check.py
       - name: Workflow pins (SHA, permissions)

@@ -33,9 +33,11 @@ audit and in the update script, not in a per-push gate (a branch an action
 rewrites would turn the gate red with no change here). Per push, `--online
 --base <ref>` checks only the pins that are new or changed since `<ref>`
 (unchanged pins were checked when they came in); no changed pin is a pass,
-printed as such. `--base auto` takes the ref from the GitHub event (the pull
-request base, or the commit before the push) and falls back to the merge base
-with origin/main.
+printed as such. `--base auto` takes the commit from scripts/ci_base.py (shared
+with the other ALICE crates): on a push to main the commit main stood at before
+the push (`github.event.before`), elsewhere the merge base with origin/main. A
+base it cannot name, or one that is the commit under test, stops the check
+(exit 2); it never falls back to another commit.
 
 Usage: python scripts/workflow_pin_check.py [--online [--base <ref>|auto]] [workflow directory]
 """
@@ -47,6 +49,9 @@ import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ci_base  # noqa: E402  (scripts/ci_base.py, a shared file)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
@@ -244,32 +249,32 @@ def git(*args: str) -> subprocess.CompletedProcess:
 
 
 def resolve_base(base: str) -> str:
-    """A commit to compare with: `base` itself, or for `auto` the ref the
-    GitHub event names, then the merge base with origin/main."""
-    candidates = []
+    """A commit to compare with: `base` itself, or for `auto` the one scripts/ci_base.py names from the
+    GitHub event (shared with the other ALICE crates): on a push to main the commit main stood at before
+    the push, elsewhere the merge-base with origin/main. A base it cannot name, or one that is the commit
+    under test, stops the check (exit 2) instead of falling back to another commit."""
     if base != "auto":
-        candidates.append(base)
-    else:
-        event_path = os.environ.get("GITHUB_EVENT_PATH")
-        if event_path and os.path.exists(event_path):
-            with open(event_path, encoding="utf-8") as f:
-                event = json.load(f)
-            candidates.append((event.get("pull_request") or {}).get("base", {}).get("sha") or "")
-            candidates.append(event.get("before") or "")
-        candidates.append(git("merge-base", "origin/main", "HEAD").stdout.strip())
-    head = git("rev-parse", "HEAD").stdout.strip()
-    for c in candidates:
-        if c and set(c) != {"0"} and git("cat-file", "-e", f"{c}^{{commit}}").returncode == 0:
-            commit = git("rev-parse", c).stdout.strip()
-            if commit == head and base == "auto":
-                # the event names the commit under test itself (nothing to
-                # compare with); compare with its parent, as for the merge base
-                parent = git("rev-parse", "HEAD^").stdout.strip()
-                if parent:
-                    return parent
-                continue
-            return commit
-    raise SystemExit(f"error: no base commit to compare with ({base}; fetch the history: fetch-depth 0)")
+        if base and set(base) != {"0"} and git("cat-file", "-e", f"{base}^{{commit}}").returncode == 0:
+            return git("rev-parse", base).stdout.strip()
+        raise SystemExit(f"error: no base commit to compare with ({base}; fetch the history: fetch-depth 0)")
+    before = ""
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path and os.path.exists(event_path):
+        with open(event_path, encoding="utf-8") as f:
+            before = json.load(f).get("before") or ""
+    event, ref = os.environ.get("GITHUB_EVENT_NAME", ""), os.environ.get("GITHUB_REF", "")
+    cwd = os.getcwd()
+    os.chdir(ROOT)  # ci_base reads git from the working directory
+    try:
+        commit, rule = ci_base.ci_base(event, ref, before)
+    except ValueError as e:
+        raise SystemExit(f"error: no base commit to compare with: {e}") from None
+    finally:
+        os.chdir(cwd)
+    print(f"workflow_pin_check: {ci_base.describe(commit, rule, event, ref)}")
+    if commit == git("rev-parse", "HEAD").stdout.strip():
+        raise SystemExit(f"error: the base {commit} is the commit under test (nothing would be compared)")
+    return commit
 
 
 def pins_at(commit: str, directory: str, actions_dir: str | None) -> set:

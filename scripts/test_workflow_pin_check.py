@@ -296,42 +296,53 @@ class BaseTest(unittest.TestCase):
             else:
                 os.environ["GITHUB_EVENT_PATH"] = old
 
-    def test_auto_takes_the_commit_before_the_push(self):
-        before = wpc.resolve_base("HEAD")
-        self.write("steps: []\n")
-        self.run_git("commit", "-qam", "b")
+    def auto(self, event_name: str, ref: str, before: str):
+        """resolve_base("auto") under a GitHub event: the commit, or the SystemExit it raised"""
         event = os.path.join(self.root, "event.json")
         with open(event, "w", encoding="utf-8") as f:
             f.write('{"before": "' + before + '"}')
-        old = os.environ.get("GITHUB_EVENT_PATH")
-        os.environ["GITHUB_EVENT_PATH"] = event
+        saved = {k: os.environ.get(k) for k in ("GITHUB_EVENT_PATH", "GITHUB_EVENT_NAME", "GITHUB_REF")}
+        os.environ.update(GITHUB_EVENT_PATH=event, GITHUB_EVENT_NAME=event_name, GITHUB_REF=ref)
         try:
-            self.assertEqual(wpc.resolve_base("auto"), before)
+            return wpc.resolve_base("auto")
+        except SystemExit as e:
+            return e
         finally:
-            if old is None:
-                del os.environ["GITHUB_EVENT_PATH"]
-            else:
-                os.environ["GITHUB_EVENT_PATH"] = old
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
-    def test_auto_never_compares_the_commit_with_itself(self):
+    def two_commits(self) -> tuple[str, str]:
         first = wpc.resolve_base("HEAD")
         self.write("steps: []\n")
         self.run_git("commit", "-qam", "b")
-        head = wpc.resolve_base("HEAD")
-        event = os.path.join(self.root, "event.json")
-        old = os.environ.get("GITHUB_EVENT_PATH")
-        os.environ["GITHUB_EVENT_PATH"] = event
-        try:
-            for payload in ('{"before": "' + head + '"}', '{"pull_request": {"base": {"sha": "' + head + '"}}}'):
-                with open(event, "w", encoding="utf-8") as f:
-                    f.write(payload)
-                self.assertEqual(wpc.resolve_base("auto"), first, payload)
-        finally:
-            if old is None:
-                del os.environ["GITHUB_EVENT_PATH"]
-            else:
-                os.environ["GITHUB_EVENT_PATH"] = old
+        self.run_git("update-ref", "refs/remotes/origin/main", first)
+        return first, wpc.resolve_base("HEAD")
 
+    def test_auto_on_a_push_to_main_takes_the_commit_before_the_push(self):
+        first, _ = self.two_commits()
+        self.assertEqual(self.auto("push", "refs/heads/main", first), first)
+
+    def test_auto_on_main_refuses_a_before_it_cannot_use(self):
+        # the merge-base with origin/main exists here, so a quiet fall back to it would pass: these must fail
+        self.two_commits()
+        for before, why in (("0" * 40, "all-zero before"), ("ab" * 20, "is not in this clone"), ("", "as a full SHA")):
+            got = self.auto("push", "refs/heads/main", before)
+            self.assertIsInstance(got, SystemExit, before)
+            self.assertIn(why, str(got), before)
+
+    def test_auto_on_main_never_compares_the_commit_with_itself(self):
+        _, head = self.two_commits()
+        got = self.auto("push", "refs/heads/main", head)
+        self.assertIsInstance(got, SystemExit)
+        self.assertIn("is the commit under test", str(got))
+
+    def test_auto_off_main_takes_the_merge_base(self):
+        first, _ = self.two_commits()
+        self.assertEqual(self.auto("push", "refs/heads/ci/x", "0" * 40), first)
+        self.assertEqual(self.auto("pull_request", "refs/pull/1/merge", ""), first)
 
 if __name__ == "__main__":
     unittest.main()

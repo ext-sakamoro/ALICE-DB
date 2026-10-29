@@ -121,6 +121,7 @@ python3 scripts/test_changed_paths.py
 python3 scripts/changed_paths.py sync
 
 step "ci.yml / docs-lint: workflow pins (SHA, permissions)"
+python3 scripts/test_ci_base.py
 python3 scripts/test_workflow_pin_check.py
 # only pins added or edited since origin/main (the weekly pin-audit.yml checks all)
 python3 scripts/workflow_pin_check.py --online --base origin/main

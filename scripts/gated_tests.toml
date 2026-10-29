@@ -1,0 +1,14 @@
+# Configuration of scripts/gated_tests.py (the script is shared between repositories; this file is not)
+# run: the tests are counted by scripts/run_tests.sh, not by min_passed, so only that each
+# feature-gated test file is run is checked
+mode = "run"
+# the ignored tests here are known-defect oracles kept ignored on purpose, not tests that need a device
+ignored = "skip"
+
+[[cover]]
+name = "ci"
+globs = [".github/workflows/*.yml"]
+
+[[cover]]
+name = "preflight"
+globs = ["scripts/preflight.sh"]

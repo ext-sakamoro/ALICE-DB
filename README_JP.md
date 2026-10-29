@@ -284,10 +284,10 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | 保存時暗号化 (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | 組込み機器でのモデル当てはめ |
 
-<!-- law-integration:begin law=9cb423c95a03bf34b845933190d1b5bce68fbde6 -->
+<!-- law-integration:begin law=7f5f4cbde8343a061051bb1addd30f1f0b3bea1e -->
 ## ALICE-Law との統合
 
-ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `9cb423c95a03` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
+ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `7f5f4cbde834` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
 
 | | |
 |---|---|
@@ -313,6 +313,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `9cb423c95a03` と
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
 | G13 no-unspecified-order | 適合 | the order-dependent outputs found earlier (model_distribution, detect_deadlock) were fixed with an oracle each; the remaining HashMap / HashSet sites, … |
 | G14 float-environment-invariants | 適合 | the static scan covers the files of this repository and the dynamic check covers the builds CI runs on ubuntu and macOS; a flag passed by a build outside this … |
+| G15 surface-claims | 未申告 |  |
 
 ### feature と保証の範囲
 

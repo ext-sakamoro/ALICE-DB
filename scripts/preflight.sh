@@ -142,7 +142,7 @@ step "security-audit.yml / stub-guard"
 scripts/stub_guard.sh
 
 step "ci.yml / clippy: Identifier moves (tests, then against the published release)"
-python3 scripts/test_id_move_check.py
+CARGO_TERM_COLOR=always python3 scripts/test_id_move_check.py
 python3 scripts/id_move_check.py
 
 step "ci.yml / clippy: default, full native feature set, no default features (pedantic), python (lib)"

@@ -1,0 +1,12 @@
+# Configuration of scripts/gated_tests.py (the script is shared between repositories; this file is not)
+mode = "run"
+# the ignored tests here are kept on purpose as oracles of a future format change (their reasons say which)
+ignored = "skip"
+
+[[cover]]
+name = "ci"
+globs = [".github/workflows/ci.yml"]
+
+[[cover]]
+name = "preflight"
+globs = ["scripts/preflight.sh"]

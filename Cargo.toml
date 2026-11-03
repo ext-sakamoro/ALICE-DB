@@ -48,10 +48,8 @@ rayon = "1.10"
 parking_lot = "0.12"
 
 # ALICE-Analytics bridge (optional)
-alice-analytics = { path = "../ALICE-Analytics", version = "0.2", optional = true }
 
 # ALICE-Crypto bridge (optional)
-alice-crypto = { path = "../ALICE-Crypto", version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 # Advisory file locking (cross-platform, `fs` feature only)
 fs2 = { version = "0.4", optional = true }
@@ -86,8 +84,6 @@ default = ["fs"]
 fs = ["dep:fs2", "dep:memmap2"]
 ffi = ["fs"]  # C/C++/C# FFI bindings (path-based open)
 python = ["pyo3", "numpy", "ndarray", "fs"]
-analytics = ["alice-analytics", "fs"]  # ALICE-Analytics bridge (MetricPipeline → DB persistence)
-crypto = ["dep:alice-crypto", "fs"]  # ALICE-Crypto encryption at rest
 sdf = ["fs"]  # SDF spatial data storage (Morton code indexing, path-based open)
 # Test-only: panic when the file backend renames over, deletes, or truncates a
 # file in a way Windows refuses (see src/fs_audit.rs). Enabled for this crate's

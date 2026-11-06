@@ -241,6 +241,13 @@ recovery at the same offset never replaces an earlier copy (it writes
 `blob.wal.dropped-<offset>.<n>`), and finished copies are never removed. A WAL
 that ends on a record boundary is left as it is.
 
+A store's files follow the name of its WAL: `x.wal` reads and writes `x.sst` and
+`x-000001.sst` and nothing else, so stores with different WAL names can share a
+directory. `AliceDB` uses `blob.wal`. An open stops with `InvalidData` when
+`blob*.sst` sits next to another WAL without a `blob.wal`, because an earlier
+version wrote append-mode files under that name; rename them if they belong to
+that store.
+
 Recovery keeps the WAL up to its first bad record and nothing after it: a
 corrupt record in the middle of the log also drops every acknowledged record
 written after it from the live store. Those records are kept only in the

@@ -107,8 +107,18 @@ fn two_stores_in_one_directory_stay_apart() {
             blob.flush_to_sstable().unwrap();
         }
         a.compact_all_sstables().unwrap();
+        blob.compact_all_sstables().unwrap();
         drop(a);
         drop(blob);
+
+        let a_view = BlobStorage::open_existing_read_only(&a_path).unwrap();
+        let blob_view = BlobStorage::open_existing_read_only(&blob_path).unwrap();
+        for round in 0..3_u8 {
+            assert!(a_view.get(&[b'a', round]).unwrap().is_some(), "{mode:?}");
+            assert_eq!(a_view.get(&[b'b', round]).unwrap(), None, "{mode:?}");
+            assert!(blob_view.get(&[b'b', round]).unwrap().is_some(), "{mode:?}");
+            assert_eq!(blob_view.get(&[b'a', round]).unwrap(), None, "{mode:?}");
+        }
 
         let a = BlobStorage::open_with_config(&a_path, config(mode)).unwrap();
         let blob = BlobStorage::open_with_config(&blob_path, config(mode)).unwrap();
@@ -128,6 +138,40 @@ fn two_stores_in_one_directory_stay_apart() {
             assert_eq!(blob.get(&a_key).unwrap(), None, "{mode:?}");
         }
     }
+}
+
+/// Each store counts its own numbered files.
+#[test]
+fn numbering_does_not_depend_on_another_store() {
+    let tmp = TempDir::new().unwrap();
+    let blob =
+        BlobStorage::open_with_config(tmp.path().join("blob.wal"), config(FlushMode::Append))
+            .unwrap();
+    for _ in 0..3 {
+        blob.put(b"k", b"v").unwrap();
+        blob.flush_to_sstable().unwrap();
+    }
+    let x =
+        BlobStorage::open_with_config(tmp.path().join("x.wal"), config(FlushMode::Append)).unwrap();
+    x.put(b"k", b"v").unwrap();
+    x.flush_to_sstable().unwrap();
+    assert!(tmp.path().join("x-000001.sst").exists());
+    assert!(!tmp.path().join("x-000004.sst").exists());
+}
+
+/// A file that a store's flush left under its own name on an earlier build is
+/// read: the WAL no longer holds that data.
+#[test]
+fn a_file_under_the_name_of_the_wal_is_read() {
+    let tmp = TempDir::new().unwrap();
+    let helper = TempDir::new().unwrap();
+    let store = BlobStorage::open(helper.path().join("blob.wal")).unwrap();
+    store.put(b"k", b"v").unwrap();
+    store.flush_to_sstable().unwrap();
+    std::fs::copy(helper.path().join("blob.sst"), tmp.path().join("x.sst")).unwrap();
+
+    let store = BlobStorage::open(tmp.path().join("x.wal")).unwrap();
+    assert_eq!(store.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
 }
 
 /// Opening one store leaves the unfinished write of another store alone.
@@ -167,12 +211,11 @@ fn files_of_the_earlier_layout_stop_the_open_and_are_left_alone() {
     }
     let before = std::fs::read(&sst).unwrap();
 
-    let err = BlobStorage::open(&path).err().expect("the open must stop");
+    let err = BlobStorage::open(&path).expect_err("the open must stop");
     assert_eq!(err.kind(), ErrorKind::InvalidData);
     assert!(err.to_string().contains("blob-000001.sst"), "{err}");
-    let err = BlobStorage::open_existing_read_only(&path)
-        .err()
-        .expect("the read-only open must stop too");
+    let err =
+        BlobStorage::open_existing_read_only(&path).expect_err("the read-only open must stop too");
     assert_eq!(err.kind(), ErrorKind::InvalidData);
     assert_eq!(std::fs::read(&sst).unwrap(), before);
 
@@ -185,14 +228,15 @@ fn files_of_the_earlier_layout_stop_the_open_and_are_left_alone() {
 /// With a `blob.wal` beside it, `blob-*.sst` belongs to that store.
 #[test]
 fn files_of_a_blob_wal_beside_it_do_not_stop_the_open() {
-    let tmp = TempDir::new().unwrap();
-    let blob =
-        BlobStorage::open_with_config(tmp.path().join("blob.wal"), config(FlushMode::Append))
-            .unwrap();
-    blob.put(b"k", b"v").unwrap();
-    blob.flush_to_sstable().unwrap();
-    let x = BlobStorage::open(tmp.path().join("x.wal")).unwrap();
-    assert_eq!(x.get(b"k").unwrap(), None);
+    for mode in MODES {
+        let tmp = TempDir::new().unwrap();
+        let blob =
+            BlobStorage::open_with_config(tmp.path().join("blob.wal"), config(mode)).unwrap();
+        blob.put(b"k", b"v").unwrap();
+        blob.flush_to_sstable().unwrap();
+        let x = BlobStorage::open(tmp.path().join("x.wal")).unwrap();
+        assert_eq!(x.get(b"k").unwrap(), None, "{mode:?}");
+    }
 }
 
 /// `x-000001.wal` would have the file name of the first append file of `x.wal`.
@@ -200,9 +244,7 @@ fn files_of_a_blob_wal_beside_it_do_not_stop_the_open() {
 fn a_wal_name_that_reads_as_a_numbered_file_is_refused() {
     let tmp = TempDir::new().unwrap();
     for wal in ["x-000001.wal", "blob-000001.wal"] {
-        let err = BlobStorage::open(tmp.path().join(wal))
-            .err()
-            .expect("the open must stop");
+        let err = BlobStorage::open(tmp.path().join(wal)).expect_err("the open must stop");
         assert_eq!(err.kind(), ErrorKind::InvalidInput, "{wal}");
         assert!(!tmp.path().join(wal).exists(), "{wal}");
     }

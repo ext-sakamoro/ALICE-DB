@@ -199,6 +199,10 @@ const BLOOM_FALSE_POSITIVE_RATE: f64 = 0.01;
 /// `Append`-mode `SSTable` filename (`blob-{seq:06}.sst`).
 const SSTABLE_SEQ_WIDTH: usize = 6;
 
+/// The file stem of the WAL `AliceDB` opens, and of the names the public helpers
+/// of this module read and make.
+const DEFAULT_STEM: &str = "blob";
+
 /// How a flush should treat the existing `SSTable` files in the store.
 ///
 /// Introduced in v0.2.0-alpha.5.
@@ -232,23 +236,100 @@ pub enum FlushMode {
 /// `None` so the caller can skip it.
 #[must_use]
 pub fn parse_sstable_seq(name: &str) -> Option<u64> {
-    if name == "blob.sst" {
+    parse_seq_of(DEFAULT_STEM, name)
+}
+
+/// [`parse_sstable_seq`] for the store whose WAL has the file stem `stem`.
+fn parse_seq_of(stem: &str, name: &str) -> Option<u64> {
+    let rest = name.strip_prefix(stem)?.strip_suffix(".sst")?;
+    if rest.is_empty() {
         return Some(0);
     }
-    let rest = name.strip_prefix("blob-")?;
-    let digits = rest.strip_suffix(".sst")?;
+    let digits = rest.strip_prefix('-')?;
     if digits.len() < SSTABLE_SEQ_WIDTH || !digits.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
     digits.parse::<u64>().ok()
 }
 
+/// The file stem a WAL gives to its `SSTables`.
+///
+/// # Errors
+/// `InvalidInput` for a name that is not UTF-8, and for one that would read as
+/// a numbered file of another store (`x-000001.wal` against `x.wal`).
+#[cfg(feature = "fs")]
+pub(crate) fn wal_stem(wal_path: &Path) -> io::Result<String> {
+    let stem = wal_path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "a blob WAL needs a UTF-8 file name: `{}`",
+                    wal_path.display()
+                ),
+            )
+        })?;
+    let numbered = stem
+        .rsplit_once('-')
+        .is_some_and(|(owner, _)| parse_seq_of(owner, &format!("{stem}.sst")).is_some());
+    if numbered {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "the name of blob WAL `{}` would be taken for a numbered file of another store",
+                wal_path.display()
+            ),
+        ));
+    }
+    Ok(stem.to_owned())
+}
+
+/// Stop when `dir` holds files of the earlier layout, in which a store wrote
+/// `blob*.sst` whatever its WAL was called.
+///
+/// They are not read as this store's: nothing shows they belong to it. With a
+/// `blob.wal` beside them they belong to that store, and nothing is reported.
+///
+/// # Errors
+/// `InvalidData` naming the files, and what to rename them to.
+#[cfg(feature = "fs")]
+pub(crate) fn refuse_earlier_layout(dir: &Path, stem: &str) -> io::Result<()> {
+    if stem == DEFAULT_STEM || dir.join("blob.wal").exists() {
+        return Ok(());
+    }
+    let found = enumerate_sstables(dir)?;
+    if found.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<String> = found
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str().map(str::to_owned))
+        .collect();
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "`{}` holds {} from an earlier layout and no blob.wal: if they are this store's, \
+             rename them from `blob` to `{stem}` (blob-000001.sst to {stem}-000001.sst), \
+             otherwise move them away",
+            dir.display(),
+            names.join(", "),
+        ),
+    ))
+}
+
 /// Generate the filename for a new append-mode `SSTable` with the given
 /// sequence number, zero-padded to `SSTABLE_SEQ_WIDTH` (6) digits.
 #[must_use]
 pub fn sstable_filename_for_seq(seq: u64) -> String {
+    filename_of(DEFAULT_STEM, seq)
+}
+
+/// [`sstable_filename_for_seq`] for the store whose WAL has the file stem `stem`.
+pub(crate) fn filename_of(stem: &str, seq: u64) -> String {
     let width = SSTABLE_SEQ_WIDTH;
-    format!("blob-{seq:0width$}.sst")
+    format!("{stem}-{seq:0width$}.sst")
 }
 
 /// Enumerate every blob `SSTable` currently living in `dir`, sorted by
@@ -262,7 +343,11 @@ pub fn sstable_filename_for_seq(seq: u64) -> String {
 /// # Errors
 /// Propagates the underlying [`std::fs::read_dir`] error.
 pub fn enumerate_sstables(dir: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
-    let dir = dir.as_ref();
+    enumerate_of(dir.as_ref(), DEFAULT_STEM)
+}
+
+/// [`enumerate_sstables`] for the store whose WAL has the file stem `stem`.
+pub(crate) fn enumerate_of(dir: &Path, stem: &str) -> io::Result<Vec<PathBuf>> {
     let mut hits: Vec<(u64, PathBuf)> = Vec::new();
     let read = match std::fs::read_dir(dir) {
         Ok(r) => r,
@@ -275,7 +360,7 @@ pub fn enumerate_sstables(dir: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
         let Some(name) = file_name.to_str() else {
             continue;
         };
-        if let Some(seq) = parse_sstable_seq(name) {
+        if let Some(seq) = parse_seq_of(stem, name) {
             hits.push((seq, entry.path()));
         }
     }
@@ -298,7 +383,7 @@ pub fn enumerate_sstables(dir: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
 /// # Errors
 /// Propagates directory scan errors and delete errors other than
 /// `NotFound`.
-pub(crate) fn remove_stale_tmp_files(dir: &Path) -> io::Result<usize> {
+pub(crate) fn remove_stale_tmp_files(dir: &Path, stem: &str) -> io::Result<usize> {
     let read = match std::fs::read_dir(dir) {
         Ok(r) => r,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
@@ -311,10 +396,10 @@ pub(crate) fn remove_stale_tmp_files(dir: &Path) -> io::Result<usize> {
         let Some(name) = file_name.to_str() else {
             continue;
         };
-        let Some(stem) = name.strip_suffix(".tmp") else {
+        let Some(published) = name.strip_suffix(".tmp") else {
             continue;
         };
-        if parse_sstable_seq(stem).is_none() {
+        if parse_seq_of(stem, published).is_none() {
             continue;
         }
         let path = entry.path();
@@ -336,13 +421,18 @@ pub(crate) fn remove_stale_tmp_files(dir: &Path) -> io::Result<usize> {
 /// # Errors
 /// Propagates the underlying [`enumerate_sstables`] error.
 pub fn max_sstable_seq(dir: impl AsRef<Path>) -> io::Result<Option<u64>> {
-    let hits = enumerate_sstables(dir)?;
+    max_seq_of(dir.as_ref(), DEFAULT_STEM)
+}
+
+/// [`max_sstable_seq`] for the store whose WAL has the file stem `stem`.
+pub(crate) fn max_seq_of(dir: &Path, stem: &str) -> io::Result<Option<u64>> {
+    let hits = enumerate_of(dir, stem)?;
     let mut max: Option<u64> = None;
     for path in hits {
         let name = path
             .file_name()
             .and_then(|s| s.to_str())
-            .and_then(parse_sstable_seq);
+            .and_then(|name| parse_seq_of(stem, name));
         if let Some(seq) = name {
             max = Some(match max {
                 Some(prev) => prev.max(seq),

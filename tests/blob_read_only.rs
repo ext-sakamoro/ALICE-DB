@@ -24,13 +24,10 @@ fn listing(dir: &Path) -> BTreeMap<String, Vec<u8>> {
         .unwrap()
         .map(|e| {
             let e = e.unwrap();
-            let name = e.file_name().into_string().unwrap();
-            // Windows refuses to read a locked file; it is empty, so nothing is missed
-            if Path::new(&name).extension().is_some_and(|x| x == "lock") {
-                assert_eq!(e.metadata().unwrap().len(), 0, "{name} holds data");
-                return (name, Vec::new());
-            }
-            (name, std::fs::read(e.path()).unwrap())
+            (
+                e.file_name().into_string().unwrap(),
+                std::fs::read(e.path()).unwrap(),
+            )
         })
         .collect()
 }
@@ -336,37 +333,6 @@ fn a_snapshot_holds_whole_batches() {
     assert!(compared > 0);
 }
 
-/// On Windows a lock on a file stops other handles reading it, so a writer that
-/// locked its WAL would stop every read-only open beside it.
-#[test]
-fn a_writer_leaves_the_wal_itself_unlocked() {
-    use fs2::FileExt;
-    let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("blob.wal");
-    let writer = BlobStorage::open(&path).unwrap();
-    writer.put(b"a", b"1").unwrap();
-    let wal = std::fs::File::open(&path).unwrap();
-    FileExt::try_lock_exclusive(&wal).unwrap();
-    FileExt::unlock(&wal).unwrap();
-    drop(wal);
-    assert_eq!(writer.get(b"a").unwrap().as_deref(), Some(&b"1"[..]));
-}
-
-/// The lock file stays behind a closed writer and stops nobody.
-#[test]
-fn a_lock_file_left_behind_does_not_stop_the_next_writer() {
-    let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("blob.wal");
-    drop(BlobStorage::open(&path).unwrap());
-    assert!(tmp.path().join("blob.wal.lock").exists());
-    let reopened = BlobStorage::open(&path).unwrap();
-    let Err(err) = BlobStorage::open(&path) else {
-        panic!("a second writer must be refused");
-    };
-    assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock, "{err}");
-    drop(reopened);
-}
-
 const HOLDER_ENV: &str = "ALICE_DB_LOCK_HOLDER";
 const HOLDING: &str = "alice-db-lock-holder-ready";
 
@@ -387,7 +353,6 @@ fn lock_holder_entry() {
 
 /// A writer in another process: its lock refuses a second writer and leaves
 /// reads alone, and the operating system releases it when the process is killed.
-/// The lock file is still there afterwards and stops nobody.
 #[test]
 fn a_killed_writer_releases_its_lock_and_a_read_only_open_works_beside_it() {
     use std::io::{BufRead, BufReader};
@@ -438,7 +403,37 @@ fn a_killed_writer_releases_its_lock_and_a_read_only_open_works_beside_it() {
     assert_eq!(err.kind(), ErrorKind::WouldBlock, "{err}");
     assert_eq!(read.unwrap().unwrap().as_deref(), Some(&b"1"[..]));
 
-    assert!(tmp.path().join("blob.wal.lock").exists());
     let next = BlobStorage::open(&path).unwrap();
     assert_eq!(next.get(b"held").unwrap().as_deref(), Some(&b"1"[..]));
+}
+
+/// A second path to the same WAL does not make a second writer.
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_the_wal_does_not_get_past_the_lock() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    let writer = BlobStorage::open(&path).unwrap();
+    let other = tmp.path().join("other.wal");
+    std::os::unix::fs::symlink(&path, &other).unwrap();
+    let Err(err) = BlobStorage::open(&other) else {
+        panic!("a second writer through a symlink must be refused");
+    };
+    assert_eq!(err.kind(), ErrorKind::WouldBlock, "{err}");
+    drop(writer);
+}
+
+/// Nor does a hard link: the second name is the same file.
+#[test]
+fn a_hard_link_to_the_wal_does_not_get_past_the_lock() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    let writer = BlobStorage::open(&path).unwrap();
+    let other = tmp.path().join("other.wal");
+    std::fs::hard_link(&path, &other).unwrap();
+    let Err(err) = BlobStorage::open(&other) else {
+        panic!("a second writer through a hard link must be refused");
+    };
+    assert_eq!(err.kind(), ErrorKind::WouldBlock, "{err}");
+    drop(writer);
 }

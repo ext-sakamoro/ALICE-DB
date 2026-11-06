@@ -56,12 +56,7 @@ fn files_contain(dir: &std::path::Path, needle: &[u8]) -> bool {
     let mut compared = 0;
     let mut found = false;
     for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        // Windows refuses to read the writer's lock file; it holds nothing
-        if path.extension().is_some_and(|x| x == "lock") {
-            continue;
-        }
-        let bytes = std::fs::read(path).unwrap();
+        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
         compared += 1;
         found |= bytes.windows(needle.len()).any(|w| w == needle);
     }

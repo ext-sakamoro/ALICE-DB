@@ -11,7 +11,8 @@
     reason = "a concurrency test: the threads exercise the store's locking and are joined"
 )]
 
-use alice_db::blob::{BlobStorage, WriteBatch};
+use alice_db::blob::{BlobStorage, BlobStorageConfig, WriteBatch};
+use alice_db::blob_sstable::FlushMode;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -310,12 +311,26 @@ fn a_concurrent_reader_sees_all_of_a_batch_or_none() {
     assert!(seen_pairs > 0, "the reader compared nothing");
 }
 
-/// Every acknowledged write survives flushes that other threads start.
+/// Every acknowledged write survives flushes that other threads start, in the
+/// mode that replaces the `SSTable` and in the one that adds another.
 #[test]
 fn writes_during_a_flush_are_not_lost() {
+    writes_during_a_flush(FlushMode::Overwrite);
+}
+
+#[test]
+fn writes_during_an_appending_flush_are_not_lost() {
+    writes_during_a_flush(FlushMode::Append);
+}
+
+fn writes_during_a_flush(flush_mode: FlushMode) {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.wal");
-    let store = Arc::new(BlobStorage::open(&path).unwrap());
+    let config = || BlobStorageConfig {
+        flush_mode,
+        ..BlobStorageConfig::default()
+    };
+    let store = Arc::new(BlobStorage::open_with_config(&path, config()).unwrap());
     let flusher = {
         let store = Arc::clone(&store);
         std::thread::spawn(move || {
@@ -348,10 +363,43 @@ fn writes_during_a_flush_are_not_lost() {
     let live = store.scan_prefix(b"w").unwrap().len();
     assert_eq!(live, 2_000, "acknowledged writes lost in memory");
     drop(store);
-    let store = BlobStorage::open(&path).unwrap();
+    let store = BlobStorage::open_with_config(&path, config()).unwrap();
     assert_eq!(
         store.scan_prefix(b"w").unwrap().len(),
         2_000,
         "lost after reopen"
     );
+}
+
+/// A record whose checksum holds but whose type this build does not know was
+/// written by a newer build, and is not a torn tail: the open stops and cuts
+/// nothing, here and in a read-only open.
+#[test]
+fn a_valid_record_of_an_unknown_type_stops_the_open_and_cuts_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    {
+        let store = BlobStorage::open(&path).unwrap();
+        store.put(b"before", b"1").unwrap();
+    }
+    let mut frame = vec![0x7F_u8];
+    frame.extend_from_slice(&0_u32.to_le_bytes());
+    frame.extend_from_slice(&1_u32.to_le_bytes());
+    frame.push(0);
+    frame.push(b'x');
+    let crc = crc32fast::hash(&frame);
+    frame.extend_from_slice(&crc.to_le_bytes());
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.extend_from_slice(&frame);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let Err(err) = BlobStorage::open(&path) else {
+        panic!("an open that does not know a record must not go past it");
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    let Err(err) = BlobStorage::open_existing_read_only(&path) else {
+        panic!("a read-only open must not go past it either");
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the WAL was changed");
 }

@@ -90,21 +90,21 @@
 //!
 //! # Cross-process locking
 //!
-//! On open the WAL takes an exclusive [`fs2`] advisory lock on a file next to
-//! it, `<wal>.lock`, not on the WAL: on Windows a lock on a file stops other
-//! handles reading it, and a read-only open reads the WAL beside the writer.
 //! A second process (or a second call in the same process) attempting to open
-//! the same WAL file receives a `WouldBlock`-flavoured `io::Error`. Alpha-3
-//! documents this as the canonical way to detect a running writer; multi-writer
-//! coordination (leases, coordinator process) is out of scope for alpha. The
-//! lock file stays after the writer closes and is never removed: removing it
-//! could give two writers two different files to lock. The OS releases the lock
-//! when the holder dies.
+//! the same WAL file, by any name, receives a `WouldBlock`-flavoured
+//! `io::Error`. Outside Windows the WAL holds an exclusive [`fs2`] advisory lock
+//! on its handle. On Windows a lock on a file stops other handles reading it,
+//! and a read-only open reads the WAL beside the writer, so the handle is opened
+//! with a share mode that lets others read and refuses other writers. Both belong
+//! to the file, not its name, and both end when the holder dies. Alpha-3 documents
+//! this as the canonical way to detect a running writer; multi-writer coordination
+//! (leases, coordinator process) is out of scope for alpha.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+#[cfg(not(windows))]
 use fs2::FileExt;
 use parking_lot::Mutex;
 
@@ -206,8 +206,6 @@ pub struct BlobWal {
     path: PathBuf,
     state: Mutex<WalState>,
     sync_policy: SyncPolicy,
-    /// `<path>.lock`, held exclusively while this writer is alive.
-    lock: File,
 }
 
 /// Whether the WAL handle is opened with the append flag. It is not:
@@ -216,6 +214,30 @@ pub struct BlobWal {
 /// `ERROR_ACCESS_DENIED`. Kept as a named constant so the open-file
 /// audit checks the same value the open call uses.
 const OPEN_WITH_APPEND: bool = false;
+
+/// `FILE_SHARE_READ`: other handles may read the WAL while this writer holds it.
+#[cfg(windows)]
+const WINDOWS_SHARE_READ: u32 = 0x1;
+/// `FILE_SHARE_DELETE`: as in the default share mode, for the rename of a file
+/// over the WAL's directory entry. `FILE_SHARE_WRITE` is left out, which refuses
+/// another writer of this file by any name.
+#[cfg(windows)]
+const WINDOWS_SHARE_DELETE: u32 = 0x4;
+
+/// `ERROR_SHARING_VIOLATION`: another handle's share mode refuses this open.
+fn is_sharing_violation(e: &io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(32)
+}
+
+fn already_locked(path: &Path, e: &io::Error, kind: io::ErrorKind) -> io::Error {
+    io::Error::new(
+        kind,
+        format!(
+            "blob WAL at `{}` is already locked by another writer: {e}",
+            path.display()
+        ),
+    )
+}
 
 /// Interior state guarded by the outer `Mutex`. Kept separate so a
 /// single `lock()` yields access to both the file handle and the
@@ -237,8 +259,8 @@ impl BlobWal {
     /// read + write mode so replay reads, appends, and truncation share
     /// a single handle; every append seeks to the end explicitly (the
     /// handle deliberately lacks the `append` flag so that truncation
-    /// also works on Windows). An exclusive `fs2` advisory lock on `<path>.lock`
-    /// is taken so a concurrent open sees a `WouldBlock` error.
+    /// also works on Windows). A second writer of the file sees a `WouldBlock`
+    /// error (see the module's cross-process locking section).
     ///
     /// # Errors
     /// Returns `io::Error` if directory creation, file open, or lock
@@ -260,42 +282,37 @@ impl BlobWal {
         // carries FILE_APPEND_DATA without FILE_WRITE_DATA, and
         // `truncate` (`set_len`) then fails with ERROR_ACCESS_DENIED.
         // Every write seeks to the end first instead (see `write_frame`).
-        let file = OpenOptions::new()
+        let mut options = OpenOptions::new();
+        options
             .read(true)
             .write(true)
             .append(OPEN_WITH_APPEND)
             .create(true)
-            .truncate(false)
-            .open(&path)?;
+            .truncate(false);
+        #[cfg(windows)]
+        std::os::windows::fs::OpenOptionsExt::share_mode(
+            &mut options,
+            WINDOWS_SHARE_READ | WINDOWS_SHARE_DELETE,
+        );
+        let file = options.open(&path).map_err(|e| {
+            if is_sharing_violation(&e) {
+                already_locked(&path, &e, io::ErrorKind::WouldBlock)
+            } else {
+                e
+            }
+        })?;
         // Exclusive advisory lock. If another process (or the same
         // process) already holds the lock we bail with a descriptive
         // error so the caller can surface it as "database already open"
         // rather than a mysterious later corruption.
-        let mut lock_path = path.clone().into_os_string();
-        lock_path.push(".lock");
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
-        FileExt::try_lock_exclusive(&lock).map_err(|e| {
-            // the OS reports contention differently (EWOULDBLOCK on Unix,
-            // ERROR_LOCK_VIOLATION on Windows); callers match on WouldBlock
-            let kind = if e.raw_os_error().is_some()
-                && e.raw_os_error() == fs2::lock_contended_error().raw_os_error()
-            {
+        #[cfg(not(windows))]
+        FileExt::try_lock_exclusive(&file).map_err(|e| {
+            let kind = if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
                 io::ErrorKind::WouldBlock
             } else {
                 e.kind()
             };
-            io::Error::new(
-                kind,
-                format!(
-                    "blob WAL at `{}` is already locked by another writer: {e}",
-                    path.display()
-                ),
-            )
+            already_locked(&path, &e, kind)
         })?;
         crate::fs_audit::note_open(&path);
         Ok(Self {
@@ -305,7 +322,6 @@ impl BlobWal {
                 pending_ops: 0,
             }),
             sync_policy,
-            lock,
         })
     }
 
@@ -700,7 +716,8 @@ impl Drop for BlobWal {
         if state.pending_ops > 0 {
             let _ = crate::fs_audit::sync_data(&state.file, "wal", &self.path);
         }
-        let _ = FileExt::unlock(&self.lock);
+        #[cfg(not(windows))]
+        let _ = FileExt::unlock(&state.file);
         crate::fs_audit::note_close(&self.path);
     }
 }
@@ -829,7 +846,12 @@ fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
         RECORD_TYPE_BATCH => {
             Ok(parse_batch(&value).map_or(ReadOutcome::BadChecksum, ReadOutcome::Records))
         }
-        _ => Ok(ReadOutcome::BadChecksum),
+        // The checksum holds, so this is no torn tail: a newer build wrote it.
+        // Cutting it would lose it and every record after it.
+        unknown => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("blob WAL holds a record of type {unknown:#04x} that this build does not read"),
+        )),
     }
 }
 

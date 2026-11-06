@@ -96,7 +96,7 @@
 //! ## Alpha-3.1 improvements
 //!
 //! - **Exclusive file lock**: `AliceDB::open` now takes an advisory
-//!   `fs2` lock next to the blob WAL. A second `open` on the same path
+//!   `fs2` lock on the blob WAL. A second `open` on the same path
 //!   fails with `WouldBlock` until the first handle is dropped.
 //! - **Configurable `SyncPolicy`**: choose between per-write fsync
 //!   (default, matches alpha-2), batched fsync every N records, or

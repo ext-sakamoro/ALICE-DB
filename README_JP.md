@@ -190,7 +190,7 @@ blob store は時系列でない値の層で、その上に次を持ちます
 - `BlobStorage::open_existing_read_only`: writer と並べて store の 1 つの時点を読みます 何も作らず lock も取らず、entry は process の中に保持します
 - `table::Table`: 一意と非一意の index を持つ行で、行と index は一緒に変わります `table::SealedTable` (feature `crypto`) は値を file に届く前に封じます 主キーと index の key は封じません 削除した値は次の compaction で store の file から消えますが、copy-on-write や flash の機器では古い block が残ることがあります 読めなくする必要がある値は封じた table に置き、鍵を退役させてください
 
-store に書く process は同時に 1 つです (`open` が WAL の隣の `<wal>.lock` に排他 lock を取り、この file は writer が閉じた後も残ります) 1 つの store の writer は全てこの file を lock する版にしてください
+store に書く process は同時に 1 つです (1 つ目が生きている間、どの名前で開いても 2 つ目の `open` は拒否されます 他の process からの読み取りはできます) WAL に `write_batch` のある store は、それを持たない build には戻せません そのような build は batch から後ろを WAL から切り、`<wal>.dropped-<offset>` に移します
 
 ## 保存先
 

@@ -207,7 +207,6 @@ pub struct BlobStorage {
     /// from reading the memtable until it has truncated the WAL and cleared the
     /// memtable. Without it a write between those two moments is in neither the
     /// new `SSTable` nor the WAL, and is lost after it was acknowledged.
-    #[cfg(feature = "fs")]
     write_gate: Arc<RwLock<()>>,
     /// Set by [`Self::open_existing_read_only`]: every write is refused.
     #[cfg(feature = "fs")]
@@ -743,7 +742,6 @@ impl BlobStorage {
             None => BlobValue::Raw(value.to_vec()),
         };
         {
-            #[cfg(feature = "fs")]
             let _gate = self.write_gate.read();
             #[cfg(feature = "fs")]
             if let Some(wal) = &self.wal {
@@ -1056,6 +1054,41 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if the WAL append fails; nothing is applied then.
     pub fn write_batch(&self, batch: &WriteBatch) -> io::Result<()> {
+        {
+            let _gate = self.write_gate.read();
+            self.apply_batch(batch)?;
+        }
+        #[cfg(feature = "fs")]
+        self.maybe_auto_flush()?;
+        Ok(())
+    }
+
+    /// Run `f` with every other writer and flush of this store kept out, so what
+    /// it reads still holds when it writes with [`Self::apply_exclusive`]. `f`
+    /// must not call any other writing method of the store: those would wait for
+    /// this one.
+    pub(crate) fn exclusive<T, E: From<io::Error>>(
+        &self,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let out = {
+            let _gate = self.write_gate.write();
+            f()
+        };
+        #[cfg(feature = "fs")]
+        if out.is_ok() {
+            self.maybe_auto_flush()?;
+        }
+        out
+    }
+
+    /// [`Self::write_batch`] inside [`Self::exclusive`].
+    pub(crate) fn apply_exclusive(&self, batch: &WriteBatch) -> io::Result<()> {
+        self.apply_batch(batch)
+    }
+
+    /// The caller holds the write gate, shared or exclusive.
+    fn apply_batch(&self, batch: &WriteBatch) -> io::Result<()> {
         self.check_writable()?;
         if batch.is_empty() {
             return Ok(());
@@ -1071,21 +1104,15 @@ impl BlobStorage {
                 (key.as_slice(), stored)
             })
             .collect();
-        {
-            #[cfg(feature = "fs")]
-            let _gate = self.write_gate.read();
-            #[cfg(feature = "fs")]
-            if let Some(wal) = &self.wal {
-                let ops: Vec<(&[u8], &BlobValue)> = stored.iter().map(|(k, v)| (*k, v)).collect();
-                wal.append_batch(&ops)?;
-            }
-            let mut guard = self.memtable.write();
-            for (key, value) in stored {
-                guard.insert(key.to_vec(), value);
-            }
-        }
         #[cfg(feature = "fs")]
-        self.maybe_auto_flush()?;
+        if let Some(wal) = &self.wal {
+            let ops: Vec<(&[u8], &BlobValue)> = stored.iter().map(|(k, v)| (*k, v)).collect();
+            wal.append_batch(&ops)?;
+        }
+        let mut guard = self.memtable.write();
+        for (key, value) in stored {
+            guard.insert(key.to_vec(), value);
+        }
         Ok(())
     }
 
@@ -1107,7 +1134,6 @@ impl BlobStorage {
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
         self.check_writable()?;
         {
-            #[cfg(feature = "fs")]
             let _gate = self.write_gate.read();
             #[cfg(feature = "fs")]
             if let Some(wal) = &self.wal {
@@ -1410,7 +1436,7 @@ fn merge_live(
 
 /// The first key after every key starting with `prefix`, `None` when there is none
 /// (the empty prefix, or a prefix of only 0xFF bytes).
-fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let last = prefix.iter().rposition(|&b| b != 0xFF)?;
     let mut end = prefix[..=last].to_vec();
     end[last] += 1;

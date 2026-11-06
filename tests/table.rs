@@ -37,17 +37,28 @@ fn insert_get_and_refuse_a_second_row_with_the_key() {
 fn a_unique_index_holds_one_row_and_a_refused_write_changes_nothing() {
     let store = BlobStorage::new();
     let t = Table::new("people").unwrap();
-    t.insert(&store, b"p1", b"one", &[handle(b"alice")]).unwrap();
+    t.insert(&store, b"p1", b"one", &[handle(b"alice")])
+        .unwrap();
     t.insert(&store, b"p2", b"two", &[handle(b"bob")]).unwrap();
 
-    let err = t.insert(&store, b"p3", b"x", &[handle(b"alice")]).unwrap_err();
-    assert!(matches!(&err, TableError::UniqueViolation { index } if index == "handle"), "{err:?}");
+    let err = t
+        .insert(&store, b"p3", b"x", &[handle(b"alice")])
+        .unwrap_err();
+    assert!(
+        matches!(&err, TableError::UniqueViolation { index } if index == "handle"),
+        "{err:?}"
+    );
     assert_eq!(t.get(&store, b"p3").unwrap(), None);
 
-    let err = t.upsert(&store, b"p2", b"x", &[handle(b"alice")]).unwrap_err();
+    let err = t
+        .upsert(&store, b"p2", b"x", &[handle(b"alice")])
+        .unwrap_err();
     assert!(matches!(err, TableError::UniqueViolation { .. }), "{err:?}");
     assert_eq!(t.get(&store, b"p2").unwrap().unwrap(), b"two");
-    assert_eq!(t.find_unique(&store, "handle", b"bob").unwrap().unwrap(), b"p2");
+    assert_eq!(
+        t.find_unique(&store, "handle", b"bob").unwrap().unwrap(),
+        b"p2"
+    );
 
     // a row keeps its own value of the unique index
     t.upsert(&store, b"p2", b"new", &[handle(b"bob")]).unwrap();
@@ -58,12 +69,24 @@ fn a_unique_index_holds_one_row_and_a_refused_write_changes_nothing() {
 fn an_upsert_moves_the_index_entries_and_a_delete_removes_them() {
     let store = BlobStorage::new();
     let t = Table::new("people").unwrap();
-    t.insert(&store, b"p1", b"v", &[handle(b"old"), owner(b"o1")]).unwrap();
-    t.upsert(&store, b"p1", b"v", &[handle(b"new"), owner(b"o2")]).unwrap();
+    t.insert(&store, b"p1", b"v", &[handle(b"old"), owner(b"o1")])
+        .unwrap();
+    t.upsert(&store, b"p1", b"v", &[handle(b"new"), owner(b"o2")])
+        .unwrap();
     assert_eq!(t.find_unique(&store, "handle", b"old").unwrap(), None);
-    assert_eq!(t.find_unique(&store, "handle", b"new").unwrap().unwrap(), b"p1");
-    assert!(t.find(&store, "owner", b"o1", ScanOrder::Ascending, 10).unwrap().is_empty());
-    assert_eq!(t.find(&store, "owner", b"o2", ScanOrder::Ascending, 10).unwrap(), [b"p1".to_vec()]);
+    assert_eq!(
+        t.find_unique(&store, "handle", b"new").unwrap().unwrap(),
+        b"p1"
+    );
+    assert!(t
+        .find(&store, "owner", b"o1", ScanOrder::Ascending, 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        t.find(&store, "owner", b"o2", ScanOrder::Ascending, 10)
+            .unwrap(),
+        [b"p1".to_vec()]
+    );
     // the old value of the unique index is free again
     t.insert(&store, b"p2", b"v", &[handle(b"old")]).unwrap();
 
@@ -71,7 +94,10 @@ fn an_upsert_moves_the_index_entries_and_a_delete_removes_them() {
     assert!(!t.delete(&store, b"p1").unwrap());
     assert_eq!(t.get(&store, b"p1").unwrap(), None);
     assert_eq!(t.find_unique(&store, "handle", b"new").unwrap(), None);
-    assert!(t.find(&store, "owner", b"o2", ScanOrder::Ascending, 10).unwrap().is_empty());
+    assert!(t
+        .find(&store, "owner", b"o2", ScanOrder::Ascending, 10)
+        .unwrap()
+        .is_empty());
     assert_eq!(t.count(&store).unwrap(), 1);
 }
 
@@ -83,14 +109,22 @@ fn keys_with_zero_bytes_stay_apart_and_in_order() {
     let keys: [&[u8]; 6] = [b"a", b"a\0", b"a\0\0", b"a\0b", b"a\x01", b"ab"];
     for (i, k) in keys.iter().enumerate() {
         let pk = [b'p', i as u8];
-        t.insert(&store, &pk, b"v", &[IndexKey::non_unique("i", k)]).unwrap();
+        t.insert(&store, &pk, b"v", &[IndexKey::non_unique("i", k)])
+            .unwrap();
     }
     for (i, k) in keys.iter().enumerate() {
         let found = t.find(&store, "i", k, ScanOrder::Ascending, 10).unwrap();
         assert_eq!(found, [vec![b'p', i as u8]], "{k:?}");
     }
     let all = t
-        .index_range(&store, "i", Bound::Unbounded, Bound::Unbounded, ScanOrder::Ascending, 100)
+        .index_range(
+            &store,
+            "i",
+            Bound::Unbounded,
+            Bound::Unbounded,
+            ScanOrder::Ascending,
+            100,
+        )
         .unwrap();
     let in_order: Vec<&[u8]> = all.iter().map(|(k, _)| k.as_slice()).collect();
     assert_eq!(in_order, keys, "index order is the byte order of the keys");
@@ -100,8 +134,12 @@ fn keys_with_zero_bytes_stay_apart_and_in_order() {
     longer.insert(&store, b"x", b"v", &[]).unwrap();
     assert_eq!(t.get(&store, b"x").unwrap(), None);
     assert_eq!(t.count(&store).unwrap(), 6);
-    t.insert(&store, b"q", b"v", &[IndexKey::non_unique("i\0", b"a")]).unwrap();
-    assert_eq!(t.find(&store, "i", b"a", ScanOrder::Ascending, 10).unwrap(), [vec![b'p', 0]]);
+    t.insert(&store, b"q", b"v", &[IndexKey::non_unique("i\0", b"a")])
+        .unwrap();
+    assert_eq!(
+        t.find(&store, "i", b"a", ScanOrder::Ascending, 10).unwrap(),
+        [vec![b'p', 0]]
+    );
 }
 
 /// The newest rows of one owner: a key of owner + big-endian time, descending, limited.
@@ -117,10 +155,18 @@ fn the_latest_rows_by_an_index_range() {
     ] {
         let mut key = room.to_vec();
         key.extend_from_slice(&time.to_be_bytes());
-        t.insert(&store, pk, b"v", &[IndexKey::non_unique("by_time", &key)]).unwrap();
+        t.insert(&store, pk, b"v", &[IndexKey::non_unique("by_time", &key)])
+            .unwrap();
     }
     let got = t
-        .index_range(&store, "by_time", Bound::Included(b"r1"), Bound::Excluded(b"r2"), ScanOrder::Descending, 2)
+        .index_range(
+            &store,
+            "by_time",
+            Bound::Included(b"r1"),
+            Bound::Excluded(b"r2"),
+            ScanOrder::Descending,
+            2,
+        )
         .unwrap();
     let pks: Vec<&[u8]> = got.iter().map(|(_, pk)| pk.as_slice()).collect();
     assert_eq!(pks, [&b"m2"[..], b"m4"]);
@@ -135,10 +181,38 @@ fn scan_returns_rows_without_their_index_lists() {
     t.insert(&store, b"a", b"1", &[handle(b"h1")]).unwrap();
     t.insert(&store, b"b", b"2", &[]).unwrap();
     t.insert(&store, b"c", b"3", &[]).unwrap();
-    let up = t.scan(&store, Bound::Included(b"b"), Bound::Unbounded, ScanOrder::Ascending, 10).unwrap();
-    assert_eq!(up, [(b"b".to_vec(), b"2".to_vec()), (b"c".to_vec(), b"3".to_vec())]);
-    let down = t.scan(&store, Bound::Unbounded, Bound::Unbounded, ScanOrder::Descending, 2).unwrap();
-    assert_eq!(down, [(b"c".to_vec(), b"3".to_vec()), (b"b".to_vec(), b"2".to_vec())]);
+    let up = t
+        .scan(
+            &store,
+            Bound::Included(b"b"),
+            Bound::Unbounded,
+            ScanOrder::Ascending,
+            10,
+        )
+        .unwrap();
+    assert_eq!(
+        up,
+        [
+            (b"b".to_vec(), b"2".to_vec()),
+            (b"c".to_vec(), b"3".to_vec())
+        ]
+    );
+    let down = t
+        .scan(
+            &store,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            ScanOrder::Descending,
+            2,
+        )
+        .unwrap();
+    assert_eq!(
+        down,
+        [
+            (b"c".to_vec(), b"3".to_vec()),
+            (b"b".to_vec(), b"2".to_vec())
+        ]
+    );
     assert_eq!(t.count(&store).unwrap(), 3);
 }
 
@@ -149,12 +223,14 @@ fn every_write_is_atomic_at_every_byte_of_the_wal() {
     let t = Table::new("t").unwrap();
     {
         let store = BlobStorage::open(&path).unwrap();
-        t.insert(&store, b"p", b"old", &[handle(b"h-old"), owner(b"o")]).unwrap();
+        t.insert(&store, b"p", b"old", &[handle(b"h-old"), owner(b"o")])
+            .unwrap();
     }
     let before = std::fs::metadata(&path).unwrap().len() as usize;
     {
         let store = BlobStorage::open(&path).unwrap();
-        t.upsert(&store, b"p", b"new", &[handle(b"h-new"), owner(b"o")]).unwrap();
+        t.upsert(&store, b"p", b"new", &[handle(b"h-new"), owner(b"o")])
+            .unwrap();
     }
     let bytes = std::fs::read(&path).unwrap();
     assert!(bytes.len() > before);
@@ -163,11 +239,27 @@ fn every_write_is_atomic_at_every_byte_of_the_wal() {
         let copy = dir.path().join("blob.wal");
         std::fs::write(&copy, &bytes[..cut]).unwrap();
         let store = BlobStorage::open(&copy).unwrap();
-        let (value, h) = if cut == bytes.len() { (&b"new"[..], &b"h-new"[..]) } else { (&b"old"[..], &b"h-old"[..]) };
+        let (value, h) = if cut == bytes.len() {
+            (&b"new"[..], &b"h-new"[..])
+        } else {
+            (&b"old"[..], &b"h-old"[..])
+        };
         assert_eq!(t.get(&store, b"p").unwrap().unwrap(), value, "cut {cut}");
-        assert_eq!(t.find_unique(&store, "handle", h).unwrap().unwrap(), b"p", "cut {cut}");
-        let other = if cut == bytes.len() { &b"h-old"[..] } else { &b"h-new"[..] };
-        assert_eq!(t.find_unique(&store, "handle", other).unwrap(), None, "cut {cut}");
+        assert_eq!(
+            t.find_unique(&store, "handle", h).unwrap().unwrap(),
+            b"p",
+            "cut {cut}"
+        );
+        let other = if cut == bytes.len() {
+            &b"h-old"[..]
+        } else {
+            &b"h-new"[..]
+        };
+        assert_eq!(
+            t.find_unique(&store, "handle", other).unwrap(),
+            None,
+            "cut {cut}"
+        );
     }
 }
 
@@ -185,12 +277,21 @@ fn one_winner_for_a_unique_value_under_threads_and_flushes() {
                 let (store, t, name) = (Arc::clone(&store), Arc::clone(&t), name.clone());
                 std::thread::spawn(move || {
                     let pk = format!("{round}-{i}");
-                    t.insert(&store, pk.as_bytes(), b"v", &[IndexKey::unique("handle", name.as_bytes())])
-                        .is_ok()
+                    t.insert(
+                        &store,
+                        pk.as_bytes(),
+                        b"v",
+                        &[IndexKey::unique("handle", name.as_bytes())],
+                    )
+                    .is_ok()
                 })
             })
             .collect();
-        let wins = threads.into_iter().map(|h| h.join().unwrap()).filter(|w| *w).count();
+        let wins = threads
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|w| *w)
+            .count();
         assert_eq!(wins, 1, "round {round}");
         compared += 1;
         if round % 10 == 9 {
@@ -240,16 +341,30 @@ fn indexes_equal_a_reference_after_reopen() {
             }
         }
     }
-    assert!(refused > 50 && applied > 50, "refused {refused}, applied {applied}");
+    assert!(
+        refused > 50 && applied > 50,
+        "refused {refused}, applied {applied}"
+    );
     let store = BlobStorage::open(&path).unwrap();
     assert_eq!(t.count(&store).unwrap(), rows.len());
     for (pk, (h, _)) in &rows {
-        assert_eq!(t.find_unique(&store, "handle", h).unwrap().as_ref(), Some(pk));
+        assert_eq!(
+            t.find_unique(&store, "handle", h).unwrap().as_ref(),
+            Some(pk)
+        );
     }
     for o in 0..5 {
         let o = format!("o{o}").into_bytes();
-        let want: BTreeSet<_> = rows.iter().filter(|(_, (_, ro))| *ro == o).map(|(p, _)| p.clone()).collect();
-        let got: BTreeSet<_> = t.find(&store, "owner", &o, ScanOrder::Ascending, 1000).unwrap().into_iter().collect();
+        let want: BTreeSet<_> = rows
+            .iter()
+            .filter(|(_, (_, ro))| *ro == o)
+            .map(|(p, _)| p.clone())
+            .collect();
+        let got: BTreeSet<_> = t
+            .find(&store, "owner", &o, ScanOrder::Ascending, 1000)
+            .unwrap()
+            .into_iter()
+            .collect();
         assert_eq!(got, want, "{o:?}");
     }
 }
@@ -263,9 +378,70 @@ fn a_read_only_store_reads_rows_and_refuses_writes() {
     t.insert(&writer, b"p", b"v", &[handle(b"h")]).unwrap();
     let reader = BlobStorage::open_existing_read_only(&path).unwrap();
     assert_eq!(t.get(&reader, b"p").unwrap().unwrap(), b"v");
-    assert_eq!(t.find_unique(&reader, "handle", b"h").unwrap().unwrap(), b"p");
+    assert_eq!(
+        t.find_unique(&reader, "handle", b"h").unwrap().unwrap(),
+        b"p"
+    );
     let err = t.upsert(&reader, b"q", b"v", &[]).unwrap_err();
-    assert!(matches!(err, TableError::Io(ref e) if e.kind() == std::io::ErrorKind::PermissionDenied), "{err:?}");
+    assert!(
+        matches!(err, TableError::Io(ref e) if e.kind() == std::io::ErrorKind::PermissionDenied),
+        "{err:?}"
+    );
+}
+
+/// Each bound kind at a key that several rows hold, against the definition.
+#[test]
+fn index_range_bounds_take_or_leave_every_row_of_a_key() {
+    let store = BlobStorage::new();
+    let t = Table::new("t").unwrap();
+    for (pk, key) in [
+        (&b"1"[..], &b"a"[..]),
+        (b"2", b"b"),
+        (b"3", b"b"),
+        (b"4", b"b\0"),
+        (b"5", b"c"),
+    ] {
+        t.insert(&store, pk, b"v", &[IndexKey::non_unique("i", key)])
+            .unwrap();
+    }
+    let pks = |start, end| -> Vec<Vec<u8>> {
+        t.index_range(&store, "i", start, end, ScanOrder::Ascending, 100)
+            .unwrap()
+            .into_iter()
+            .map(|(_, pk)| pk)
+            .collect()
+    };
+    let list = |want: &[&[u8]]| want.iter().map(|p| p.to_vec()).collect::<Vec<_>>();
+    let b: &[u8] = b"b";
+    assert_eq!(
+        pks(Bound::Included(b), Bound::Unbounded),
+        list(&[b"2", b"3", b"4", b"5"])
+    );
+    assert_eq!(
+        pks(Bound::Excluded(b), Bound::Unbounded),
+        list(&[b"4", b"5"])
+    );
+    assert_eq!(
+        pks(Bound::Unbounded, Bound::Included(b)),
+        list(&[b"1", b"2", b"3"])
+    );
+    assert_eq!(pks(Bound::Unbounded, Bound::Excluded(b)), list(&[b"1"]));
+    assert_eq!(
+        pks(Bound::Included(b), Bound::Included(b)),
+        list(&[b"2", b"3"])
+    );
+}
+
+/// A delete is a write on a read-only store even when there is nothing to delete.
+#[test]
+fn a_read_only_store_refuses_a_delete_of_a_missing_row() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    let writer = BlobStorage::open(&path).unwrap();
+    writer.put(b"x", b"y").unwrap();
+    let reader = BlobStorage::open_existing_read_only(&path).unwrap();
+    let t = Table::new("t").unwrap();
+    assert!(matches!(t.delete(&reader, b"none"), Err(TableError::Io(_))));
 }
 
 #[test]

@@ -233,6 +233,7 @@ pub mod seqlock;
 pub mod series;
 pub mod snapshot;
 pub mod storage_engine;
+pub mod table;
 pub mod transaction;
 
 #[cfg(feature = "ffi")]

@@ -111,6 +111,7 @@ All notable changes to ALICE-DB will be documented in this file.
 ### Fixed
 - blob: `BlobStorage::open` に `blob.wal` 以外の名前の WAL を渡すと、Overwrite の flush 済みのデータが開き直した時に消えていた `AliceDB::open` は `blob.wal` 固定なので影響しない 試験 `tests/blob_one_store.rs`
 - blob: `open("x.wal")` のように directory の無い名前で開くと、flush 済みのデータが開き直した時に消えていた (`./x.wal` では起きない) 試験 `tests/blob_wal_bare_name.rs`
+- blob: 相対 path で開いた store は、開いた後に current directory が変わると flush の file を別の場所に書いていた 開く時に絶対 path にする
 - blob の 3 つの試験: 書く側が先に止まると読む側が待ち続けていた
 - flush・compaction と同時の `put_blob` / `delete_blob` が `Ok` を返した後に消えることがあった (flush が memtable を読んでから WAL を切り memtable を消すまでの間の書き込みは、新しい `SSTable` にも WAL にも残らない) 書き手と flush を排他にした
 - `scripts/ci_base.py` と `scripts/test_ci_base.py` (共有 file、canonical は ALICE-DetMath): git の出力を UTF-8 で読む (`encoding="utf-8"`、これまでは locale の code page で Windows の cp1252 では非 ASCII で止まった) 試験は locale を cp1252 にした子 interpreter で非 ASCII の commit 件名を読む

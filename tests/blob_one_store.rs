@@ -406,6 +406,19 @@ fn another_case_of_the_name_is_the_same_store() {
     }
 }
 
+/// The earlier version's `x.sst`, reached by another case of the WAL's name.
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn another_case_of_the_name_reads_the_file_of_an_earlier_version() {
+    let tmp = fixture("old_layout_e5c0d81/overwrite");
+    let path = tmp.path().join("X.WAL");
+    let view = BlobStorage::open_existing_read_only(&path).unwrap();
+    assert_eq!(get(&view, "k"), Some("v".to_owned()));
+    let store = BlobStorage::open(&path).unwrap();
+    assert_eq!(get(&store, "k"), Some("v".to_owned()));
+    assert!(tmp.path().join("blob.sst").exists());
+}
+
 /// APFS treats composed and decomposed forms of a name as one.
 #[cfg(target_os = "macos")]
 #[test]
@@ -443,6 +456,24 @@ fn a_symlink_in_the_directory_is_the_same_store() {
         let view = BlobStorage::open_existing_read_only(&link).unwrap();
         assert_eq!(get(&view, "k"), Some("v".to_owned()), "read-only {mode:?}");
     }
+}
+
+/// The earlier version's `x.sst`, reached through a link to `x.wal`.
+#[cfg(unix)]
+#[test]
+fn a_symlink_reads_the_file_of_an_earlier_version() {
+    let tmp = fixture("old_layout_e5c0d81/overwrite");
+    let link = tmp.path().join("y.wal");
+    std::os::unix::fs::symlink(tmp.path().join("x.wal"), &link).unwrap();
+    let view = BlobStorage::open_existing_read_only(&link).unwrap();
+    assert_eq!(get(&view, "k"), Some("v".to_owned()));
+    let store = BlobStorage::open(&link).unwrap();
+    assert_eq!(get(&store, "k"), Some("v".to_owned()));
+    assert_eq!(get(&store, "w"), Some("u".to_owned()));
+    drop(store);
+    assert!(tmp.path().join("blob.sst").exists());
+    let err = refused(&tmp.path().join("z.wal"));
+    assert!(err.to_string().contains("x.wal"), "{err}");
 }
 
 /// The files next to the link are not the files next to the WAL.

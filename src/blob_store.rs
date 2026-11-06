@@ -31,7 +31,8 @@ pub(crate) fn store_dir(wal_path: &Path) -> PathBuf {
     }
 }
 
-/// The file name of a WAL path.
+/// The file name of a WAL path; of its target for a symlink, so a link and the
+/// file it reaches are one name.
 ///
 /// # Errors
 /// `InvalidInput` for a name that is not UTF-8 or holds a newline, and for the
@@ -43,7 +44,13 @@ pub(crate) fn wal_name(wal_path: &Path) -> io::Result<String> {
             format!("blob WAL `{}` {why}", wal_path.display()),
         )
     };
-    let name = wal_path
+    let is_link = std::fs::symlink_metadata(wal_path).is_ok_and(|m| m.file_type().is_symlink());
+    let real = if is_link {
+        std::fs::canonicalize(wal_path)?
+    } else {
+        wal_path.to_path_buf()
+    };
+    let name = real
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .filter(|name| !name.contains('\n'))
@@ -99,6 +106,17 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// `dir` as a path that means the same after the current directory changes: a
+/// store flushes long after it was opened.
+///
+/// # Errors
+/// Any error of creating or resolving the directory.
+pub(crate) fn writer_dir(wal_path: &Path) -> io::Result<PathBuf> {
+    let dir = store_dir(wal_path);
+    std::fs::create_dir_all(&dir)?;
+    std::path::absolute(dir)
+}
+
 /// The WAL name recorded in `dir`, if there is a whole record.
 ///
 /// # Errors
@@ -127,17 +145,14 @@ pub(crate) fn recorded_wal(dir: &Path) -> io::Result<Option<String>> {
 }
 
 /// `<stem>.sst`, which an earlier version wrote for a WAL of another name than
-/// `blob.wal`. The directory listing decides, so a name that only matches under
-/// the file system's case rules is not one.
+/// `blob.wal`. The file system decides what the name reaches, and a file that is
+/// already the store's own under another spelling (`Blob.sst`) is not one.
 fn earlier_file(dir: &Path, wal_name: &str) -> io::Result<Option<PathBuf>> {
     let stem = Path::new(wal_name)
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(wal_name);
-    let name = format!("{stem}.sst");
-    if parse_sstable_seq(&name).is_some() {
-        return Ok(None);
-    }
+    let candidate = dir.join(format!("{stem}.sst"));
     let read = match std::fs::read_dir(dir) {
         Ok(read) => read,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -145,7 +160,11 @@ fn earlier_file(dir: &Path, wal_name: &str) -> io::Result<Option<PathBuf>> {
     };
     for entry in read {
         let entry = entry?;
-        if entry.file_name().to_str() == Some(name.as_str()) {
+        let is_store_file = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| parse_sstable_seq(name).is_some());
+        if !is_store_file && same_file(&entry.path(), &candidate) {
             return Ok(Some(entry.path()));
         }
     }

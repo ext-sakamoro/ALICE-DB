@@ -37,4 +37,17 @@ fn a_bare_name_keeps_its_flushed_data() {
             std::env::set_current_dir(&start).unwrap();
         }
     }
+
+    // A store flushes long after it was opened.
+    let tmp = TempDir::new().unwrap();
+    let elsewhere = TempDir::new().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let store = BlobStorage::open("moved.wal").unwrap();
+    store.put(b"k", b"v").unwrap();
+    std::env::set_current_dir(elsewhere.path()).unwrap();
+    store.flush_to_sstable().unwrap();
+    assert!(tmp.path().join("blob.sst").exists());
+    assert!(!elsewhere.path().join("blob.sst").exists());
+    drop(store);
+    std::env::set_current_dir(&start).unwrap();
 }

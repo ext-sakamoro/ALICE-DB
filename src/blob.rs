@@ -43,8 +43,8 @@ use crate::blob_sstable::{
 };
 #[cfg(feature = "fs")]
 use crate::blob_store::{
-    check_open, move_earlier_file, recorded_wal, source_files, store_dir, wal_name, Record,
-    StoreLock,
+    check_open, move_earlier_file, recorded_wal, source_files, store_dir, wal_name, writer_dir,
+    Record, StoreLock,
 };
 #[cfg(feature = "fs")]
 use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord, WalRecovery};
@@ -379,7 +379,10 @@ impl BlobStorage {
     ) -> io::Result<Self> {
         let wal_path = wal_path.as_ref().to_path_buf();
         let name = wal_name(&wal_path)?;
-        let dir = store_dir(&wal_path);
+        let dir = writer_dir(&wal_path)?;
+        let wal_path = wal_path
+            .file_name()
+            .map_or_else(|| wal_path.clone(), |file_name| dir.join(file_name));
         let sstable_path = dir.join("blob.sst");
         let mut store_lock = StoreLock::acquire(&dir)?;
         let record = check_open(&dir, &wal_path, &name, recorded_wal(&dir)?.as_deref())?;

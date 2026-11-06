@@ -213,7 +213,7 @@ The blob store is the layer for values that are not a time series. On it:
 - `BlobStorage::open_existing_read_only`: one moment of a store, beside its writer. It creates and locks nothing, and holds the entries in memory.
 - `table::Table`: rows with unique and non-unique indexes, changed together. `table::SealedTable` (feature `crypto`) seals values before they reach a file; primary keys and index keys are not sealed. A deleted value leaves the store's files at the next compaction, but on a copy-on-write or flash device its old blocks may survive: a value that must become unreadable belongs in a sealed table, with its key retired.
 
-One process writes a store at a time: `open` takes an exclusive lock on the WAL.
+One process writes a store at a time: `open` takes an exclusive lock on `<wal>.lock` next to the WAL, and the file stays after the writer closes. Every writer of a store must be on a version that locks this file.
 
 ## Storage backends
 

@@ -90,12 +90,16 @@
 //!
 //! # Cross-process locking
 //!
-//! On open the WAL takes an exclusive [`fs2`] advisory lock on the file
-//! handle. A second process (or a second call in the same process)
-//! attempting to open the same WAL file receives a
-//! `WouldBlock`-flavoured `io::Error`. Alpha-3 documents this as the
-//! canonical way to detect a running writer; multi-writer coordination
-//! (leases, coordinator process) is out of scope for alpha.
+//! On open the WAL takes an exclusive [`fs2`] advisory lock on a file next to
+//! it, `<wal>.lock`, not on the WAL: on Windows a lock on a file stops other
+//! handles reading it, and a read-only open reads the WAL beside the writer.
+//! A second process (or a second call in the same process) attempting to open
+//! the same WAL file receives a `WouldBlock`-flavoured `io::Error`. Alpha-3
+//! documents this as the canonical way to detect a running writer; multi-writer
+//! coordination (leases, coordinator process) is out of scope for alpha. The
+//! lock file stays after the writer closes and is never removed: removing it
+//! could give two writers two different files to lock. The OS releases the lock
+//! when the holder dies.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
@@ -202,6 +206,8 @@ pub struct BlobWal {
     path: PathBuf,
     state: Mutex<WalState>,
     sync_policy: SyncPolicy,
+    /// `<path>.lock`, held exclusively while this writer is alive.
+    lock: File,
 }
 
 /// Whether the WAL handle is opened with the append flag. It is not:
@@ -231,8 +237,8 @@ impl BlobWal {
     /// read + write mode so replay reads, appends, and truncation share
     /// a single handle; every append seeks to the end explicitly (the
     /// handle deliberately lacks the `append` flag so that truncation
-    /// also works on Windows). An exclusive `fs2` advisory lock is taken so a
-    /// concurrent open sees a `WouldBlock` error.
+    /// also works on Windows). An exclusive `fs2` advisory lock on `<path>.lock`
+    /// is taken so a concurrent open sees a `WouldBlock` error.
     ///
     /// # Errors
     /// Returns `io::Error` if directory creation, file open, or lock
@@ -265,7 +271,15 @@ impl BlobWal {
         // process) already holds the lock we bail with a descriptive
         // error so the caller can surface it as "database already open"
         // rather than a mysterious later corruption.
-        FileExt::try_lock_exclusive(&file).map_err(|e| {
+        let mut lock_path = path.clone().into_os_string();
+        lock_path.push(".lock");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        FileExt::try_lock_exclusive(&lock).map_err(|e| {
             // the OS reports contention differently (EWOULDBLOCK on Unix,
             // ERROR_LOCK_VIOLATION on Windows); callers match on WouldBlock
             let kind = if e.raw_os_error().is_some()
@@ -291,6 +305,7 @@ impl BlobWal {
                 pending_ops: 0,
             }),
             sync_policy,
+            lock,
         })
     }
 
@@ -685,7 +700,7 @@ impl Drop for BlobWal {
         if state.pending_ops > 0 {
             let _ = crate::fs_audit::sync_data(&state.file, "wal", &self.path);
         }
-        let _ = FileExt::unlock(&state.file);
+        let _ = FileExt::unlock(&self.lock);
         crate::fs_audit::note_close(&self.path);
     }
 }

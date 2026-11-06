@@ -67,6 +67,7 @@ License: LicenseRef-Proprietary
 - [Example](#example)
 - [Exact series](#exact-series)
 - [Laws: evidence, valid range and verdicts](#laws-evidence-valid-range-and-verdicts)
+- [Key-value and records](#key-value-and-records)
 - [Storage backends](#storage-backends)
 - [Features](#features)
 - [Model types](#model-types)
@@ -202,6 +203,17 @@ is well defined even for several pointers, because equal identifier implies the
 evaluation returns the same bits for every `x`. The converse does not hold — two
 laws that evaluate identically can still differ in identifier — so an identifier
 is not a deduplication key.
+
+## Key-value and records
+
+The blob store is the layer for values that are not a time series. On it:
+
+- `BlobStorage::write_batch`: every operation of a batch takes effect or none does (one WAL record, one checksum).
+- `BlobStorage::scan_range`: live entries between two bounds, either direction, with a limit.
+- `BlobStorage::open_existing_read_only`: one moment of a store, beside its writer. It creates and locks nothing, and holds the entries in memory.
+- `table::Table`: rows with unique and non-unique indexes, changed together. `table::SealedTable` (feature `crypto`) seals values before they reach a file; primary keys and index keys are not sealed. A deleted value leaves the store's files at the next compaction, but on a copy-on-write or flash device its old blocks may survive: a value that must become unreadable belongs in a sealed table, with its key retired.
+
+One process writes a store at a time: `open` takes an exclusive lock on the WAL.
 
 ## Storage backends
 

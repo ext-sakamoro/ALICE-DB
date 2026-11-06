@@ -275,6 +275,27 @@ fn a_snapshot_flushes_its_writer() {
     assert!(out.flushed);
 }
 
+/// After a compaction a deleted value is in no file of the store.
+#[test]
+fn a_compaction_leaves_no_bytes_of_a_deleted_value() {
+    const GONE: &[u8] = b"a-value-that-was-deleted-and-must-be-gone";
+    let tmp = TempDir::new().unwrap();
+    let store = BlobStorage::open(tmp.path().join("blob.wal")).unwrap();
+    let holds = |dir: &Path| {
+        listing(dir)
+            .values()
+            .any(|bytes| bytes.windows(GONE.len()).any(|w| w == GONE))
+    };
+    store.put(b"k", GONE).unwrap();
+    store.put(b"other", b"stays").unwrap();
+    store.flush_to_sstable().unwrap();
+    assert!(holds(tmp.path()), "the search must find it first");
+    store.delete(b"k").unwrap();
+    store.compact_all_sstables().unwrap();
+    assert!(!holds(tmp.path()), "still in a file after the compaction");
+    assert_eq!(store.get(b"other").unwrap().unwrap(), b"stays");
+}
+
 /// A snapshot taken during writes holds whole batches.
 #[test]
 fn a_snapshot_holds_whole_batches() {

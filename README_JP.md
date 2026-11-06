@@ -52,6 +52,7 @@ License: LicenseRef-Proprietary
 - [使用例](#使用例)
 - [Exact series](#exact-series)
 - [法則: 証拠・成立範囲・判定](#法則-証拠成立範囲判定)
+- [key-value と行](#key-value-と行)
 - [保存先](#保存先)
 - [Feature](#feature)
 - [モデルの種類](#モデルの種類)
@@ -179,6 +180,17 @@ index に入れる `law_pointers_by_id` は 1 つの識別子に対する `(name
 定まるのは、識別子が同じなら評価が全ての `x` で同じ bit を返すため 逆向きは
 成立しない (評価が同じでも識別子は分かれうる) ので、識別子は重複排除の鍵には
 使えない
+
+## key-value と行
+
+blob store は時系列でない値の層で、その上に次を持ちます
+
+- `BlobStorage::write_batch`: batch の全操作を全部か無しかで適用します (WAL の 1 record、checksum は 1 つ)
+- `BlobStorage::scan_range`: 2 つの bound の間の生きた entry を、どちらの向きでも上限つきで返します
+- `BlobStorage::open_existing_read_only`: writer と並べて store の 1 つの時点を読みます 何も作らず lock も取らず、entry は process の中に保持します
+- `table::Table`: 一意と非一意の index を持つ行で、行と index は一緒に変わります `table::SealedTable` (feature `crypto`) は値を file に届く前に封じます 主キーと index の key は封じません 削除した値は次の compaction で store の file から消えますが、copy-on-write や flash の機器では古い block が残ることがあります 読めなくする必要がある値は封じた table に置き、鍵を退役させてください
+
+store に書く process は同時に 1 つです (`open` が WAL に排他 lock を取ります)
 
 ## 保存先
 

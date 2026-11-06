@@ -115,13 +115,34 @@ fn a_sealed_value_opens_only_for_its_own_row() {
 fn indexes_scans_and_deletes_work_through_the_seal() {
     let store = BlobStorage::new();
     let t = SealedTable::new("t", Keys::with(1)).unwrap();
-    t.insert(&store, b"a", b"1", &[IndexKey::unique("h", b"x")]).unwrap();
-    t.upsert(&store, b"b", b"2", &[IndexKey::non_unique("o", b"y")]).unwrap();
-    assert_eq!(t.table().find_unique(&store, "h", b"x").unwrap().unwrap(), b"a");
-    let err = t.insert(&store, b"c", b"3", &[IndexKey::unique("h", b"x")]).unwrap_err();
+    t.insert(&store, b"a", b"1", &[IndexKey::unique("h", b"x")])
+        .unwrap();
+    t.upsert(&store, b"b", b"2", &[IndexKey::non_unique("o", b"y")])
+        .unwrap();
+    assert_eq!(
+        t.table().find_unique(&store, "h", b"x").unwrap().unwrap(),
+        b"a"
+    );
+    let err = t
+        .insert(&store, b"c", b"3", &[IndexKey::unique("h", b"x")])
+        .unwrap_err();
     assert!(matches!(err, TableError::UniqueViolation { .. }));
-    let rows = t.scan(&store, Bound::Unbounded, Bound::Unbounded, ScanOrder::Descending, 10).unwrap();
-    assert_eq!(rows, [(b"b".to_vec(), b"2".to_vec()), (b"a".to_vec(), b"1".to_vec())]);
+    let rows = t
+        .scan(
+            &store,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            ScanOrder::Descending,
+            10,
+        )
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (b"b".to_vec(), b"2".to_vec()),
+            (b"a".to_vec(), b"1".to_vec())
+        ]
+    );
     assert!(t.table().delete(&store, b"a").unwrap());
     assert_eq!(t.get(&store, b"a").unwrap(), None);
 }
@@ -135,22 +156,48 @@ fn a_rotation_moves_every_row_and_keeps_the_indexes() {
     for i in 0_u32..700 {
         let pk = format!("p{i:04}");
         let h = format!("h{i}");
-        t.insert(&store, pk.as_bytes(), &i.to_le_bytes(), &[IndexKey::unique("h", h.as_bytes())]).unwrap();
+        t.insert(
+            &store,
+            pk.as_bytes(),
+            &i.to_le_bytes(),
+            &[IndexKey::unique("h", h.as_bytes())],
+        )
+        .unwrap();
     }
     keys.rotate_to(2);
     t.insert(&store, b"new", b"at-2", &[]).unwrap();
     // old rows still open before the rotation
-    assert_eq!(t.get(&store, b"p0000").unwrap().unwrap(), 0_u32.to_le_bytes());
+    assert_eq!(
+        t.get(&store, b"p0000").unwrap().unwrap(),
+        0_u32.to_le_bytes()
+    );
 
-    assert_eq!(t.reseal(&store).unwrap(), 700, "the row already at 2 is not rewritten");
-    assert_eq!(t.reseal(&store).unwrap(), 0, "a second pass has nothing to do");
+    assert_eq!(
+        t.reseal(&store).unwrap(),
+        700,
+        "the row already at 2 is not rewritten"
+    );
+    assert_eq!(
+        t.reseal(&store).unwrap(),
+        0,
+        "a second pass has nothing to do"
+    );
 
     keys.retire(1);
     for i in [0_u32, 255, 256, 699] {
         let pk = format!("p{i:04}");
-        assert_eq!(t.get(&store, pk.as_bytes()).unwrap().unwrap(), i.to_le_bytes());
+        assert_eq!(
+            t.get(&store, pk.as_bytes()).unwrap().unwrap(),
+            i.to_le_bytes()
+        );
         let h = format!("h{i}");
-        assert_eq!(t.table().find_unique(&store, "h", h.as_bytes()).unwrap().unwrap(), pk.as_bytes());
+        assert_eq!(
+            t.table()
+                .find_unique(&store, "h", h.as_bytes())
+                .unwrap()
+                .unwrap(),
+            pk.as_bytes()
+        );
     }
     assert_eq!(t.table().count(&store).unwrap(), 701);
 }

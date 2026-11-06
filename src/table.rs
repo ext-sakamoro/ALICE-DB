@@ -85,6 +85,12 @@ pub enum TableError {
     EmptyName,
     /// A stored row does not parse.
     Corrupt,
+    /// A sealed value does not open for this row and key.
+    #[cfg(feature = "crypto")]
+    Seal,
+    /// The key provider did not give a key.
+    #[cfg(feature = "crypto")]
+    Key(alice_crypto::keystore::KeyProviderError),
     /// The store failed; [`io::ErrorKind::PermissionDenied`] on a read-only store.
     Io(io::Error),
 }
@@ -101,6 +107,10 @@ impl fmt::Display for TableError {
             }
             Self::EmptyName => f.write_str("a table needs a name"),
             Self::Corrupt => f.write_str("a stored row does not parse"),
+            #[cfg(feature = "crypto")]
+            Self::Seal => f.write_str("a sealed value does not open for this row"),
+            #[cfg(feature = "crypto")]
+            Self::Key(_) => f.write_str("the key provider did not give a key"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -350,6 +360,32 @@ impl Table {
             .collect()
     }
 
+    /// Whole stored rows from `start`, ascending, at most `limit`.
+    #[cfg(feature = "crypto")]
+    fn scan_rows(
+        &self,
+        store: &BlobStorage,
+        start: Bound<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, TableError> {
+        let lower = start.map(|pk| self.row_key(pk));
+        let lower = match &lower {
+            Bound::Unbounded => Bound::Included(self.rows.as_slice()),
+            other => as_slices(other),
+        };
+        let end = prefix_end(&self.rows);
+        Ok(store
+            .scan_range(
+                lower,
+                end.as_deref().map_or(Bound::Unbounded, Bound::Excluded),
+                ScanOrder::Ascending,
+                limit,
+            )?
+            .into_iter()
+            .map(|(k, row)| (k[self.rows.len()..].to_vec(), row))
+            .collect())
+    }
+
     /// How many rows the table holds.
     ///
     /// # Errors
@@ -498,4 +534,193 @@ fn decode_row(row: &[u8]) -> Option<(Vec<(&[u8], &[u8])>, &[u8])> {
         entries.push((name, take(&mut rest, key_len)?));
     }
     Some((entries, rest))
+}
+
+/// A [`Table`] whose values are sealed with `alice_crypto::envelope` before they
+/// reach the store. The associated data names the table and the primary key, so a
+/// value copied to another row does not open. Primary keys and index keys are not
+/// sealed: they are what the store sorts by.
+#[cfg(feature = "crypto")]
+pub struct SealedTable {
+    table: Table,
+    keys: std::sync::Arc<dyn alice_crypto::keystore::KeyProvider>,
+}
+
+#[cfg(feature = "crypto")]
+impl fmt::Debug for SealedTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SealedTable")
+            .field("table", &self.table)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "crypto")]
+impl SealedTable {
+    /// How many rows one atomic step of [`Self::reseal`] rewrites.
+    const RESEAL_STEP: usize = 256;
+
+    /// The sealed table with this name.
+    ///
+    /// # Errors
+    /// [`TableError::EmptyName`] for an empty name.
+    pub fn new(
+        name: &str,
+        keys: std::sync::Arc<dyn alice_crypto::keystore::KeyProvider>,
+    ) -> Result<Self, TableError> {
+        Ok(Self {
+            table: Table::new(name)?,
+            keys,
+        })
+    }
+
+    /// The table underneath, for what needs no seal: its index lookups, `delete`, `count`.
+    #[must_use]
+    pub const fn table(&self) -> &Table {
+        &self.table
+    }
+
+    fn aad(&self, pk: &[u8]) -> Vec<u8> {
+        self.table.row_key(pk)
+    }
+
+    fn seal(&self, pk: &[u8], value: &[u8]) -> Result<Vec<u8>, TableError> {
+        let (generation, key) = self.keys.current().map_err(TableError::Key)?;
+        alice_crypto::envelope::seal_envelope(&key, generation, &self.aad(pk), value)
+            .map_err(|_| TableError::Seal)
+    }
+
+    fn open(&self, pk: &[u8], sealed: &[u8]) -> Result<Vec<u8>, TableError> {
+        let generation =
+            alice_crypto::envelope::envelope_key_id(sealed).map_err(|_| TableError::Seal)?;
+        let key = self
+            .keys
+            .by_generation(generation)
+            .map_err(TableError::Key)?;
+        alice_crypto::envelope::open_envelope(&key, generation, &self.aad(pk), sealed)
+            .map_err(|_| TableError::Seal)
+    }
+
+    /// [`Table::insert`] with a sealed value.
+    ///
+    /// # Errors
+    /// As [`Table::insert`], and [`TableError::Key`] / [`TableError::Seal`].
+    pub fn insert(
+        &self,
+        store: &BlobStorage,
+        pk: &[u8],
+        value: &[u8],
+        entries: &[IndexKey<'_>],
+    ) -> Result<(), TableError> {
+        self.table
+            .insert(store, pk, &self.seal(pk, value)?, entries)
+    }
+
+    /// [`Table::upsert`] with a sealed value.
+    ///
+    /// # Errors
+    /// As [`Table::upsert`], and [`TableError::Key`] / [`TableError::Seal`].
+    pub fn upsert(
+        &self,
+        store: &BlobStorage,
+        pk: &[u8],
+        value: &[u8],
+        entries: &[IndexKey<'_>],
+    ) -> Result<(), TableError> {
+        self.table
+            .upsert(store, pk, &self.seal(pk, value)?, entries)
+    }
+
+    /// The opened value of a row.
+    ///
+    /// # Errors
+    /// As [`Table::get`], and [`TableError::Key`] / [`TableError::Seal`].
+    pub fn get(&self, store: &BlobStorage, pk: &[u8]) -> Result<Option<Vec<u8>>, TableError> {
+        self.table
+            .get(store, pk)?
+            .map(|sealed| self.open(pk, &sealed))
+            .transpose()
+    }
+
+    /// [`Table::scan`] with opened values.
+    ///
+    /// # Errors
+    /// As [`Table::scan`], and [`TableError::Key`] / [`TableError::Seal`].
+    pub fn scan(
+        &self,
+        store: &BlobStorage,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+        order: ScanOrder,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, TableError> {
+        self.table
+            .scan(store, start, end, order, limit)?
+            .into_iter()
+            .map(|(pk, sealed)| {
+                let value = self.open(&pk, &sealed)?;
+                Ok((pk, value))
+            })
+            .collect()
+    }
+
+    /// Move every row to the current key and return how many moved. Each step of
+    /// [`Self::RESEAL_STEP`] rows is atomic; after an interruption, running it again
+    /// finishes the rest. A row already at the current key is not rewritten.
+    ///
+    /// # Errors
+    /// [`TableError::Key`] when a row's key is gone (the rows before it have moved),
+    /// [`TableError::Seal`], [`TableError::Corrupt`], or a store error.
+    pub fn reseal(&self, store: &BlobStorage) -> Result<usize, TableError> {
+        let mut moved = 0;
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let start = after.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+            let (step_moved, last) = store.exclusive(|| self.reseal_step(store, start))?;
+            moved += step_moved;
+            match last {
+                Some(pk) => after = Some(pk),
+                None => return Ok(moved),
+            }
+        }
+    }
+
+    /// One step from `start`; the last primary key it looked at, `None` at the end.
+    fn reseal_step(
+        &self,
+        store: &BlobStorage,
+        start: Bound<&[u8]>,
+    ) -> Result<(usize, Option<Vec<u8>>), TableError> {
+        let (current, current_key) = self.keys.current().map_err(TableError::Key)?;
+        let rows = self.table.scan_rows(store, start, Self::RESEAL_STEP)?;
+        let mut batch = WriteBatch::new();
+        for (pk, row) in &rows {
+            let (_, sealed) = decode_row(row).ok_or(TableError::Corrupt)?;
+            let generation =
+                alice_crypto::envelope::envelope_key_id(sealed).map_err(|_| TableError::Seal)?;
+            if generation == current {
+                continue;
+            }
+            let old_key = self
+                .keys
+                .by_generation(generation)
+                .map_err(TableError::Key)?;
+            let resealed = alice_crypto::envelope::reseal_envelope(
+                &old_key,
+                generation,
+                &current_key,
+                current,
+                &self.aad(pk),
+                sealed,
+            )
+            .map_err(|_| TableError::Seal)?;
+            let head = row.len() - sealed.len();
+            batch.put(
+                &self.table.row_key(pk),
+                &[&row[..head], resealed.as_slice()].concat(),
+            );
+        }
+        store.apply_exclusive(&batch)?;
+        Ok((batch.len(), rows.last().map(|(pk, _)| pk.clone())))
+    }
 }

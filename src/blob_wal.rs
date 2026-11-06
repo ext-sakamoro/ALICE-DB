@@ -23,6 +23,24 @@
 //! trailer 4     crc32           CRC-32 over everything from offset 0 upward
 //! ```
 //!
+//! A batch is one record of type 0x03: `key_len` and `value_kind` are 0 and the
+//! value is the body below, so one checksum covers every operation and replay
+//! yields all of them or none. A body that does not parse, or that holds no
+//! operation, is treated like a bad checksum.
+//!
+//! ```text
+//! offset  size  field           description
+//! ------  ----  --------------  ------------------------------------------------
+//!  0      4     op_count (u32)  number of operations, at least 1
+//! then, op_count times:
+//!  0      1     type            0x01 = Put, 0x02 = Delete
+//!  1      1     value_kind      0x00 = Raw, 0x01 = Compressed; 0 on Delete
+//!  2      4     key_len (u32)
+//!  6      4     value_len (u32) 0 on Delete
+//! 10      N     key
+//! 10+N    M     value
+//! ```
+//!
 //! The checksum is CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`,
 //! as computed by `crc32fast`), not CRC-32C.
 //!
@@ -117,6 +135,7 @@ pub enum SyncPolicy {
 /// Record type tag: `put` or `delete`.
 const RECORD_TYPE_PUT: u8 = 0x01;
 const RECORD_TYPE_DELETE: u8 = 0x02;
+const RECORD_TYPE_BATCH: u8 = 0x03;
 
 /// Value kind tag inside a Put record.
 const VALUE_KIND_RAW: u8 = 0x00;
@@ -373,6 +392,44 @@ impl BlobWal {
         self.write_frame(&frame)
     }
 
+    /// Serialise a batch as one record and durably append it: replay yields
+    /// every operation or none. A [`BlobValue::Tombstone`] value is a delete.
+    ///
+    /// # Errors
+    /// `InvalidInput` when the batch is empty or a length exceeds `u32`, with
+    /// nothing written; any I/O failure from the write or fsync propagates.
+    pub fn append_batch(&self, ops: &[(&[u8], &BlobValue)]) -> io::Result<()> {
+        if ops.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "BlobWal::append_batch received an empty batch",
+            ));
+        }
+        let too_long = |what| move |_| io::Error::new(io::ErrorKind::InvalidInput, what);
+        let mut body = u32::try_from(ops.len())
+            .map_err(too_long("batch has more than u32::MAX operations"))?
+            .to_le_bytes()
+            .to_vec();
+        for (key, value) in ops {
+            let (record_type, kind, bytes): (u8, u8, &[u8]) = match value {
+                BlobValue::Raw(b) => (RECORD_TYPE_PUT, VALUE_KIND_RAW, b),
+                BlobValue::Compressed(b) => (RECORD_TYPE_PUT, VALUE_KIND_COMPRESSED, b),
+                BlobValue::Tombstone => (RECORD_TYPE_DELETE, VALUE_KIND_RAW, &[]),
+            };
+            body.push(record_type);
+            body.push(kind);
+            let key_len = u32::try_from(key.len()).map_err(too_long("key exceeds u32::MAX"))?;
+            let value_len =
+                u32::try_from(bytes.len()).map_err(too_long("value exceeds u32::MAX"))?;
+            body.extend_from_slice(&key_len.to_le_bytes());
+            body.extend_from_slice(&value_len.to_le_bytes());
+            body.extend_from_slice(key);
+            body.extend_from_slice(bytes);
+        }
+        let frame = serialise_record(RECORD_TYPE_BATCH, &[], VALUE_KIND_RAW, &body)?;
+        self.write_frame(&frame)
+    }
+
     fn write_frame(&self, frame: &[u8]) -> io::Result<()> {
         let mut state = self.state.lock();
         // The handle is not opened in append mode (see `open_with_policy`),
@@ -418,8 +475,8 @@ impl BlobWal {
         let mut reader = BufReader::new(&state.file);
 
         let mut out = Vec::new();
-        while let ReadOutcome::Record(rec) = read_one(&mut reader)? {
-            out.push(rec);
+        while let ReadOutcome::Records(records) = read_one(&mut reader)? {
+            out.extend(records);
         }
         Ok(out)
     }
@@ -448,8 +505,8 @@ impl BlobWal {
         let mut good_end = 0_u64;
         let tail = loop {
             match read_one(&mut reader)? {
-                ReadOutcome::Record(rec) => {
-                    out.push(rec);
+                ReadOutcome::Records(records) => {
+                    out.extend(records);
                     good_end = reader.pos;
                 }
                 ReadOutcome::Eof => break None,
@@ -663,7 +720,8 @@ fn serialise_record(
 
 /// Outcome of trying to read one record from the WAL.
 enum ReadOutcome {
-    Record(WalRecord),
+    /// One record of the file: one operation, or every operation of a batch
+    Records(Vec<WalRecord>),
     Eof,
     Truncated,
     BadChecksum,
@@ -718,11 +776,53 @@ fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
                 VALUE_KIND_COMPRESSED => BlobValue::Compressed(value),
                 _ => return Ok(ReadOutcome::BadChecksum),
             };
-            Ok(ReadOutcome::Record(WalRecord::Put(key, value)))
+            Ok(ReadOutcome::Records(vec![WalRecord::Put(key, value)]))
         }
-        RECORD_TYPE_DELETE => Ok(ReadOutcome::Record(WalRecord::Delete(key))),
+        RECORD_TYPE_DELETE => Ok(ReadOutcome::Records(vec![WalRecord::Delete(key)])),
+        RECORD_TYPE_BATCH => {
+            Ok(parse_batch(&value).map_or(ReadOutcome::BadChecksum, ReadOutcome::Records))
+        }
         _ => Ok(ReadOutcome::BadChecksum),
     }
+}
+
+/// The operations of a batch body, or `None` when it does not parse exactly.
+fn parse_batch(body: &[u8]) -> Option<Vec<WalRecord>> {
+    fn take<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+        if rest.len() < n {
+            return None;
+        }
+        let (head, tail) = rest.split_at(n);
+        *rest = tail;
+        Some(head)
+    }
+    fn take_len(rest: &mut &[u8]) -> Option<usize> {
+        let bytes: [u8; 4] = take(rest, 4)?.try_into().ok()?;
+        usize::try_from(u32::from_le_bytes(bytes)).ok()
+    }
+    let mut rest = body;
+    let count = take_len(&mut rest)?;
+    if count == 0 {
+        return None;
+    }
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let head = take(&mut rest, 2)?;
+        let (record_type, kind) = (head[0], head[1]);
+        let key_len = take_len(&mut rest)?;
+        let value_len = take_len(&mut rest)?;
+        let key = take(&mut rest, key_len)?.to_vec();
+        let value = take(&mut rest, value_len)?.to_vec();
+        out.push(match (record_type, kind) {
+            (RECORD_TYPE_PUT, VALUE_KIND_RAW) => WalRecord::Put(key, BlobValue::Raw(value)),
+            (RECORD_TYPE_PUT, VALUE_KIND_COMPRESSED) => {
+                WalRecord::Put(key, BlobValue::Compressed(value))
+            }
+            (RECORD_TYPE_DELETE, VALUE_KIND_RAW) if value.is_empty() => WalRecord::Delete(key),
+            _ => return None,
+        });
+    }
+    rest.is_empty().then_some(out)
 }
 
 enum ReadResult {

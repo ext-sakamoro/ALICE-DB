@@ -74,14 +74,19 @@ fn reopen(bytes: &[u8]) -> State {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.wal");
     std::fs::write(&path, bytes).unwrap();
-    state(&BlobStorage::open(&path).unwrap())
+    let store = BlobStorage::open(&path).unwrap();
+    state(&store)
 }
 
 #[test]
 fn a_wal_cut_at_any_byte_of_the_batch_reopens_to_the_state_before_it() {
     let tmp = TempDir::new().unwrap();
     let (bytes, before) = wal_with_batch(tmp.path());
-    assert!(bytes.len() > before + 20, "the batch wrote {} bytes", bytes.len() - before);
+    assert!(
+        bytes.len() > before + 20,
+        "the batch wrote {} bytes",
+        bytes.len() - before
+    );
     let mut compared = 0;
     for cut in before..bytes.len() {
         assert_eq!(reopen(&bytes[..cut]), before_state(), "cut at {cut}");
@@ -153,6 +158,16 @@ fn a_body_that_does_not_parse_is_dropped_even_with_a_good_checksum() {
         frame.extend_from_slice(&crc.to_le_bytes());
         frame
     };
+    let good_put = {
+        let mut frame = vec![1_u8];
+        frame.extend_from_slice(&1_u32.to_le_bytes());
+        frame.extend_from_slice(&1_u32.to_le_bytes());
+        frame.push(0);
+        frame.extend_from_slice(b"pv");
+        let crc = crc32_ieee(&frame);
+        frame.extend_from_slice(&crc.to_le_bytes());
+        frame
+    };
     let mut more_ops = body.to_vec();
     more_ops[0] = 4; // one more operation than the body holds
     let mut fewer_ops = body.to_vec();
@@ -164,6 +179,16 @@ fn a_body_that_does_not_parse_is_dropped_even_with_a_good_checksum() {
     let mut long_key = body.to_vec();
     long_key[6..10].copy_from_slice(&u32::MAX.to_le_bytes()); // a key longer than the body
     let zero_ops = 0_u32.to_le_bytes().to_vec(); // the writer never writes an empty batch
+    let mut delete_with_value = 1_u32.to_le_bytes().to_vec();
+    delete_with_value.extend_from_slice(&[2, 0]);
+    delete_with_value.extend_from_slice(&1_u32.to_le_bytes());
+    delete_with_value.extend_from_slice(&1_u32.to_le_bytes());
+    delete_with_value.extend_from_slice(b"kv");
+    let mut delete_compressed = 1_u32.to_le_bytes().to_vec();
+    delete_compressed.extend_from_slice(&[2, 1]);
+    delete_compressed.extend_from_slice(&1_u32.to_le_bytes());
+    delete_compressed.extend_from_slice(&0_u32.to_le_bytes());
+    delete_compressed.extend_from_slice(b"k");
     for (name, bad) in [
         ("more", more_ops),
         ("fewer", fewer_ops),
@@ -171,9 +196,13 @@ fn a_body_that_does_not_parse_is_dropped_even_with_a_good_checksum() {
         ("kind", bad_kind),
         ("key", long_key),
         ("zero", zero_ops),
+        ("delete with a value", delete_with_value),
+        ("delete with a kind", delete_compressed),
     ] {
         let mut wal = bytes[..before].to_vec();
         wal.extend_from_slice(&reframe(&bad));
+        // replay stops at the bad frame, so a good record behind it is not applied either
+        wal.extend_from_slice(&good_put);
         assert_eq!(reopen(&wal), before_state(), "{name}");
     }
 }
@@ -315,5 +344,9 @@ fn writes_during_a_flush_are_not_lost() {
     assert_eq!(live, 2_000, "acknowledged writes lost in memory");
     drop(store);
     let store = BlobStorage::open(&path).unwrap();
-    assert_eq!(store.scan_prefix(b"w").unwrap().len(), 2_000, "lost after reopen");
+    assert_eq!(
+        store.scan_prefix(b"w").unwrap().len(),
+        2_000,
+        "lost after reopen"
+    );
 }

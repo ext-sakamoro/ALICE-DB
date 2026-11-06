@@ -28,6 +28,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::io;
+use std::ops::Bound;
 #[cfg(feature = "fs")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -201,6 +202,13 @@ pub struct BlobStorage {
     /// rename / delete / WAL-truncate steps.
     #[cfg(feature = "fs")]
     publish_lock: Arc<parking_lot::Mutex<()>>,
+    /// Makes "append to the WAL, then update the memtable" one step with
+    /// respect to a flush: writers hold it shared, a flush holds it exclusively
+    /// from reading the memtable until it has truncated the WAL and cleared the
+    /// memtable. Without it a write between those two moments is in neither the
+    /// new `SSTable` nor the WAL, and is lost after it was acknowledged.
+    #[cfg(feature = "fs")]
+    write_gate: Arc<RwLock<()>>,
     /// Optional durable WAL. `None` means the store is in-memory only.
     #[cfg(feature = "fs")]
     wal: Option<Arc<BlobWal>>,
@@ -334,6 +342,7 @@ impl BlobStorage {
             memtable: Arc::new(RwLock::new(memtable)),
             sstables: Arc::new(RwLock::new(sstables_newest_first)),
             publish_lock: Arc::new(parking_lot::Mutex::new(())),
+            write_gate: Arc::new(RwLock::new(())),
             wal: Some(Arc::new(wal)),
             sstable_path: Some(sstable_path),
             wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
@@ -427,6 +436,7 @@ impl BlobStorage {
                 // v0.2.0-alpha.8 (`FORMAT_VERSION_V3`), tombstones are
                 // a first-class record kind and no longer need to live
                 // only in the WAL / memtable.
+                let _gate = self.write_gate.write();
                 let _publish = self.publish_lock.lock();
                 let memtable = self.memtable.read();
                 let entries: Vec<(Vec<u8>, BlobValue)> = memtable
@@ -537,6 +547,7 @@ impl BlobStorage {
         let dir = sstable_path
             .parent()
             .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let _gate = self.write_gate.write();
         let _publish = self.publish_lock.lock();
 
         // Fold everything — old SSTables (oldest → newest) and the
@@ -688,11 +699,13 @@ impl BlobStorage {
             Some(bytes) => BlobValue::Compressed(bytes),
             None => BlobValue::Raw(value.to_vec()),
         };
-        #[cfg(feature = "fs")]
-        if let Some(wal) = &self.wal {
-            wal.append_put(key, &stored)?;
-        }
         {
+            #[cfg(feature = "fs")]
+            let _gate = self.write_gate.read();
+            #[cfg(feature = "fs")]
+            if let Some(wal) = &self.wal {
+                wal.append_put(key, &stored)?;
+            }
             let mut guard = self.memtable.write();
             guard.insert(key.to_vec(), stored);
         }
@@ -863,6 +876,132 @@ impl BlobStorage {
         Ok(out)
     }
 
+    /// The live entries between two bounds in key order, at most `limit` of
+    /// them. Sources are read lazily, so a small limit does not read or
+    /// decompress the rest of the range. The newest observation of a key wins
+    /// in both directions, and a tombstone does not count towards the limit.
+    /// An inverted or empty range is an empty result.
+    ///
+    /// # Errors
+    /// `InvalidData` when a stored value of a key the scan reaches is
+    /// unreadable or fails to decompress.
+    pub fn scan_range(
+        &self,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+        order: ScanOrder,
+        limit: usize,
+    ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        if range_is_empty(start, end) {
+            return Ok(Vec::new());
+        }
+        // The same order as `scan_prefix` and compaction: the list first, then the memtable.
+        #[cfg(feature = "fs")]
+        let sstables = self.sstables.read();
+        let memtable = self.memtable.read();
+
+        // Lower index = newer. Each source is one key-ordered iterator.
+        let mut sources: Vec<
+            std::iter::Peekable<Box<dyn Iterator<Item = (&[u8], Option<BlobValue>)> + '_>>,
+        > = Vec::new();
+        let range = memtable.range::<[u8], _>((start, end));
+        let in_memory: Box<dyn Iterator<Item = (&[u8], Option<BlobValue>)> + '_> = match order {
+            ScanOrder::Ascending => Box::new(range.map(|(k, v)| (k.as_slice(), Some(v.clone())))),
+            ScanOrder::Descending => {
+                Box::new(range.rev().map(|(k, v)| (k.as_slice(), Some(v.clone()))))
+            }
+        };
+        sources.push(in_memory.peekable());
+        #[cfg(feature = "fs")]
+        for sst in sstables.iter() {
+            sources.push(
+                sst.iter_range(start, end, matches!(order, ScanOrder::Descending))
+                    .peekable(),
+            );
+        }
+
+        let mut out = Vec::new();
+        while out.len() < limit {
+            // The next key in scan order; the first source holding it is the newest.
+            let mut winner: Option<(usize, Vec<u8>)> = None;
+            for (idx, source) in sources.iter_mut().enumerate() {
+                let Some((key, _)) = source.peek() else {
+                    continue;
+                };
+                let better = winner.as_ref().is_none_or(|(_, best)| match order {
+                    ScanOrder::Ascending => *key < best.as_slice(),
+                    ScanOrder::Descending => *key > best.as_slice(),
+                });
+                if better {
+                    winner = Some((idx, key.to_vec()));
+                }
+            }
+            let Some((winner_idx, key)) = winner else {
+                break;
+            };
+            let mut value = None;
+            for (idx, source) in sources.iter_mut().enumerate() {
+                if source.peek().is_some_and(|(k, _)| *k == key.as_slice()) {
+                    let taken = source.next().map(|(_, v)| v);
+                    if idx == winner_idx {
+                        value = taken;
+                    }
+                }
+            }
+            match value.flatten() {
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "an SSTable record has an unknown value kind",
+                    ))
+                }
+                Some(BlobValue::Tombstone) => {}
+                Some(BlobValue::Raw(bytes)) => out.push((key, bytes)),
+                Some(BlobValue::Compressed(bytes)) => out.push((key, zlib_decompress(&bytes)?)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply every operation of a batch, or none of them: the batch is one WAL
+    /// record with one checksum, and a reader of this store sees it all at once.
+    /// Within a batch a later operation on a key wins. An empty batch writes nothing.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if the WAL append fails; nothing is applied then.
+    pub fn write_batch(&self, batch: &WriteBatch) -> io::Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let stored: Vec<(&[u8], BlobValue)> = batch
+            .ops
+            .iter()
+            .map(|(key, value)| {
+                let stored = value.as_deref().map_or(BlobValue::Tombstone, |v| {
+                    compress_if_worthwhile(v)
+                        .map_or_else(|| BlobValue::Raw(v.to_vec()), BlobValue::Compressed)
+                });
+                (key.as_slice(), stored)
+            })
+            .collect();
+        {
+            #[cfg(feature = "fs")]
+            let _gate = self.write_gate.read();
+            #[cfg(feature = "fs")]
+            if let Some(wal) = &self.wal {
+                let ops: Vec<(&[u8], &BlobValue)> = stored.iter().map(|(k, v)| (*k, v)).collect();
+                wal.append_batch(&ops)?;
+            }
+            let mut guard = self.memtable.write();
+            for (key, value) in stored {
+                guard.insert(key.to_vec(), value);
+            }
+        }
+        #[cfg(feature = "fs")]
+        self.maybe_auto_flush()?;
+        Ok(())
+    }
+
     /// Mark a key as deleted.
     ///
     /// Stores a `BlobValue::Tombstone` so subsequent lookups observe the
@@ -879,11 +1018,13 @@ impl BlobStorage {
     /// `Result` in alpha-2 to surface WAL failures instead of dropping
     /// them silently.
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
-        #[cfg(feature = "fs")]
-        if let Some(wal) = &self.wal {
-            wal.append_delete(key)?;
-        }
         {
+            #[cfg(feature = "fs")]
+            let _gate = self.write_gate.read();
+            #[cfg(feature = "fs")]
+            if let Some(wal) = &self.wal {
+                wal.append_delete(key)?;
+            }
             let mut guard = self.memtable.write();
             guard.insert(key.to_vec(), BlobValue::Tombstone);
         }
@@ -981,6 +1122,63 @@ fn sibling_sstable_path(wal_path: &Path) -> PathBuf {
     with_ext.push(".sst");
     sst.set_file_name(with_ext);
     sst
+}
+
+/// The direction of [`BlobStorage::scan_range`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanOrder {
+    /// Ascending byte order of the keys
+    Ascending,
+    /// Descending byte order of the keys
+    Descending,
+}
+
+/// Operations for [`BlobStorage::write_batch`], in the order they apply.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WriteBatch {
+    /// `(key, Some(value))` is a put, `(key, None)` a delete
+    ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+}
+
+impl WriteBatch {
+    /// An empty batch.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert or overwrite `key`.
+    pub fn put(&mut self, key: &[u8], value: &[u8]) {
+        self.ops.push((key.to_vec(), Some(value.to_vec())));
+    }
+
+    /// Delete `key`.
+    pub fn delete(&mut self, key: &[u8]) {
+        self.ops.push((key.to_vec(), None));
+    }
+
+    /// The number of operations.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
+    /// Whether the batch holds no operation.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+}
+
+/// Whether no key lies between the bounds (`BTreeMap::range` panics on these).
+fn range_is_empty(start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
+    match (start, end) {
+        (Bound::Unbounded, _) | (_, Bound::Unbounded) => false,
+        (Bound::Included(s), Bound::Included(e)) => s > e,
+        (Bound::Included(s) | Bound::Excluded(s), Bound::Included(e) | Bound::Excluded(e)) => {
+            s >= e
+        }
+    }
 }
 
 /// A pre-materialised sorted sequence used as one arm of the k-way

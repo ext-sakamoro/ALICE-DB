@@ -8,6 +8,8 @@ All notable changes to ALICE-DB will be documented in this file.
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
 ### Added
+- `BlobStorage::write_batch` / `AliceDB::write_blob_batch`: `WriteBatch` の全操作を全部か無しかで適用する (WAL の 1 record、型 0x03、checksum は 1 つ) reader は batch を一度に見る
+- `BlobStorage::scan_range` / `AliceDB::scan_blob_range`: 2 つの bound の間の生きた entry を昇順・降順で、上限つきで返す source は遅延で読む
 - `DataSegment::from_stored_bytes` と `segment::SEGMENT_FORMAT`: segment の file の bytes を、保存形式を見分けて owned の `DataSegment` に戻す (形式 1 は rkyv 0.8 の検査つき deserialize、形式 0 は旧い layout を読む組み込みの reader) `SegmentView::segment` は decode した segment を返す
 - 試験 `tests/legacy_segment_values.rs` (過去 5 版の store の segment と、model の 8 variant それぞれの segment を、rkyv 0.7 の読み手で記録した値 (浮動小数点は bit) と比べる)、`tests/segment_view_parity.rs` (`SegmentView` を通した読み出しが、同じ segment のメモリ上の読み出しと bit 単位で一致する: RawLzma を含む、0.2.0-beta.1 で view だけが 0.0 を返した形の回帰)、`tests/segment_decode_alloc_bound.rs` (壊れた長さを持つ file でも、decode が確保する量は file の大きさに比例し、主張された長さには従わない / 新しい形式や 0 でない予約 byte は拒否)
 - fuzz target `fuzz_segment_decode`: 任意の bytes を segment の file として decode する (header 無しの形式 0 と、形式 1 の header の後ろ) decode できたものは今の形式で書き直して同じ segment に戻ることを確かめる
@@ -88,6 +90,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- flush・compaction と同時の `put_blob` / `delete_blob` が `Ok` を返した後に消えることがあった (flush が memtable を読んでから WAL を切り memtable を消すまでの間の書き込みは、新しい `SSTable` にも WAL にも残らない) 書き手と flush を排他にした
 - `scripts/ci_base.py` と `scripts/test_ci_base.py` (共有 file、canonical は ALICE-DetMath): git の出力を UTF-8 で読む (`encoding="utf-8"`、これまでは locale の code page で Windows の cp1252 では非 ASCII で止まった) 試験は locale を cp1252 にした子 interpreter で非 ASCII の commit 件名を読む
 - blob の WAL: 開く時に末尾の切れた record か CRC の合わない record の手前までしか読まないのに file をその位置で切っていなかったため、回復の後の `put_blob` / `delete_blob` が壊れた bytes の後ろに書かれ、次に開いた時に同じ位置で読むのが止まって消えていた (fsync 済みの書き込みが失われる) 開く時に `BlobWal::recover` が最後の正しい record の終わりで WAL を切る 切る前に落とす bytes を `blob.wal.dropped-<offset>` に書き (`.tmp` 経由、fsync、rename、directory の fsync)、それから WAL を切って fsync する 2 つの間で落ちても次に開いた時に同じ切り方をやり直し、同じ bytes を持つ写しはそのまま使う 同じ位置で別の bytes を落とす 2 回目の回復は前の写しを置き換えず `blob.wal.dropped-<offset>.<n>` (空いている最小の n) に書く 途中で止まった写しの `.tmp` は開く時に消し、書き終えた写しは消さない 記録の境界で終わる WAL は触らない 試験 `tests/wal_append_after_recovery.rs` (末尾を切る全位置 / 途中の破損 / 落とした bytes の一致 / きれいな WAL は不変 / 同じ位置の 2 回目の回復で両方の写しが残る / 残った `.tmp` だけを消す) と `tests/wal_recovery_crash.rs` (写しと切る間の crash で写しが増えない / 写しの file、directory、切った WAL がこの順に fsync される)
 - 集計 (`aggregate` / `downsample` / `QueryBuilder::execute` の Scalar と Aggregates) が保存された NaN から計算した結果は正準の NaN `0x7ff8000000000000` を返す (ALICE-Law G4) これまでは保存された NaN の符号と payload がそのまま混ざった NaN (例 `0xfff81bd5a0000000`) を返していた `get` / `scan` は保存した値の bit をそのまま返す 試験 `tests/float_edge_golden.rs` に 4 件 (NaN の集計 / downsample / lossless の flush 後、1 が吸収される打ち消しの順序) conformance の G4 を pass に

@@ -117,14 +117,16 @@ fn scans_equal_the_reference_over_memtable_and_sstables() {
                 assert_eq!(got, want, "{start:?} {end:?} {order:?} {limit}");
                 compared += 1;
                 non_empty += u32::from(!want.is_empty());
-                cut_by_limit +=
-                    u32::from(want.len() == limit && limit != usize::MAX && limit != 0);
+                cut_by_limit += u32::from(want.len() == limit && limit != usize::MAX && limit != 0);
             }
         }
     }
     assert_eq!(compared, 2_000);
     assert!(non_empty > 500, "only {non_empty} non-empty comparisons");
-    assert!(cut_by_limit > 100, "only {cut_by_limit} comparisons cut by the limit");
+    assert!(
+        cut_by_limit > 100,
+        "only {cut_by_limit} comparisons cut by the limit"
+    );
 }
 
 /// The newest observation of a key wins in both directions, a tombstone included.
@@ -145,13 +147,19 @@ fn the_newest_observation_wins_in_both_directions() {
         (b"c".to_vec(), b"newest".to_vec()),
     ];
     let all = (Bound::Unbounded, Bound::Unbounded);
-    let up = store.scan_range(all.0, all.1, ScanOrder::Ascending, usize::MAX).unwrap();
+    let up = store
+        .scan_range(all.0, all.1, ScanOrder::Ascending, usize::MAX)
+        .unwrap();
     assert_eq!(up, want);
-    let mut down = store.scan_range(all.0, all.1, ScanOrder::Descending, usize::MAX).unwrap();
+    let mut down = store
+        .scan_range(all.0, all.1, ScanOrder::Descending, usize::MAX)
+        .unwrap();
     down.reverse();
     assert_eq!(down, want);
     // the limit counts live entries: the tombstone of b is not one of the 2
-    let two = store.scan_range(all.0, all.1, ScanOrder::Ascending, 2).unwrap();
+    let two = store
+        .scan_range(all.0, all.1, ScanOrder::Ascending, 2)
+        .unwrap();
     assert_eq!(two, want);
 }
 
@@ -168,11 +176,19 @@ fn an_inverted_or_empty_range_is_empty() {
     ];
     for (start, end) in cases {
         for order in [ScanOrder::Ascending, ScanOrder::Descending] {
-            assert!(store.scan_range(start, end, order, 10).unwrap().is_empty(), "{start:?} {end:?}");
+            assert!(
+                store.scan_range(start, end, order, 10).unwrap().is_empty(),
+                "{start:?} {end:?}"
+            );
         }
     }
     let one = store
-        .scan_range(Bound::Included(b"m"), Bound::Included(b"m"), ScanOrder::Descending, 10)
+        .scan_range(
+            Bound::Included(b"m"),
+            Bound::Included(b"m"),
+            ScanOrder::Descending,
+            10,
+        )
         .unwrap();
     assert_eq!(one.len(), 1);
 }
@@ -189,7 +205,12 @@ fn the_latest_rows_under_one_prefix() {
         }
     }
     let got = store
-        .scan_range(Bound::Included(b"r1"), Bound::Excluded(b"r2"), ScanOrder::Descending, 2)
+        .scan_range(
+            Bound::Included(b"r1"),
+            Bound::Excluded(b"r2"),
+            ScanOrder::Descending,
+            2,
+        )
         .unwrap();
     let times: Vec<u64> = got
         .iter()

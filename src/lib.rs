@@ -729,6 +729,30 @@ impl AliceDB {
         self.blob.scan_prefix(prefix)
     }
 
+    /// The live blobs between two bounds in key order, at most `limit` of them.
+    /// See [`blob::BlobStorage::scan_range`].
+    ///
+    /// # Errors
+    /// `InvalidData` when a stored value the scan reaches is unreadable.
+    pub fn scan_blob_range(
+        &self,
+        start: std::ops::Bound<&[u8]>,
+        end: std::ops::Bound<&[u8]>,
+        order: blob::ScanOrder,
+        limit: usize,
+    ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.blob.scan_range(start, end, order, limit)
+    }
+
+    /// Apply every operation of a batch of blob writes, or none of them.
+    /// See [`blob::BlobStorage::write_batch`].
+    ///
+    /// # Errors
+    /// Returns `io::Error` if the WAL append fails; nothing is applied then.
+    pub fn write_blob_batch(&self, batch: &blob::WriteBatch) -> io::Result<()> {
+        self.blob.write_batch(batch)
+    }
+
     /// Mark a blob as deleted.
     ///
     /// The entry becomes invisible to `get_blob` and `scan_blob_prefix`

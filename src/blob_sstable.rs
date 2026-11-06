@@ -999,6 +999,28 @@ impl LoadedSstable {
             .filter_map(move |(k, offset)| self.value_at(offset).map(|v| (k.as_slice(), v)))
     }
 
+    /// The records between two bounds in key order, ascending or descending.
+    /// A value is copied out of the mapping only when the iterator reaches it;
+    /// `None` is a record with an unrecognised value kind. The caller passes a
+    /// range that is not inverted (`BTreeMap::range` panics on one).
+    pub fn iter_range<'a>(
+        &'a self,
+        start: std::ops::Bound<&'a [u8]>,
+        end: std::ops::Bound<&'a [u8]>,
+        descending: bool,
+    ) -> Box<dyn Iterator<Item = (&'a [u8], Option<BlobValue>)> + 'a> {
+        let range = self.index.range::<[u8], _>((start, end));
+        if descending {
+            Box::new(
+                range
+                    .rev()
+                    .map(move |(k, offset)| (k.as_slice(), self.value_at(offset))),
+            )
+        } else {
+            Box::new(range.map(move |(k, offset)| (k.as_slice(), self.value_at(offset))))
+        }
+    }
+
     /// Materialise the [`BlobValue`] at `offset` by copying bytes out
     /// of the mmap. Returns `None` only if the stored `value_kind` byte
     /// is unrecognised (which would indicate on-disk corruption not

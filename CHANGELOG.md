@@ -33,6 +33,8 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 - **動作の変更**: 前の版は Append mode の store の番号付き file を WAL の名前によらず `blob-*.sst` に書いていた `blob.wal` 以外の WAL の隣に `blob*.sst` があり `blob.wal` が無い時は、開かず `InvalidData` を返す (どの store の file か示せないため、file は触らない) この store の file なら message のとおり `x-000001.sst` に rename する `x.wal` と `blob.wal` を同じ directory に置いて前の版で Append mode で書いた `blob-*.sst` は、どちらの store の file か区別できず `blob.wal` の store の file として読まれる 名前が番号付きの file と紛らわしい WAL (`x-000001.wal`) と UTF-8 でない名前の WAL は `InvalidInput` で開かない
+- **動作の変更 (前の版に戻す時)**: 前の版は `blob.sst` と `blob-*.sst` だけを読むので、この版が `blob.wal` 以外の WAL で書いた `x.sst` と `x-000001.sst` は前の版から見えない (file は残る) flush の後は WAL に残らないので、そのデータは前の版では読めない 前の版に戻す前に `snapshot_to` で取り出す `blob.wal` の store は変わらない
+- 名前の本体が同じ 2 つの WAL (`x.wal` と `x.log`) を同じ directory で開くと `x.sst` と `x-*.sst` を共有する 検査はしておらず、片方の compaction がもう片方の file を消す 1 つの directory では名前の本体を分ける
 - **動作の変更 (戻せない)**: WAL に `write_batch` の record (型 0x03) がある store を、それを持たない build で開くと、その build は batch を壊れた末尾として扱い、batch と後ろの record を WAL から切る 切った bytes は `<wal>.dropped-<offset>` に残るが、store からは消える WAL に版の header が無く、公開済みの build には拒否させられない 戻す前に `snapshot_to` で退避する
 - blob WAL: 検査値が正しく読めない record (知らない型や value kind、解析できない batch) は末尾の破損でないので、切らずに `InvalidData` で開かない (読み取り専用の open も同じ) 切るのは検査値が壊れた末尾だけ 今後 record の型を足しても、この版以降は上の形で失わない
 - blob WAL: Windows では file の lock の代わりに他の writer を拒む共有モードで開く file の lock は他の handle の読み取りも止めるので、読み取り専用の open が writer の隣で読めなかった 2 つ目の writer はどの名前 (symlink、hard link) でも `WouldBlock` で拒否する

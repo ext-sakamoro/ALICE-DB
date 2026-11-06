@@ -147,9 +147,10 @@ fn the_batch_is_one_frame_with_the_documented_bytes() {
     assert_eq!(&bytes[before..], documented_frame().as_slice());
 }
 
-/// A frame with a correct CRC whose body does not parse must not apply a part of it.
+/// A frame whose CRC holds is no torn tail. A body this build cannot read stops
+/// the open and cuts nothing, and no part of it is applied.
 #[test]
-fn a_body_that_does_not_parse_is_dropped_even_with_a_good_checksum() {
+fn a_body_that_does_not_parse_stops_the_open_and_cuts_nothing() {
     let tmp = TempDir::new().unwrap();
     let (bytes, before) = wal_with_batch(tmp.path());
     let good = documented_frame();
@@ -207,10 +208,58 @@ fn a_body_that_does_not_parse_is_dropped_even_with_a_good_checksum() {
     ] {
         let mut wal = bytes[..before].to_vec();
         wal.extend_from_slice(&reframe(&bad));
-        // replay stops at the bad frame, so a good record behind it is not applied either
         wal.extend_from_slice(&good_put);
-        assert_eq!(reopen(&wal), before_state(), "{name}");
+        assert_refused(&wal, name);
     }
+}
+
+fn assert_refused(wal: &[u8], name: &str) {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    std::fs::write(&path, wal).unwrap();
+    let Err(err) = BlobStorage::open(&path) else {
+        panic!("{name}: the open went past a record it cannot read");
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{name}: {err}");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        wal,
+        "{name}: the WAL was changed"
+    );
+    assert_eq!(
+        std::fs::read_dir(tmp.path()).unwrap().count(),
+        1,
+        "{name}: a file was added"
+    );
+}
+
+/// The same for a put whose value kind this build does not know.
+#[test]
+fn a_put_of_an_unknown_value_kind_stops_the_open_and_cuts_nothing() {
+    let mut frame = vec![1_u8];
+    frame.extend_from_slice(&1_u32.to_le_bytes());
+    frame.extend_from_slice(&1_u32.to_le_bytes());
+    frame.push(9);
+    frame.extend_from_slice(b"kv");
+    let crc = crc32_ieee(&frame);
+    frame.extend_from_slice(&crc.to_le_bytes());
+    assert_refused(&frame, "kind");
+}
+
+/// Only a bad checksum at the end is cut, and its bytes are kept next to the WAL.
+#[test]
+fn a_bad_checksum_at_the_end_is_still_cut_with_its_bytes_kept() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    drop(BlobStorage::open(&path).unwrap());
+    let mut frame = documented_frame();
+    let last = frame.len() - 1;
+    frame[last] ^= 1;
+    std::fs::write(&path, &frame).unwrap();
+    let store = BlobStorage::open(&path).unwrap();
+    assert!(state(&store).is_empty());
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 2);
 }
 
 #[test]

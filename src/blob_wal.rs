@@ -25,8 +25,7 @@
 //!
 //! A batch is one record of type 0x03: `key_len` and `value_kind` are 0 and the
 //! value is the body below, so one checksum covers every operation and replay
-//! yields all of them or none. A body that does not parse, or that holds no
-//! operation, is treated like a bad checksum.
+//! yields all of them or none.
 //!
 //! ```text
 //! offset  size  field           description
@@ -53,6 +52,10 @@
 //! - A record whose CRC-32 does not match its payload is treated as
 //!   corruption: the record is dropped and replay stops there (later
 //!   records may exist but their offsets are no longer trustworthy).
+//! - A record whose CRC-32 matches but which this build cannot read (an
+//!   unknown type or value kind, a batch body that does not parse or holds
+//!   no operation) is no torn tail: a newer build wrote it. The open fails
+//!   with `InvalidData` and the file stays as it is.
 //! - An empty or missing WAL file yields no records; the store opens
 //!   with an empty state.
 //!
@@ -838,21 +841,25 @@ fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
             let value = match value_kind {
                 VALUE_KIND_RAW => BlobValue::Raw(value),
                 VALUE_KIND_COMPRESSED => BlobValue::Compressed(value),
-                _ => return Ok(ReadOutcome::BadChecksum),
+                unknown => return Err(unreadable(&format!("value kind {unknown:#04x}"))),
             };
             Ok(ReadOutcome::Records(vec![WalRecord::Put(key, value)]))
         }
         RECORD_TYPE_DELETE => Ok(ReadOutcome::Records(vec![WalRecord::Delete(key)])),
-        RECORD_TYPE_BATCH => {
-            Ok(parse_batch(&value).map_or(ReadOutcome::BadChecksum, ReadOutcome::Records))
-        }
-        // The checksum holds, so this is no torn tail: a newer build wrote it.
-        // Cutting it would lose it and every record after it.
-        unknown => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("blob WAL holds a record of type {unknown:#04x} that this build does not read"),
-        )),
+        RECORD_TYPE_BATCH => parse_batch(&value)
+            .map(ReadOutcome::Records)
+            .ok_or_else(|| unreadable("batch body")),
+        unknown => Err(unreadable(&format!("record type {unknown:#04x}"))),
     }
+}
+
+/// The checksum holds, so this is no torn tail: cutting it would lose it and
+/// every record after it.
+fn unreadable(what: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("blob WAL holds a {what} that this build does not read"),
+    )
 }
 
 /// The operations of a batch body, or `None` when it does not parse exactly.

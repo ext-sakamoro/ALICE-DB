@@ -33,7 +33,7 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 - **動作の変更 (戻せない)**: WAL に `write_batch` の record (型 0x03) がある store を、それを持たない build で開くと、その build は batch を壊れた末尾として扱い、batch と後ろの record を WAL から切る 切った bytes は `<wal>.dropped-<offset>` に残るが、store からは消える WAL に版の header が無く、公開済みの build には拒否させられない 戻す前に `snapshot_to` で退避する
-- blob WAL: 検査値が正しく型を知らない record は末尾の破損でないので、切らずに `InvalidData` で開かない (読み取り専用の open も同じ) 今後 record の型を足しても、この版以降は上の形で失わない
+- blob WAL: 検査値が正しく読めない record (知らない型や value kind、解析できない batch) は末尾の破損でないので、切らずに `InvalidData` で開かない (読み取り専用の open も同じ) 切るのは検査値が壊れた末尾だけ 今後 record の型を足しても、この版以降は上の形で失わない
 - blob WAL: Windows では file の lock の代わりに他の writer を拒む共有モードで開く file の lock は他の handle の読み取りも止めるので、読み取り専用の open が writer の隣で読めなかった 2 つ目の writer はどの名前 (symlink、hard link) でも `WouldBlock` で拒否する
 - 依存 `alice-crypto` を main の `ed065ad` に上げる (SHA-256 の逐次計算の追加と CI の変更のみ、封の bytes と識別子は変わらない)
 - CI (ALICE-Law G11): 共有の `scripts/gated_tests.py` と試験を ALICE-Law の表の計画した bytes で入れ、機能で gate された試験 file がどれも CI と preflight の `cargo test` で走ることを検査する (この repository の設定は `scripts/gated_tests.toml`)

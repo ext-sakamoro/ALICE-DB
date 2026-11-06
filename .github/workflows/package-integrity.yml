@@ -21,7 +21,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable (branch, default toolchain stable)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (branch, append-only; the toolchain is the `with:` input)
+        with:
+          toolchain: stable
 
       # the published .crate builds on its own (scripts/package_integrity.py, the same file in
       # every crate that takes an unpublished ALICE sibling by path): it packages the crate,

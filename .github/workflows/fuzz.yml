@@ -113,7 +113,9 @@ jobs:
 
       # cargo-fuzz は nightly toolchain 必須
       - name: Install nightly toolchain
-        uses: dtolnay/rust-toolchain@f0d5300ba8908d942c808f4d31c08471d7798ba3 # nightly (branch, default toolchain nightly)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (branch, append-only; the toolchain is the `with:` input)
+        with:
+          toolchain: nightly
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:

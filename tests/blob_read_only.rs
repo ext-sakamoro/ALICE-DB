@@ -100,7 +100,11 @@ fn it_refuses_writes_and_changes_no_file() {
     reader.flush_to_sstable().unwrap();
     reader.compact_all_sstables().unwrap();
     drop(reader);
-    assert_eq!(listing(tmp.path()), before, "a read-only store changed a file");
+    assert_eq!(
+        listing(tmp.path()),
+        before,
+        "a read-only store changed a file"
+    );
 }
 
 /// The reader sees whole batches through flushes and compactions, and never goes back in time.
@@ -156,7 +160,12 @@ fn store_and_model(path: &Path) -> (BlobStorage, BTreeMap<Vec<u8>, Vec<u8>>) {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
-        let k = format!("{}/{:02}", ["ab", "ac", "b"][(x % 3) as usize], (x >> 8) % 50).into_bytes();
+        let k = format!(
+            "{}/{:02}",
+            ["ab", "ac", "b"][(x % 3) as usize],
+            (x >> 8) % 50
+        )
+        .into_bytes();
         if x >> 60 < 4 {
             store.delete(&k).unwrap();
             model.remove(&k);
@@ -193,7 +202,13 @@ fn count_prefix_equals_the_reference() {
 #[test]
 fn count_prefix_with_ff_bytes() {
     let store = BlobStorage::new();
-    for k in [&b"\xfe"[..], b"\xff", b"\xff\x00", b"\xff\xff", b"\xff\xff\x01"] {
+    for k in [
+        &b"\xfe"[..],
+        b"\xff",
+        b"\xff\x00",
+        b"\xff\xff",
+        b"\xff\xff\x01",
+    ] {
         store.put(k, b"v").unwrap();
     }
     assert_eq!(store.count_prefix(b"\xff").unwrap(), 4);
@@ -235,6 +250,29 @@ fn a_failing_writer_is_reported() {
     store.put(b"k", &[7_u8; 4096]).unwrap();
     let err = store.snapshot_to(&mut Full(100)).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::StorageFull);
+}
+
+#[test]
+fn a_snapshot_flushes_its_writer() {
+    #[derive(Default)]
+    struct Buffered {
+        flushed: bool,
+    }
+    impl std::io::Write for Buffered {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.flushed = false;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushed = true;
+            Ok(())
+        }
+    }
+    let store = BlobStorage::new();
+    store.put(b"k", b"v").unwrap();
+    let mut out = Buffered::default();
+    store.snapshot_to(&mut out).unwrap();
+    assert!(out.flushed);
 }
 
 /// A snapshot taken during writes holds whole batches.

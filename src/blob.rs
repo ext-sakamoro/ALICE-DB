@@ -209,6 +209,9 @@ pub struct BlobStorage {
     /// new `SSTable` nor the WAL, and is lost after it was acknowledged.
     #[cfg(feature = "fs")]
     write_gate: Arc<RwLock<()>>,
+    /// Set by [`Self::open_existing_read_only`]: every write is refused.
+    #[cfg(feature = "fs")]
+    read_only: bool,
     /// Optional durable WAL. `None` means the store is in-memory only.
     #[cfg(feature = "fs")]
     wal: Option<Arc<BlobWal>>,
@@ -255,6 +258,44 @@ impl BlobStorage {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Read one moment of an existing store, beside a writer if there is one.
+    ///
+    /// Nothing is created, cut or locked: a missing WAL is `NotFound`, a torn
+    /// tail is left for the writer, and no file stays open or mapped (a mapping
+    /// would stop the writer's compaction on Windows), so the live entries are
+    /// held in memory until this value is dropped. Later writes are seen by the
+    /// next open. Writes return `PermissionDenied`.
+    ///
+    /// The files are read twice over if a flush or compaction replaced them
+    /// meanwhile, so what is returned is never a mix of two moments.
+    ///
+    /// # Errors
+    /// `NotFound` when there is no WAL at `wal_path`; `WouldBlock` when the
+    /// files kept changing for every attempt; read errors and `InvalidData`
+    /// for an `SSTable` that does not parse.
+    #[cfg(feature = "fs")]
+    pub fn open_existing_read_only(wal_path: impl AsRef<Path>) -> io::Result<Self> {
+        const ATTEMPTS: u32 = 200;
+        let wal_path = wal_path.as_ref();
+        let dir = wal_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        for _ in 0..ATTEMPTS {
+            if let Some(memtable) = read_one_moment(wal_path, &dir, || {})? {
+                return Ok(Self {
+                    memtable: Arc::new(RwLock::new(memtable)),
+                    read_only: true,
+                    ..Self::default()
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "the store's files kept changing while they were read",
+        ))
     }
 
     /// Open a durable blob store backed by a WAL at `wal_path` using
@@ -343,6 +384,7 @@ impl BlobStorage {
             sstables: Arc::new(RwLock::new(sstables_newest_first)),
             publish_lock: Arc::new(parking_lot::Mutex::new(())),
             write_gate: Arc::new(RwLock::new(())),
+            read_only: false,
             wal: Some(Arc::new(wal)),
             sstable_path: Some(sstable_path),
             wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
@@ -695,6 +737,7 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if the WAL append fails.
     pub fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        self.check_writable()?;
         let stored = match compress_if_worthwhile(value) {
             Some(bytes) => BlobValue::Compressed(bytes),
             None => BlobValue::Raw(value.to_vec()),
@@ -876,6 +919,18 @@ impl BlobStorage {
         Ok(out)
     }
 
+    /// `PermissionDenied` on a store from [`Self::open_existing_read_only`].
+    fn check_writable(&self) -> io::Result<()> {
+        #[cfg(feature = "fs")]
+        if self.read_only {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "this blob store was opened read-only",
+            ));
+        }
+        Ok(())
+    }
+
     /// The live entries between two bounds in key order, at most `limit` of
     /// them. Sources are read lazily, so a small limit does not read or
     /// decompress the rest of the range. The newest observation of a key wins
@@ -899,68 +954,99 @@ impl BlobStorage {
         #[cfg(feature = "fs")]
         let sstables = self.sstables.read();
         let memtable = self.memtable.read();
-
-        // Lower index = newer. Each source is one key-ordered iterator.
-        let mut sources: Vec<
-            std::iter::Peekable<Box<dyn Iterator<Item = (&[u8], Option<BlobValue>)> + '_>>,
-        > = Vec::new();
-        let range = memtable.range::<[u8], _>((start, end));
-        let in_memory: Box<dyn Iterator<Item = (&[u8], Option<BlobValue>)> + '_> = match order {
-            ScanOrder::Ascending => Box::new(range.map(|(k, v)| (k.as_slice(), Some(v.clone())))),
-            ScanOrder::Descending => {
-                Box::new(range.rev().map(|(k, v)| (k.as_slice(), Some(v.clone()))))
-            }
-        };
-        sources.push(in_memory.peekable());
-        #[cfg(feature = "fs")]
-        for sst in sstables.iter() {
-            sources.push(
-                sst.iter_range(start, end, matches!(order, ScanOrder::Descending))
-                    .peekable(),
-            );
-        }
-
+        let sources = range_sources(
+            &memtable,
+            #[cfg(feature = "fs")]
+            &sstables,
+            start,
+            end,
+            order,
+        );
         let mut out = Vec::new();
-        while out.len() < limit {
-            // The next key in scan order; the first source holding it is the newest.
-            let mut winner: Option<(usize, Vec<u8>)> = None;
-            for (idx, source) in sources.iter_mut().enumerate() {
-                let Some((key, _)) = source.peek() else {
-                    continue;
-                };
-                let better = winner.as_ref().is_none_or(|(_, best)| match order {
-                    ScanOrder::Ascending => *key < best.as_slice(),
-                    ScanOrder::Descending => *key > best.as_slice(),
-                });
-                if better {
-                    winner = Some((idx, key.to_vec()));
-                }
-            }
-            let Some((winner_idx, key)) = winner else {
-                break;
-            };
-            let mut value = None;
-            for (idx, source) in sources.iter_mut().enumerate() {
-                if source.peek().is_some_and(|(k, _)| *k == key.as_slice()) {
-                    let taken = source.next().map(|(_, v)| v);
-                    if idx == winner_idx {
-                        value = taken;
-                    }
-                }
-            }
-            match value.flatten() {
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "an SSTable record has an unknown value kind",
-                    ))
-                }
-                Some(BlobValue::Tombstone) => {}
-                Some(BlobValue::Raw(bytes)) => out.push((key, bytes)),
-                Some(BlobValue::Compressed(bytes)) => out.push((key, zlib_decompress(&bytes)?)),
-            }
+        if limit > 0 {
+            merge_live(sources, order, |key, value| {
+                out.push((key, value.into_bytes()?));
+                Ok(out.len() < limit)
+            })?;
         }
         Ok(out)
+    }
+
+    /// How many live keys start with `prefix`. No value is decompressed.
+    ///
+    /// # Errors
+    /// `InvalidData` when a stored value kind of a key under the prefix is unknown.
+    pub fn count_prefix(&self, prefix: &[u8]) -> io::Result<usize> {
+        let end = prefix_end(prefix);
+        #[cfg(feature = "fs")]
+        let sstables = self.sstables.read();
+        let memtable = self.memtable.read();
+        let sources = range_sources(
+            &memtable,
+            #[cfg(feature = "fs")]
+            &sstables,
+            Bound::Included(prefix),
+            end.as_deref().map_or(Bound::Unbounded, Bound::Excluded),
+            ScanOrder::Ascending,
+        );
+        let mut count = 0;
+        merge_live(sources, ScanOrder::Ascending, |_, _| {
+            count += 1;
+            Ok(true)
+        })?;
+        Ok(count)
+    }
+
+    /// Write every live entry to `out` as a [`crate::snapshot`] with no files, so
+    /// [`crate::snapshot::decode`] and [`crate::AliceDB::from_bytes`] read it. Entries
+    /// are written one at a time, not collected first. It is one moment of the
+    /// store: writers wait until it finishes, so a slow `out` delays them.
+    ///
+    /// # Errors
+    /// Any error of `out`; `InvalidData` for a stored value that cannot be read;
+    /// `InvalidInput` for a key longer than the format holds.
+    pub fn snapshot_to(&self, out: &mut impl io::Write) -> io::Result<()> {
+        #[cfg(feature = "fs")]
+        let sstables = self.sstables.read();
+        let memtable = self.memtable.read();
+        let sources = || {
+            range_sources(
+                &memtable,
+                #[cfg(feature = "fs")]
+                &sstables,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                ScanOrder::Ascending,
+            )
+        };
+        let mut live = 0_u64;
+        merge_live(sources(), ScanOrder::Ascending, |_, _| {
+            live += 1;
+            Ok(true)
+        })?;
+
+        let mut crc = crc32fast::Hasher::new();
+        let mut put = |bytes: &[u8]| -> io::Result<()> {
+            crc.update(bytes);
+            out.write_all(bytes)
+        };
+        put(&crate::snapshot::SNAPSHOT_MAGIC)?;
+        put(&crate::snapshot::SNAPSHOT_FORMAT.to_le_bytes())?;
+        put(&0_u32.to_le_bytes())?;
+        put(&live.to_le_bytes())?;
+        merge_live(sources(), ScanOrder::Ascending, |key, value| {
+            let key_len = u32::try_from(key.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "blob key exceeds u32::MAX")
+            })?;
+            let value = value.into_bytes()?;
+            put(&key_len.to_le_bytes())?;
+            put(&key)?;
+            put(&(value.len() as u64).to_le_bytes())?;
+            put(&value)?;
+            Ok(true)
+        })?;
+        out.write_all(&crc.finalize().to_le_bytes())?;
+        out.flush()
     }
 
     /// Apply every operation of a batch, or none of them: the batch is one WAL
@@ -970,6 +1056,7 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if the WAL append fails; nothing is applied then.
     pub fn write_batch(&self, batch: &WriteBatch) -> io::Result<()> {
+        self.check_writable()?;
         if batch.is_empty() {
             return Ok(());
         }
@@ -1018,6 +1105,7 @@ impl BlobStorage {
     /// `Result` in alpha-2 to surface WAL failures instead of dropping
     /// them silently.
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
+        self.check_writable()?;
         {
             #[cfg(feature = "fs")]
             let _gate = self.write_gate.read();
@@ -1091,6 +1179,61 @@ impl BlobStorage {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// The `SSTables` and then the WAL, or `None` when a flush or compaction moved
+/// records from the WAL to a file between the two reads (the store would look like
+/// it lost them). `between` runs between the reads, for the tests.
+#[cfg(feature = "fs")]
+fn read_one_moment(
+    wal_path: &Path,
+    dir: &Path,
+    between: impl FnOnce(),
+) -> io::Result<Option<BTreeMap<Vec<u8>, BlobValue>>> {
+    // Fails with NotFound before anything else is read.
+    std::fs::metadata(wal_path)?;
+    let before = sstable_signature(dir)?;
+    let mut memtable = BTreeMap::new();
+    for path in enumerate_sstables(dir)? {
+        match BlobSstable::open(&path) {
+            Ok(Some(sst)) => memtable.extend(sst.into_records()),
+            // removed by a compaction after the listing: the signature below differs
+            Ok(None) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    between();
+    let Some(records) = crate::blob_wal::read_existing(wal_path)? else {
+        return Ok(None);
+    };
+    if sstable_signature(dir)? != before {
+        return Ok(None);
+    }
+    for record in records {
+        match record {
+            WalRecord::Put(key, value) => {
+                memtable.insert(key, value);
+            }
+            WalRecord::Delete(key) => {
+                memtable.insert(key, BlobValue::Tombstone);
+            }
+        }
+    }
+    Ok(Some(memtable))
+}
+
+/// What identifies the current `SSTable` files: a flush or compaction changes it.
+#[cfg(feature = "fs")]
+fn sstable_signature(dir: &Path) -> io::Result<Vec<(PathBuf, u64, Option<std::time::SystemTime>)>> {
+    enumerate_sstables(dir)?
+        .into_iter()
+        .filter_map(|path| match std::fs::metadata(&path) {
+            Ok(meta) => Some(Ok((path, meta.len(), meta.modified().ok()))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => Some(Err(e)),
+        })
+        .collect()
 }
 
 /// Map every `SSTable` in `dir`, newest first (read-path priority).
@@ -1170,6 +1313,110 @@ impl WriteBatch {
     }
 }
 
+/// A live value on its way out of a merge: decompressed only when asked for.
+enum LiveValue {
+    Raw(Vec<u8>),
+    Compressed(Vec<u8>),
+}
+
+impl LiveValue {
+    fn into_bytes(self) -> io::Result<Vec<u8>> {
+        match self {
+            Self::Raw(bytes) => Ok(bytes),
+            Self::Compressed(bytes) => zlib_decompress(&bytes),
+        }
+    }
+}
+
+type RangeSource<'a> =
+    std::iter::Peekable<Box<dyn Iterator<Item = (&'a [u8], Option<BlobValue>)> + 'a>>;
+
+/// The memtable and every `SSTable`, newest first, each one key-ordered iterator.
+fn range_sources<'a>(
+    memtable: &'a BTreeMap<Vec<u8>, BlobValue>,
+    #[cfg(feature = "fs")] sstables: &'a [LoadedSstable],
+    start: Bound<&'a [u8]>,
+    end: Bound<&'a [u8]>,
+    order: ScanOrder,
+) -> Vec<RangeSource<'a>> {
+    let range = memtable.range::<[u8], _>((start, end));
+    let in_memory: Box<dyn Iterator<Item = (&'a [u8], Option<BlobValue>)> + 'a> = match order {
+        ScanOrder::Ascending => Box::new(range.map(|(k, v)| (k.as_slice(), Some(v.clone())))),
+        ScanOrder::Descending => {
+            Box::new(range.rev().map(|(k, v)| (k.as_slice(), Some(v.clone()))))
+        }
+    };
+    let mut sources = vec![in_memory.peekable()];
+    #[cfg(feature = "fs")]
+    for sst in sstables {
+        sources.push(
+            sst.iter_range(start, end, matches!(order, ScanOrder::Descending))
+                .peekable(),
+        );
+    }
+    sources
+}
+
+/// Walk the sources in key order, newest observation of each key first, and hand
+/// every live entry to `visit` until it returns `false`.
+fn merge_live(
+    mut sources: Vec<RangeSource<'_>>,
+    order: ScanOrder,
+    mut visit: impl FnMut(Vec<u8>, LiveValue) -> io::Result<bool>,
+) -> io::Result<()> {
+    loop {
+        // The next key in scan order; the first source holding it is the newest.
+        let mut winner: Option<(usize, Vec<u8>)> = None;
+        for (idx, source) in sources.iter_mut().enumerate() {
+            let Some((key, _)) = source.peek() else {
+                continue;
+            };
+            let better = winner.as_ref().is_none_or(|(_, best)| match order {
+                ScanOrder::Ascending => *key < best.as_slice(),
+                ScanOrder::Descending => *key > best.as_slice(),
+            });
+            if better {
+                winner = Some((idx, key.to_vec()));
+            }
+        }
+        let Some((winner_idx, key)) = winner else {
+            return Ok(());
+        };
+        let mut value = None;
+        for (idx, source) in sources.iter_mut().enumerate() {
+            if source.peek().is_some_and(|(k, _)| *k == key.as_slice()) {
+                let taken = source.next().map(|(_, v)| v);
+                if idx == winner_idx {
+                    value = taken;
+                }
+            }
+        }
+        let live = match value.flatten() {
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "an SSTable record has an unknown value kind",
+                ))
+            }
+            Some(BlobValue::Tombstone) => continue,
+            Some(BlobValue::Raw(bytes)) => LiveValue::Raw(bytes),
+            Some(BlobValue::Compressed(bytes)) => LiveValue::Compressed(bytes),
+        };
+        if !visit(key, live)? {
+            return Ok(());
+        }
+    }
+}
+
+/// The first key after every key starting with `prefix`, `None` when there is none
+/// (the empty prefix, or a prefix of only 0xFF bytes).
+fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let last = prefix.iter().rposition(|&b| b != 0xFF)?;
+    let mut end = prefix[..=last].to_vec();
+    end[last] += 1;
+    Some(end)
+}
+
 /// Whether no key lies between the bounds (`BTreeMap::range` panics on these).
 fn range_is_empty(start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
     match (start, end) {
@@ -1205,6 +1452,26 @@ impl SortedRun {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(feature = "fs")]
+    #[test]
+    fn a_flush_between_the_two_reads_of_a_read_only_open_is_not_used() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("blob.wal");
+        let writer = BlobStorage::open(&path).unwrap();
+        writer.put(b"a", b"1").unwrap();
+        let moment = read_one_moment(&path, tmp.path(), || {}).unwrap().unwrap();
+        assert!(moment.contains_key(b"a".as_slice()));
+        let moved = read_one_moment(&path, tmp.path(), || writer.flush_to_sstable().unwrap());
+        assert!(
+            moved.unwrap().is_none(),
+            "a moment without the moved record"
+        );
+        // and the next attempt sees it in the file
+        let moment = read_one_moment(&path, tmp.path(), || {}).unwrap().unwrap();
+        assert!(moment.contains_key(b"a".as_slice()));
+    }
+
     use super::*;
 
     #[test]

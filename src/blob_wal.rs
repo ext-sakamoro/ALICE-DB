@@ -690,6 +690,38 @@ impl Drop for BlobWal {
     }
 }
 
+/// Every well-framed record of the WAL at `path` without taking its lock or
+/// changing it. A torn or corrupt tail ends the list, as in [`BlobWal::replay`];
+/// it may be a write in progress. `None` when a flush truncated the WAL during
+/// the read: the records read then may be a part of what the new `SSTable` holds,
+/// and an old value among them would hide a newer one.
+///
+/// # Errors
+/// `NotFound` when there is no file; any read error.
+pub fn read_existing(path: &Path) -> io::Result<Option<Vec<WalRecord>>> {
+    stable_records(|| std::fs::read(path))
+}
+
+/// Read twice: the good records of the first read must still be the start of the
+/// second, or the file was cut (and perhaps written again) in between.
+fn stable_records(
+    mut read: impl FnMut() -> io::Result<Vec<u8>>,
+) -> io::Result<Option<Vec<WalRecord>>> {
+    let first = read()?;
+    let mut reader = Counting {
+        inner: first.as_slice(),
+        pos: 0,
+    };
+    let mut out = Vec::new();
+    let mut good_end = 0;
+    while let ReadOutcome::Records(records) = read_one(&mut reader)? {
+        out.extend(records);
+        good_end = reader.pos;
+    }
+    let good = &first[..usize::try_from(good_end).unwrap_or(first.len())];
+    Ok(read()?.starts_with(good).then_some(out))
+}
+
 /// Serialise one record: [header][key][value?][CRC-32].
 fn serialise_record(
     record_type: u8,
@@ -852,6 +884,37 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buf: &mut [u8]) -> io::Result<Read
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_wal_cut_between_the_two_reads_is_not_used() {
+        let a = serialise_record(RECORD_TYPE_PUT, b"a", VALUE_KIND_RAW, b"1").unwrap();
+        let b = serialise_record(RECORD_TYPE_PUT, b"b", VALUE_KIND_RAW, b"2").unwrap();
+        let both = [a.clone(), b.clone()].concat();
+        let scripted = |reads: Vec<Vec<u8>>| {
+            let mut reads = reads.into_iter();
+            stable_records(move || Ok(reads.next().unwrap())).unwrap()
+        };
+        // unchanged, or only grown: the first read stands
+        assert_eq!(
+            scripted(vec![a.clone(), a.clone()]).map(|r| r.len()),
+            Some(1)
+        );
+        assert_eq!(
+            scripted(vec![a.clone(), both.clone()]).map(|r| r.len()),
+            Some(1)
+        );
+        // a torn tail growing into a whole record is a write in progress
+        let torn = both[..both.len() - 1].to_vec();
+        assert_eq!(scripted(vec![torn, both.clone()]).map(|r| r.len()), Some(1));
+        // cut, or cut and written again
+        assert_eq!(scripted(vec![both.clone(), a]).map(|r| r.len()), None);
+        assert_eq!(
+            scripted(vec![both.clone(), Vec::new()]).map(|r| r.len()),
+            None
+        );
+        assert_eq!(scripted(vec![both, b]).map(|r| r.len()), None);
+    }
+
     use super::*;
     use tempfile::TempDir;
 

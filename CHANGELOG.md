@@ -10,6 +10,9 @@ All notable changes to ALICE-DB will be documented in this file.
 ### Added
 - `BlobStorage::write_batch` / `AliceDB::write_blob_batch`: `WriteBatch` の全操作を全部か無しかで適用する (WAL の 1 record、型 0x03、checksum は 1 つ) reader は batch を一度に見る
 - `BlobStorage::scan_range` / `AliceDB::scan_blob_range`: 2 つの bound の間の生きた entry を昇順・降順で、上限つきで返す source は遅延で読む
+- `BlobStorage::open_existing_read_only`: 既存の store の 1 つの時点を読む 何も作らず、切らず、lock も取らないので writer と並べて開ける
+- `BlobStorage::count_prefix`: prefix の下の生きた key の数 (値を展開しない)
+- `BlobStorage::snapshot_to`: 生きた entry を `snapshot` の形式で `Write` へ順に書く
 - `DataSegment::from_stored_bytes` と `segment::SEGMENT_FORMAT`: segment の file の bytes を、保存形式を見分けて owned の `DataSegment` に戻す (形式 1 は rkyv 0.8 の検査つき deserialize、形式 0 は旧い layout を読む組み込みの reader) `SegmentView::segment` は decode した segment を返す
 - 試験 `tests/legacy_segment_values.rs` (過去 5 版の store の segment と、model の 8 variant それぞれの segment を、rkyv 0.7 の読み手で記録した値 (浮動小数点は bit) と比べる)、`tests/segment_view_parity.rs` (`SegmentView` を通した読み出しが、同じ segment のメモリ上の読み出しと bit 単位で一致する: RawLzma を含む、0.2.0-beta.1 で view だけが 0.0 を返した形の回帰)、`tests/segment_decode_alloc_bound.rs` (壊れた長さを持つ file でも、decode が確保する量は file の大きさに比例し、主張された長さには従わない / 新しい形式や 0 でない予約 byte は拒否)
 - fuzz target `fuzz_segment_decode`: 任意の bytes を segment の file として decode する (header 無しの形式 0 と、形式 1 の header の後ろ) decode できたものは今の形式で書き直して同じ segment に戻ることを確かめる

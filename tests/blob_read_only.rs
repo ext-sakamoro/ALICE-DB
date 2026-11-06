@@ -15,7 +15,7 @@ use alice_db::snapshot;
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -115,14 +115,19 @@ fn it_refuses_writes_and_changes_no_file() {
 /// The reader sees whole batches through flushes and compactions, and never goes back in time.
 #[test]
 fn every_open_sees_one_moment_of_a_busy_writer() {
+    const READS: u32 = 100;
+    const WRITES: u32 = 1_000;
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.wal");
     let writer = Arc::new(BlobStorage::open(&path).unwrap());
-    let done = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    let written = Arc::new(AtomicU32::new(0));
     let handle = {
-        let (writer, done) = (Arc::clone(&writer), Arc::clone(&done));
+        let (writer, stop, written) =
+            (Arc::clone(&writer), Arc::clone(&stop), Arc::clone(&written));
         std::thread::spawn(move || {
-            for i in 0_u32..3_000 {
+            let mut i = 0_u32;
+            while !stop.load(Ordering::SeqCst) {
                 let v = i.to_be_bytes();
                 let mut batch = WriteBatch::new();
                 batch.put(b"pair/a", &v);
@@ -133,13 +138,15 @@ fn every_open_sees_one_moment_of_a_busy_writer() {
                     150 => writer.compact_all_sstables().unwrap(),
                     _ => {}
                 }
+                i += 1;
+                written.store(i, Ordering::SeqCst);
             }
-            done.store(true, Ordering::SeqCst);
         })
     };
     let mut last = [0_u8; 4];
     let mut opened = 0_u32;
-    while !done.load(Ordering::SeqCst) {
+    // The writer runs until the reader has seen enough, however the threads are scheduled.
+    while opened < READS || written.load(Ordering::SeqCst) < WRITES {
         let reader = BlobStorage::open_existing_read_only(&path).unwrap();
         let got = reader.scan_prefix(b"pair/").unwrap();
         if got.is_empty() {
@@ -152,8 +159,12 @@ fn every_open_sees_one_moment_of_a_busy_writer() {
         last = now;
         opened += 1;
     }
+    stop.store(true, Ordering::SeqCst);
     handle.join().unwrap();
-    assert!(opened > 0, "no read-only open compared anything");
+    assert!(
+        u32::from_be_bytes(last) > 0,
+        "only the first batch was read"
+    );
 }
 
 /// Operations and a reference map, over a memtable and `SSTables`.
@@ -304,33 +315,40 @@ fn a_compaction_leaves_no_bytes_of_a_deleted_value() {
 /// A snapshot taken during writes holds whole batches.
 #[test]
 fn a_snapshot_holds_whole_batches() {
+    const SNAPSHOTS: u32 = 200;
     let store = Arc::new(BlobStorage::new());
+    let stop = Arc::new(AtomicBool::new(false));
     let writer = {
-        let store = Arc::clone(&store);
+        let (store, stop) = (Arc::clone(&store), Arc::clone(&stop));
         std::thread::spawn(move || {
-            for i in 0_u32..5_000 {
+            let mut i = 0_u32;
+            while !stop.load(Ordering::SeqCst) {
                 let v = i.to_le_bytes();
                 let mut batch = WriteBatch::new();
                 batch.put(b"a", &v);
                 batch.put(b"b", &v);
                 store.write_batch(&batch).unwrap();
+                i = i.wrapping_add(1);
             }
         })
     };
+    // The writer runs until the snapshots are taken, however the threads are scheduled.
     let mut compared = 0;
-    while !writer.is_finished() {
+    let mut values = std::collections::BTreeSet::new();
+    while compared < SNAPSHOTS || values.len() < 2 {
         let mut bytes = Vec::new();
         store.snapshot_to(&mut bytes).unwrap();
         let (_, blobs) = snapshot::decode(&bytes).unwrap();
         if blobs.len() == 2 {
             assert_eq!(blobs[0].1, blobs[1].1);
+            values.insert(blobs[0].1.clone());
             compared += 1;
         } else {
             assert!(blobs.is_empty());
         }
     }
+    stop.store(true, Ordering::SeqCst);
     writer.join().unwrap();
-    assert!(compared > 0);
 }
 
 const HOLDER_ENV: &str = "ALICE_DB_LOCK_HOLDER";

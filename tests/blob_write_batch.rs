@@ -15,6 +15,7 @@ use alice_db::blob::{BlobStorage, BlobStorageConfig, WriteBatch};
 use alice_db::blob_sstable::FlushMode;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -333,31 +334,38 @@ fn a_value_that_compresses_comes_back_after_reopen() {
 /// A reader never sees a part of a batch: both keys of each batch hold the same value.
 #[test]
 fn a_concurrent_reader_sees_all_of_a_batch_or_none() {
+    const READS: u64 = 2_000;
     let store = Arc::new(BlobStorage::new());
+    let stop = Arc::new(AtomicBool::new(false));
     let writer = {
-        let store = Arc::clone(&store);
+        let (store, stop) = (Arc::clone(&store), Arc::clone(&stop));
         std::thread::spawn(move || {
-            for i in 0_u32..5_000 {
+            let mut i = 0_u32;
+            while !stop.load(Ordering::SeqCst) {
                 let v = i.to_le_bytes();
                 let mut batch = WriteBatch::new();
                 batch.put(b"pair/a", &v);
                 batch.put(b"pair/b", &v);
                 store.write_batch(&batch).unwrap();
+                i = i.wrapping_add(1);
             }
         })
     };
+    // The writer runs until the reads are done, however the threads are scheduled.
     let mut seen_pairs = 0_u64;
-    while !writer.is_finished() {
+    let mut values = std::collections::BTreeSet::new();
+    while seen_pairs < READS || values.len() < 2 {
         let got = store.scan_prefix(b"pair/").unwrap();
         if got.len() == 2 {
             assert_eq!(got[0].1, got[1].1, "a part of a batch was visible");
+            values.insert(got[0].1.clone());
             seen_pairs += 1;
         } else {
             assert!(got.is_empty(), "one key of a batch was visible: {got:?}");
         }
     }
+    stop.store(true, Ordering::SeqCst);
     writer.join().unwrap();
-    assert!(seen_pairs > 0, "the reader compared nothing");
 }
 
 /// Every acknowledged write survives flushes that other threads start, in the

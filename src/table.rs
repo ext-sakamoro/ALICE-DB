@@ -668,7 +668,7 @@ impl SealedTable {
     }
 
     /// Move every row to the current key and return how many moved. Each step of
-    /// [`Self::RESEAL_STEP`] rows is atomic; after an interruption, running it again
+    /// 256 rows is atomic; after an interruption, running it again
     /// finishes the rest. A row already at the current key is not rewritten.
     ///
     /// # Errors

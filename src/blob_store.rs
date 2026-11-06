@@ -291,18 +291,14 @@ pub(crate) fn take_over(wal_path: &Path) -> io::Result<()> {
     let dir = store_dir(wal_path);
     refuse_symlink_elsewhere(wal_path, &dir)?;
     let mut lock = StoreLock::acquire(&dir)?;
-    match recorded_wal(&dir)? {
-        Some(recorded) if recorded == name => return Ok(()),
-        Some(recorded) => {
-            let recorded_path = dir.join(&recorded);
-            if recorded_path.exists() && !same_file(&recorded_path, wal_path) {
-                return Err(invalid_data(format!(
-                    "`{recorded}` still exists and may hold writes that are not in the files: \
-                     open it to flush them, then remove it"
-                )));
-            }
+    if let Some(recorded) = recorded_wal(&dir)? {
+        let recorded_path = dir.join(&recorded);
+        if recorded_path.exists() && !same_file(&recorded_path, wal_path) {
+            return Err(invalid_data(format!(
+                "`{recorded}` still exists and may hold writes that are not in the files: \
+                 open it to flush them, then remove it"
+            )));
         }
-        None => {}
     }
     lock.record(&name)
 }

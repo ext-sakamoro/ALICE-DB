@@ -4,6 +4,10 @@
 //! The stores under `tests/fixtures/old_layout_e5c0d81` were written by the build
 //! named in its README.
 #![cfg(feature = "fs")]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "one test starts processes from a thread, joined before it returns"
+)]
 
 use alice_db::blob::{BlobStorage, BlobStorageConfig};
 use alice_db::blob_sstable::FlushMode;
@@ -208,6 +212,18 @@ fn the_same_name_opens_when_its_wal_is_gone() {
     std::fs::remove_file(&x).unwrap();
     assert_eq!(
         get(&BlobStorage::open(&x).unwrap(), "k"),
+        Some("v".to_owned())
+    );
+}
+
+/// `blob.wal` is the name these files have always gone with.
+#[test]
+fn blob_wal_opens_over_files_with_no_record_when_it_is_gone() {
+    let tmp = fixture("old_layout_e5c0d81/blob_wal");
+    let path = tmp.path().join("blob.wal");
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        get(&BlobStorage::open(&path).unwrap(), "k"),
         Some("v".to_owned())
     );
 }

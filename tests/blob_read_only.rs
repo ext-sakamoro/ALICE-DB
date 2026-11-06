@@ -332,3 +332,34 @@ fn a_snapshot_holds_whole_batches() {
     writer.join().unwrap();
     assert!(compared > 0);
 }
+
+/// On Windows a lock on a file stops other handles reading it, so a writer that
+/// locked its WAL would stop every read-only open beside it.
+#[test]
+fn a_writer_leaves_the_wal_itself_unlocked() {
+    use fs2::FileExt;
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    let writer = BlobStorage::open(&path).unwrap();
+    writer.put(b"a", b"1").unwrap();
+    let wal = std::fs::File::open(&path).unwrap();
+    FileExt::try_lock_exclusive(&wal).unwrap();
+    FileExt::unlock(&wal).unwrap();
+    drop(wal);
+    assert_eq!(writer.get(b"a").unwrap().as_deref(), Some(&b"1"[..]));
+}
+
+/// The lock file stays behind a closed writer and stops nobody.
+#[test]
+fn a_lock_file_left_behind_does_not_stop_the_next_writer() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    drop(BlobStorage::open(&path).unwrap());
+    assert!(tmp.path().join("blob.wal.lock").exists());
+    let reopened = BlobStorage::open(&path).unwrap();
+    let Err(err) = BlobStorage::open(&path) else {
+        panic!("a second writer must be refused");
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock, "{err}");
+    drop(reopened);
+}

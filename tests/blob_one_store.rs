@@ -63,10 +63,6 @@ fn get(store: &BlobStorage, key: &str) -> Option<String> {
         .map(|v| String::from_utf8(v).unwrap())
 }
 
-fn some(v: &str) -> Option<String> {
-    Some(v.to_owned())
-}
-
 fn refused(path: &Path) -> std::io::Error {
     BlobStorage::open(path).expect_err("the open must stop")
 }
@@ -89,9 +85,17 @@ fn flushed_data_of_any_wal_name_is_there_after_a_reopen() {
                 store.put(b"k", b"v").unwrap();
                 store.flush_to_sstable().unwrap();
             }
-            assert_eq!(get(&open(&path, mode), "k"), some("v"), "{wal} {mode:?}");
+            assert_eq!(
+                get(&open(&path, mode), "k"),
+                Some("v".to_owned()),
+                "{wal} {mode:?}"
+            );
             let view = BlobStorage::open_existing_read_only(&path).unwrap();
-            assert_eq!(get(&view, "k"), some("v"), "read-only {wal} {mode:?}");
+            assert_eq!(
+                get(&view, "k"),
+                Some("v".to_owned()),
+                "read-only {wal} {mode:?}"
+            );
         }
     }
 }
@@ -129,7 +133,7 @@ fn a_second_name_in_the_directory_is_refused_while_the_first_is_open() {
             let err = refused(&tmp.path().join(b));
             assert_eq!(err.kind(), ErrorKind::WouldBlock, "{a} {b} {mode:?}: {err}");
             assert!(!tmp.path().join(b).exists(), "{a} {b}: the refused WAL");
-            assert_eq!(get(&first, "k"), some("first"));
+            assert_eq!(get(&first, "k"), Some("first".to_owned()));
         }
     }
 }
@@ -155,8 +159,8 @@ fn a_second_name_in_the_directory_is_refused_afterwards_too() {
             assert!(err.to_string().contains(a), "{err}");
             assert_eq!(files(tmp.path()), before, "{a} {b}: the refused open");
             let first = open(&tmp.path().join(a), mode);
-            assert_eq!(get(&first, "k"), some("first"));
-            assert_eq!(get(&first, "w"), some("unflushed"));
+            assert_eq!(get(&first, "k"), Some("first".to_owned()));
+            assert_eq!(get(&first, "w"), Some("unflushed".to_owned()));
         }
     }
 }
@@ -202,7 +206,10 @@ fn the_same_name_opens_when_its_wal_is_gone() {
         store.flush_to_sstable().unwrap();
     }
     std::fs::remove_file(&x).unwrap();
-    assert_eq!(get(&BlobStorage::open(&x).unwrap(), "k"), some("v"));
+    assert_eq!(
+        get(&BlobStorage::open(&x).unwrap(), "k"),
+        Some("v".to_owned())
+    );
 }
 
 /// A directory no version of this build opened: a new name is not their store.
@@ -226,28 +233,32 @@ fn a_store_of_an_earlier_version_under_its_own_name_is_read() {
         let tmp = fixture("old_layout_e5c0d81/overwrite");
         let path = tmp.path().join("x.wal");
         let view = BlobStorage::open_existing_read_only(&path).unwrap();
-        assert_eq!(get(&view, "k"), some("v"), "read-only {mode:?}");
-        assert_eq!(get(&view, "w"), some("u"), "read-only {mode:?}");
+        assert_eq!(get(&view, "k"), Some("v".to_owned()), "read-only {mode:?}");
+        assert_eq!(get(&view, "w"), Some("u".to_owned()), "read-only {mode:?}");
         assert!(
             tmp.path().join("x.sst").exists(),
             "a read-only open moved it"
         );
         let store = open(&path, mode);
-        assert_eq!(get(&store, "k"), some("v"), "{mode:?}");
-        assert_eq!(get(&store, "w"), some("u"), "{mode:?}");
+        assert_eq!(get(&store, "k"), Some("v".to_owned()), "{mode:?}");
+        assert_eq!(get(&store, "w"), Some("u".to_owned()), "{mode:?}");
         assert!(!tmp.path().join("x.sst").exists());
         assert!(tmp.path().join("blob.sst").exists());
         drop(store);
-        assert_eq!(get(&open(&path, mode), "k"), some("v"), "reopen {mode:?}");
+        assert_eq!(
+            get(&open(&path, mode), "k"),
+            Some("v".to_owned()),
+            "reopen {mode:?}"
+        );
 
         // blob-000001.sst, under a WAL of another name
         let tmp = fixture("old_layout_e5c0d81/append");
         let path = tmp.path().join("x.wal");
         let view = BlobStorage::open_existing_read_only(&path).unwrap();
-        assert_eq!(get(&view, "k"), some("v"), "read-only {mode:?}");
+        assert_eq!(get(&view, "k"), Some("v".to_owned()), "read-only {mode:?}");
         let store = open(&path, mode);
-        assert_eq!(get(&store, "k"), some("v"), "{mode:?}");
-        assert_eq!(get(&store, "w"), some("u"), "{mode:?}");
+        assert_eq!(get(&store, "k"), Some("v".to_owned()), "{mode:?}");
+        assert_eq!(get(&store, "w"), Some("u".to_owned()), "{mode:?}");
     }
 }
 
@@ -303,8 +314,8 @@ fn numbered_files_of_two_wals_are_read_by_the_first_and_the_second_stops() {
     for (first, second) in [("x.wal", "blob.wal"), ("blob.wal", "x.wal")] {
         let tmp = fixture("old_layout_e5c0d81/x_and_blob_append");
         let store = BlobStorage::open(tmp.path().join(first)).unwrap();
-        assert_eq!(get(&store, "kx"), some("vx"), "{first}");
-        assert_eq!(get(&store, "kb"), some("vb"), "{first}");
+        assert_eq!(get(&store, "kx"), Some("vx".to_owned()), "{first}");
+        assert_eq!(get(&store, "kb"), Some("vb".to_owned()), "{first}");
         drop(store);
         let err = refused(&tmp.path().join(second));
         assert_eq!(err.kind(), ErrorKind::InvalidData, "{first}: {err}");
@@ -372,7 +383,7 @@ fn another_case_of_the_name_is_the_same_store() {
                 store.flush_to_sstable().unwrap();
             }
             let store = open(&tmp.path().join(spelled), mode);
-            assert_eq!(get(&store, "k"), some("v"), "{spelled} {mode:?}");
+            assert_eq!(get(&store, "k"), Some("v".to_owned()), "{spelled} {mode:?}");
             let err = refused(&tmp.path().join(written));
             assert_eq!(err.kind(), ErrorKind::WouldBlock, "{err}");
         }
@@ -391,7 +402,7 @@ fn another_normal_form_of_the_name_is_the_same_store() {
             store.flush_to_sstable().unwrap();
         }
         let store = open(&tmp.path().join("cafe\u{301}.wal"), mode);
-        assert_eq!(get(&store, "k"), some("v"), "{mode:?}");
+        assert_eq!(get(&store, "k"), Some("v".to_owned()), "{mode:?}");
     }
 }
 
@@ -408,9 +419,13 @@ fn a_symlink_in_the_directory_is_the_same_store() {
         }
         let link = tmp.path().join("y.wal");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert_eq!(get(&open(&link, mode), "k"), some("v"), "{mode:?}");
+        assert_eq!(
+            get(&open(&link, mode), "k"),
+            Some("v".to_owned()),
+            "{mode:?}"
+        );
         let view = BlobStorage::open_existing_read_only(&link).unwrap();
-        assert_eq!(get(&view, "k"), some("v"), "read-only {mode:?}");
+        assert_eq!(get(&view, "k"), Some("v".to_owned()), "read-only {mode:?}");
     }
 }
 
@@ -444,17 +459,13 @@ fn a_hard_link_in_the_directory_is_the_same_store() {
         }
         let link = tmp.path().join("y.wal");
         std::fs::hard_link(&real, &link).unwrap();
-        // Windows compares final paths, which differ for a hard link: it stops.
-        match BlobStorage::open_with_config(&link, config(mode)) {
-            Ok(store) => {
-                assert!(cfg!(unix));
-                assert_eq!(get(&store, "k"), some("v"), "{mode:?}");
-            }
-            Err(err) => {
-                assert!(cfg!(windows), "{err}");
-                assert_eq!(err.kind(), ErrorKind::InvalidData, "{err}");
-            }
-        }
+        let opened = BlobStorage::open_with_config(&link, config(mode));
+        // The same file by device and inode.
+        #[cfg(unix)]
+        assert_eq!(get(&opened.unwrap(), "k"), Some("v".to_owned()), "{mode:?}");
+        // Final paths, which differ for a hard link: it stops.
+        #[cfg(not(unix))]
+        assert_eq!(opened.unwrap_err().kind(), ErrorKind::InvalidData);
     }
 }
 
@@ -493,7 +504,7 @@ fn a_read_only_open_creates_no_lock_and_needs_none() {
     std::fs::remove_file(tmp.path().join("blob.lock")).unwrap();
     let before = files(tmp.path());
     let view = BlobStorage::open_existing_read_only(&path).unwrap();
-    assert_eq!(get(&view, "k"), some("v"));
+    assert_eq!(get(&view, "k"), Some("v".to_owned()));
     assert_eq!(files(tmp.path()), before);
     let names: Vec<PathBuf> = std::fs::read_dir(tmp.path())
         .unwrap()
@@ -523,7 +534,7 @@ fn a_read_only_open_works_in_a_directory_it_cannot_write() {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
             get(&view.unwrap(), "k"),
-            some("v"),
+            Some("v".to_owned()),
             "remove_lock {remove_lock}"
         );
     }
@@ -536,7 +547,7 @@ fn a_read_only_open_works_beside_a_writer_holding_the_lock() {
     let writer = BlobStorage::open(&path).unwrap();
     writer.put(b"k", b"v").unwrap();
     let view = BlobStorage::open_existing_read_only(&path).unwrap();
-    assert_eq!(get(&view, "k"), some("v"));
+    assert_eq!(get(&view, "k"), Some("v".to_owned()));
     let other = BlobStorage::open_existing_read_only(tmp.path().join("y.wal")).unwrap_err();
     assert_eq!(other.kind(), ErrorKind::NotFound);
 }
@@ -558,4 +569,32 @@ fn a_lock_file_left_by_removed_store_files_does_not_stop_a_new_store() {
     }
     let db = AliceDB::open(tmp.path()).unwrap();
     assert_eq!(db.get_blob(b"k").unwrap(), None);
+}
+
+/// A process started by another thread holds a copy of the lock's handle until it
+/// execs: closing a store has to release the lock itself.
+#[test]
+fn a_reopen_is_not_stopped_by_a_process_being_started() {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let spawner = {
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut started = 0_u32;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::process::Command::new("git")
+                    .arg("--version")
+                    .output()
+                    .unwrap();
+                started += 1;
+            }
+            started
+        })
+    };
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("x.wal");
+    for _ in 0..2_000 {
+        drop(BlobStorage::open(&path).unwrap());
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(spawner.join().unwrap() > 0, "no process was started");
 }

@@ -130,6 +130,10 @@ required-features = ["fs", "open-file-audit"]
 name = "wal_recovery_crash"
 required-features = ["fs", "open-file-audit"]
 
+[[test]]
+name = "blob_store_crash"
+required-features = ["fs", "open-file-audit"]
+
 [[bench]]
 name = "db_benchmark"
 harness = false

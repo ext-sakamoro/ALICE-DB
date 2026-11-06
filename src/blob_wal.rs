@@ -236,10 +236,40 @@ fn already_locked(path: &Path, e: &io::Error, kind: io::ErrorKind) -> io::Error 
     io::Error::new(
         kind,
         format!(
-            "blob WAL at `{}` is already locked by another writer: {e}",
+            "`{}` is already locked by another writer: {e}",
             path.display()
         ),
     )
+}
+
+/// Open `path` for one writer at a time: other handles may read it, a second
+/// writer gets `WouldBlock`, and the hold ends with the process.
+pub(crate) fn open_exclusive(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::share_mode(
+        options,
+        WINDOWS_SHARE_READ | WINDOWS_SHARE_DELETE,
+    );
+    let file = options.open(path).map_err(|e| {
+        if is_sharing_violation(&e) {
+            already_locked(path, &e, io::ErrorKind::WouldBlock)
+        } else {
+            e
+        }
+    })?;
+    // Exclusive advisory lock. If another process (or the same process) already
+    // holds the lock we bail with a descriptive error so the caller can surface it
+    // as "database already open" rather than a mysterious later corruption.
+    #[cfg(not(windows))]
+    FileExt::try_lock_exclusive(&file).map_err(|e| {
+        let kind = if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+            io::ErrorKind::WouldBlock
+        } else {
+            e.kind()
+        };
+        already_locked(path, &e, kind)
+    })?;
+    Ok(file)
 }
 
 /// Interior state guarded by the outer `Mutex`. Kept separate so a
@@ -292,31 +322,7 @@ impl BlobWal {
             .append(OPEN_WITH_APPEND)
             .create(true)
             .truncate(false);
-        #[cfg(windows)]
-        std::os::windows::fs::OpenOptionsExt::share_mode(
-            &mut options,
-            WINDOWS_SHARE_READ | WINDOWS_SHARE_DELETE,
-        );
-        let file = options.open(&path).map_err(|e| {
-            if is_sharing_violation(&e) {
-                already_locked(&path, &e, io::ErrorKind::WouldBlock)
-            } else {
-                e
-            }
-        })?;
-        // Exclusive advisory lock. If another process (or the same
-        // process) already holds the lock we bail with a descriptive
-        // error so the caller can surface it as "database already open"
-        // rather than a mysterious later corruption.
-        #[cfg(not(windows))]
-        FileExt::try_lock_exclusive(&file).map_err(|e| {
-            let kind = if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
-                io::ErrorKind::WouldBlock
-            } else {
-                e.kind()
-            };
-            already_locked(&path, &e, kind)
-        })?;
+        let file = open_exclusive(&mut options, &path)?;
         crate::fs_audit::note_open(&path);
         Ok(Self {
             path,
@@ -635,7 +641,7 @@ fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     crate::fs_audit::check_replace_target(path);
     std::fs::rename(&tmp, path)?;
-    sync_dir(path)
+    sync_dir(path, "dir")
 }
 
 /// Remove `<wal>.dropped-*.tmp` left by a copy that was interrupted
@@ -678,7 +684,7 @@ fn remove_stale_dropped_tmp(wal: &Path) -> io::Result<()> {
 /// fsync the directory holding `path` (Unix; Windows has no handle for a
 /// directory fsync and makes the rename durable through the file system's
 /// own metadata journal).
-fn sync_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(path: &Path, what: &str) -> io::Result<()> {
     #[cfg(unix)]
     if let Some(dir) = path.parent() {
         let dir = if dir.as_os_str().is_empty() {
@@ -686,10 +692,10 @@ fn sync_dir(path: &Path) -> io::Result<()> {
         } else {
             dir
         };
-        crate::fs_audit::sync_all(&File::open(dir)?, "dir", dir)?;
+        crate::fs_audit::sync_all(&File::open(dir)?, what, dir)?;
     }
     #[cfg(not(unix))]
-    let _ = path;
+    let _ = (path, what);
     Ok(())
 }
 

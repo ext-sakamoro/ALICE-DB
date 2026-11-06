@@ -33,6 +33,14 @@ All notable changes to ALICE-DB will be documented in this file.
 
 ### Changed
 - CI: `dtolnay/rust-toolchain` の pin を `master` の commit に移し、toolchain (`stable` / `1.87.0` / `nightly`) は各 step の `with:` で指定する 上流は `stable` / `1.87` / `nightly` の branch を master から作り直して force push するので、その branch の commit に pin すると次の更新で branch から外れ、週次の pin audit が毎回 red になっていた (10-19 / 10-26 / 11-02) `master` は追記のみなので pin が外れない 入れる toolchain は以前と同じ
+- **動作の変更**: 1 つの directory に 1 つの store とする file は WAL の名前によらず `blob.sst` と `blob-000001.sst` で、`blob.lock` に WAL の名前を記録する `blob.wal` の store は file 名も中身も変わらない 前の版は `x.wal` の Overwrite の flush を `x.sst` に書いて読まず (flush 済みのデータが開き直すと見えなかった)、Append を `blob-*.sst` に書いていた 開いた時の扱いは次のとおり
+  - `x.sst` だけがある: `blob.sst` に rename して読む 前の版で見えなかったデータが見えるようになる
+  - `x.sst` と `blob*.sst` の両方がある: `InvalidData`、"`x.sst` and ... are both in the store" どちらも触らない 中身を確かめて片方を directory の外に出す
+  - 同じ directory に WAL の名前が 2 つある: 片方を開いている間は `WouldBlock`、閉じた後は `InvalidData`、"is the store of `x.wal`, which still exists" Overwrite の `x.wal` + `x.sst` と `y.wal` + `y.sst` を 1 つの directory に置いていた場合、先に開いた方が開き、後の方は止まる 後の方の WAL と `.sst` を別の directory に移すと開く
+  - 前の版が Append で 2 つの WAL から書いた `blob-*.sst` は分けられない 先に開いた方が全部を読み (前の版と同じ)、後の方は止まる
+  - 記録された WAL が無く、別の名前で開く (改名と新しい store は区別できない): `InvalidData`、"BlobStorage::take_over_store on `y.wal` gives them to it" `BlobStorage::take_over_store("y.wal")` を呼ぶと開く 記録された WAL が残っている間は呼んでも `InvalidData` 記録が無い directory の新しい名前も同じ 同じ名前で WAL を作り直す時、`.sst` が無い時は止まらない
+- **動作の変更**: 別の directory の WAL への symlink、store の file の名前の WAL (`*.sst`、`blob-000001.sst.tmp`、`blob.lock`)、UTF-8 でない名前の WAL は `InvalidInput` で開かない 前の版は `.sst` の file を WAL として開いて切っていた
+- 前の版に戻す時: 前の版は `blob.sst` と `blob-*.sst` を読み、`blob.lock` を無視する この版が書いた store は前の版でそのまま読める 前の版の `x.wal` の Overwrite の flush は `x.sst` に書くので、前の版では開き直すと見えない (前の版の問題のまま) この版で開くと読める 前の版は `blob.lock` を見ないので、同じ directory の別の名前の WAL を止めない
 - **動作の変更 (戻せない)**: WAL に `write_batch` の record (型 0x03) がある store を、それを持たない build で開くと、その build は batch を壊れた末尾として扱い、batch と後ろの record を WAL から切る 切った bytes は `<wal>.dropped-<offset>` に残るが、store からは消える WAL に版の header が無く、公開済みの build には拒否させられない 戻す前に `snapshot_to` で退避する
 - blob WAL: 検査値が正しく読めない record (知らない型や value kind、解析できない batch) は末尾の破損でないので、切らずに `InvalidData` で開かない (読み取り専用の open も同じ) 切るのは検査値が壊れた末尾だけ 今後 record の型を足しても、この版以降は上の形で失わない
 - blob WAL: Windows では file の lock の代わりに他の writer を拒む共有モードで開く file の lock は他の handle の読み取りも止めるので、読み取り専用の open が writer の隣で読めなかった 2 つ目の writer はどの名前 (symlink、hard link) でも `WouldBlock` で拒否する
@@ -100,6 +108,9 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- blob: `BlobStorage::open` に `blob.wal` 以外の名前の WAL を渡すと、Overwrite の flush 済みのデータが開き直した時に消えていた `AliceDB::open` は `blob.wal` 固定なので影響しない 試験 `tests/blob_one_store.rs`
+- blob: `open("x.wal")` のように directory の無い名前で開くと、flush 済みのデータが開き直した時に消えていた (`./x.wal` では起きない) 試験 `tests/blob_wal_bare_name.rs`
+- blob の 3 つの試験: 書く側が先に止まると読む側が待ち続けていた
 - flush・compaction と同時の `put_blob` / `delete_blob` が `Ok` を返した後に消えることがあった (flush が memtable を読んでから WAL を切り memtable を消すまでの間の書き込みは、新しい `SSTable` にも WAL にも残らない) 書き手と flush を排他にした
 - `scripts/ci_base.py` と `scripts/test_ci_base.py` (共有 file、canonical は ALICE-DetMath): git の出力を UTF-8 で読む (`encoding="utf-8"`、これまでは locale の code page で Windows の cp1252 では非 ASCII で止まった) 試験は locale を cp1252 にした子 interpreter で非 ASCII の commit 件名を読む
 - blob の WAL: 開く時に末尾の切れた record か CRC の合わない record の手前までしか読まないのに file をその位置で切っていなかったため、回復の後の `put_blob` / `delete_blob` が壊れた bytes の後ろに書かれ、次に開いた時に同じ位置で読むのが止まって消えていた (fsync 済みの書き込みが失われる) 開く時に `BlobWal::recover` が最後の正しい record の終わりで WAL を切る 切る前に落とす bytes を `blob.wal.dropped-<offset>` に書き (`.tmp` 経由、fsync、rename、directory の fsync)、それから WAL を切って fsync する 2 つの間で落ちても次に開いた時に同じ切り方をやり直し、同じ bytes を持つ写しはそのまま使う 同じ位置で別の bytes を落とす 2 回目の回復は前の写しを置き換えず `blob.wal.dropped-<offset>.<n>` (空いている最小の n) に書く 途中で止まった写しの `.tmp` は開く時に消し、書き終えた写しは消さない 記録の境界で終わる WAL は触らない 試験 `tests/wal_append_after_recovery.rs` (末尾を切る全位置 / 途中の破損 / 落とした bytes の一致 / きれいな WAL は不変 / 同じ位置の 2 回目の回復で両方の写しが残る / 残った `.tmp` だけを消す) と `tests/wal_recovery_crash.rs` (写しと切る間の crash で写しが増えない / 写しの file、directory、切った WAL がこの順に fsync される)

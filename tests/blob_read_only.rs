@@ -363,3 +363,79 @@ fn a_lock_file_left_behind_does_not_stop_the_next_writer() {
     assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock, "{err}");
     drop(reopened);
 }
+
+const HOLDER_ENV: &str = "ALICE_DB_LOCK_HOLDER";
+const HOLDING: &str = "alice-db-lock-holder-ready";
+
+/// Re-entered by the test below with `ALICE_DB_LOCK_HOLDER` set; returns at once
+/// without it. Holds the writer until it is killed.
+#[test]
+fn lock_holder_entry() {
+    let Some(path) = std::env::var_os(HOLDER_ENV) else {
+        return;
+    };
+    let writer = BlobStorage::open(Path::new(&path)).unwrap();
+    writer.put(b"held", b"1").unwrap();
+    println!("{HOLDING}");
+    loop {
+        std::thread::park();
+    }
+}
+
+/// A writer in another process: its lock refuses a second writer and leaves
+/// reads alone, and the operating system releases it when the process is killed.
+/// The lock file is still there afterwards and stops nobody.
+#[test]
+fn a_killed_writer_releases_its_lock_and_a_read_only_open_works_beside_it() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "lock_holder_entry",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(HOLDER_ENV, &path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    // libtest prints the test's name without a newline, so the marker ends a line
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let ready = BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .any(|line| line.trim_end().ends_with(HOLDING));
+        let _ = tx.send(ready);
+    });
+    let ready = rx.recv_timeout(Duration::from_secs(300));
+    if ready != Ok(true) {
+        let _ = child.kill();
+        panic!("the child did not take the lock: {ready:?}");
+    }
+
+    let refused = BlobStorage::open(&path);
+    let read = BlobStorage::open_existing_read_only(&path).map(|r| r.get(b"held"));
+    let killed = child.kill();
+    let status = child.wait().unwrap();
+    killed.unwrap();
+    assert!(!status.success(), "the child was not killed: {status}");
+
+    let Err(err) = refused else {
+        panic!("a second writer must be refused while the first is alive");
+    };
+    assert_eq!(err.kind(), ErrorKind::WouldBlock, "{err}");
+    assert_eq!(read.unwrap().unwrap().as_deref(), Some(&b"1"[..]));
+
+    assert!(tmp.path().join("blob.wal.lock").exists());
+    let next = BlobStorage::open(&path).unwrap();
+    assert_eq!(next.get(b"held").unwrap().as_deref(), Some(&b"1"[..]));
+}

@@ -32,7 +32,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
-- blob WAL の排他 lock を WAL 本体から隣の `<wal>.lock` に移す Windows では file の lock が他の handle の読み取りも止めるので、読み取り専用の open が writer の隣で WAL を読めなかった lock file は writer が閉じた後も残り、消さない 版の異なる writer は別の file を lock するので、1 つの store の writer は同じ版に揃える
+- blob WAL の排他 lock を WAL 本体から隣の `<wal>.lock` に移す Windows では file の lock が他の handle の読み取りも止めるので、読み取り専用の open が writer の隣で WAL を読めなかった lock file は writer が閉じた後も残り、消さない **動作の変更**: 版の異なる writer は別の file を lock するので互いを止めない 1 つの store の writer は同じ版に揃える
 - 依存 `alice-crypto` を main の `ed065ad` に上げる (SHA-256 の逐次計算の追加と CI の変更のみ、封の bytes と識別子は変わらない)
 - CI (ALICE-Law G11): 共有の `scripts/gated_tests.py` と試験を ALICE-Law の表の計画した bytes で入れ、機能で gate された試験 file がどれも CI と preflight の `cargo test` で走ることを検査する (この repository の設定は `scripts/gated_tests.toml`)
 - CI (ALICE-Law G9 / G11): 識別子の移動の検査器 (`scripts/id_move_check.py` と試験) を共有の新しい bytes にし、新しく足した associated const を受けるようにした 他の共有の file も ALICE-Law 40973a8a の表が計画した bytes にし、shared-files と G11 の表の pin を上げた

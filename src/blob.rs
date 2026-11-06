@@ -1372,6 +1372,7 @@ fn range_sources<'a>(
             Box::new(range.rev().map(|(k, v)| (k.as_slice(), Some(v.clone()))))
         }
     };
+    #[cfg_attr(not(feature = "fs"), allow(unused_mut))]
     let mut sources = vec![in_memory.peekable()];
     #[cfg(feature = "fs")]
     for sst in sstables {

@@ -4,6 +4,11 @@
 //! beside a writer; what it sees is one moment of that writer. The counts and the
 //! snapshots are compared with a reference map built from the same operations.
 #![cfg(feature = "fs")]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "a concurrency test: the threads exercise the store's locking and are joined"
+)]
 
 use alice_db::blob::{BlobStorage, WriteBatch};
 use alice_db::snapshot;

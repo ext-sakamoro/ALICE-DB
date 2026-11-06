@@ -5,6 +5,11 @@
 //! after a reopen as well as in memory, and the indexes are compared with a
 //! reference built from the same operations.
 #![cfg(feature = "fs")]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "a concurrency test: the threads exercise the store's locking and are joined"
+)]
 
 use alice_db::blob::{BlobStorage, ScanOrder};
 use alice_db::table::{IndexKey, Table, TableError};
@@ -319,7 +324,7 @@ fn indexes_equal_a_reference_after_reopen() {
             let pk = format!("p{}", x % 40).into_bytes();
             let h = format!("h{}", (x >> 8) % 60).into_bytes();
             let o = format!("o{}", (x >> 16) % 5).into_bytes();
-            if (x >> 24) % 5 == 0 {
+            if (x >> 24).is_multiple_of(5) {
                 assert_eq!(t.delete(&store, &pk).unwrap(), rows.remove(&pk).is_some());
             } else {
                 let taken = rows.iter().any(|(p, (rh, _))| *rh == h && *p != pk);

@@ -40,6 +40,9 @@ const TERMINATOR: [u8; 2] = [0x00, 0x01];
 /// Sorts after every key equal to the field it follows and before any longer one.
 const PAST_TERMINATOR: [u8; 2] = [0x00, 0x02];
 
+/// `(primary key, value)` rows, or `(index key, primary key)` entries.
+pub type Pairs = Vec<(Vec<u8>, Vec<u8>)>;
+
 /// One index entry of a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexKey<'a> {
@@ -336,7 +339,7 @@ impl Table {
         end: Bound<&[u8]>,
         order: ScanOrder,
         limit: usize,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, TableError> {
+    ) -> Result<Pairs, TableError> {
         let inside = |bound: Bound<&[u8]>| bound.map(|pk| self.row_key(pk));
         let (lower, upper) = (inside(start), inside(end));
         let table_end = prefix_end(&self.rows);
@@ -367,7 +370,7 @@ impl Table {
         store: &BlobStorage,
         start: Bound<&[u8]>,
         limit: usize,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, TableError> {
+    ) -> Result<Pairs, TableError> {
         let lower = start.map(|pk| self.row_key(pk));
         let lower = match &lower {
             Bound::Unbounded => Bound::Included(self.rows.as_slice()),
@@ -448,7 +451,7 @@ impl Table {
         end: Bound<&[u8]>,
         order: ScanOrder,
         limit: usize,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, TableError> {
+    ) -> Result<Pairs, TableError> {
         let prefix = self.index_prefix(index);
         let field = |key: &[u8], tail: [u8; 2]| {
             let mut out = prefix.clone();
@@ -653,7 +656,7 @@ impl SealedTable {
         end: Bound<&[u8]>,
         order: ScanOrder,
         limit: usize,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, TableError> {
+    ) -> Result<Pairs, TableError> {
         self.table
             .scan(store, start, end, order, limit)?
             .into_iter()

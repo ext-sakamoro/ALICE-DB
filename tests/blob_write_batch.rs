@@ -5,6 +5,11 @@
 //! the one after it. The bytes are compared with a frame built here from the
 //! documented layout and an independent CRC-32.
 #![cfg(feature = "fs")]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "a concurrency test: the threads exercise the store's locking and are joined"
+)]
 
 use alice_db::blob::{BlobStorage, WriteBatch};
 use std::collections::BTreeMap;

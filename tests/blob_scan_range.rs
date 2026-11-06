@@ -94,7 +94,7 @@ fn scans_equal_the_reference_over_memtable_and_sstables() {
             } else {
                 // every third value is long and repetitive, so it is stored compressed
                 let n = seq.next(1000);
-                let v = if n % 3 == 0 {
+                let v = if n.is_multiple_of(3) {
                     vec![b'c'; 4096 + n as usize]
                 } else {
                     n.to_le_bytes().to_vec()
@@ -168,7 +168,8 @@ fn the_newest_observation_wins_in_both_directions() {
 fn an_inverted_or_empty_range_is_empty() {
     let store = BlobStorage::new();
     store.put(b"m", b"1").unwrap();
-    let cases: [(Bound<&[u8]>, Bound<&[u8]>); 4] = [
+    type Range<'a> = (Bound<&'a [u8]>, Bound<&'a [u8]>);
+    let cases: [Range<'_>; 4] = [
         (Bound::Included(b"z"), Bound::Included(b"a")),
         (Bound::Excluded(b"m"), Bound::Excluded(b"m")),
         (Bound::Included(b"m"), Bound::Excluded(b"m")),

@@ -175,7 +175,7 @@ fn store_and_model(path: &Path) -> (BlobStorage, BTreeMap<Vec<u8>, Vec<u8>>) {
             store.delete(&k).unwrap();
             model.remove(&k);
         } else {
-            let v = if x >> 56 & 3 == 0 {
+            let v = if (x >> 56).trailing_zeros() >= 2 {
                 vec![b'q'; 5000]
             } else {
                 x.to_le_bytes().to_vec()

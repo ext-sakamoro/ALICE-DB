@@ -26,7 +26,9 @@ impl Keys {
         keys
     }
     fn rotate_to(&self, gen: KeyGeneration) {
-        self.keys.lock().insert(gen, [gen as u8; 32]);
+        self.keys
+            .lock()
+            .insert(gen, [u8::try_from(gen).unwrap(); 32]);
         *self.current.lock() = gen;
     }
     fn retire(&self, gen: KeyGeneration) {

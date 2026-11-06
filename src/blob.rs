@@ -736,6 +736,7 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if the WAL append fails.
     pub fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        #[cfg(feature = "fs")]
         self.check_writable()?;
         let stored = match compress_if_worthwhile(value) {
             Some(bytes) => BlobValue::Compressed(bytes),
@@ -918,8 +919,8 @@ impl BlobStorage {
     }
 
     /// `PermissionDenied` on a store from [`Self::open_existing_read_only`].
+    #[cfg(feature = "fs")]
     fn check_writable(&self) -> io::Result<()> {
-        #[cfg(feature = "fs")]
         if self.read_only {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -1088,7 +1089,9 @@ impl BlobStorage {
     }
 
     /// The caller holds the write gate, shared or exclusive.
+    #[cfg_attr(not(feature = "fs"), allow(clippy::unnecessary_wraps))] // only the WAL can fail
     fn apply_batch(&self, batch: &WriteBatch) -> io::Result<()> {
+        #[cfg(feature = "fs")]
         self.check_writable()?;
         if batch.is_empty() {
             return Ok(());
@@ -1132,6 +1135,7 @@ impl BlobStorage {
     /// `Result` in alpha-2 to surface WAL failures instead of dropping
     /// them silently.
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
+        #[cfg(feature = "fs")]
         self.check_writable()?;
         {
             let _gate = self.write_gate.read();

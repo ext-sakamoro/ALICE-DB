@@ -95,7 +95,7 @@ fn scans_equal_the_reference_over_memtable_and_sstables() {
                 // every third value is long and repetitive, so it is stored compressed
                 let n = seq.next(1000);
                 let v = if n.is_multiple_of(3) {
-                    vec![b'c'; 4096 + n as usize]
+                    vec![b'c'; 4096 + usize::try_from(n).unwrap()]
                 } else {
                     n.to_le_bytes().to_vec()
                 };
@@ -108,7 +108,7 @@ fn scans_equal_the_reference_over_memtable_and_sstables() {
         }
         for _ in 0..25 {
             let (start, end) = (bound(&mut seq), bound(&mut seq));
-            let limit = [0, 1, 2, 7, usize::MAX][seq.next(5) as usize];
+            let limit = [0, 1, 2, 7, usize::MAX][usize::try_from(seq.next(5)).unwrap()];
             for order in [ScanOrder::Ascending, ScanOrder::Descending] {
                 let got = store
                     .scan_range(as_slice(&start), as_slice(&end), order, limit)
@@ -166,9 +166,9 @@ fn the_newest_observation_wins_in_both_directions() {
 /// Bounds a `BTreeMap` range would panic on are an empty scan.
 #[test]
 fn an_inverted_or_empty_range_is_empty() {
+    type Range<'a> = (Bound<&'a [u8]>, Bound<&'a [u8]>);
     let store = BlobStorage::new();
     store.put(b"m", b"1").unwrap();
-    type Range<'a> = (Bound<&'a [u8]>, Bound<&'a [u8]>);
     let cases: [Range<'_>; 4] = [
         (Bound::Included(b"z"), Bound::Included(b"a")),
         (Bound::Excluded(b"m"), Bound::Excluded(b"m")),

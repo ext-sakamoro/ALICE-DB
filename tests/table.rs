@@ -113,13 +113,13 @@ fn keys_with_zero_bytes_stay_apart_and_in_order() {
     let t = Table::new("t").unwrap();
     let keys: [&[u8]; 6] = [b"a", b"a\0", b"a\0\0", b"a\0b", b"a\x01", b"ab"];
     for (i, k) in keys.iter().enumerate() {
-        let pk = [b'p', i as u8];
+        let pk = [b'p', u8::try_from(i).unwrap()];
         t.insert(&store, &pk, b"v", &[IndexKey::non_unique("i", k)])
             .unwrap();
     }
     for (i, k) in keys.iter().enumerate() {
         let found = t.find(&store, "i", k, ScanOrder::Ascending, 10).unwrap();
-        assert_eq!(found, [vec![b'p', i as u8]], "{k:?}");
+        assert_eq!(found, [vec![b'p', u8::try_from(i).unwrap()]], "{k:?}");
     }
     let all = t
         .index_range(
@@ -231,7 +231,7 @@ fn every_write_is_atomic_at_every_byte_of_the_wal() {
         t.insert(&store, b"p", b"old", &[handle(b"h-old"), owner(b"o")])
             .unwrap();
     }
-    let before = std::fs::metadata(&path).unwrap().len() as usize;
+    let before = usize::try_from(std::fs::metadata(&path).unwrap().len()).unwrap();
     {
         let store = BlobStorage::open(&path).unwrap();
         t.upsert(&store, b"p", b"new", &[handle(b"h-new"), owner(b"o")])
@@ -311,31 +311,36 @@ fn one_winner_for_a_unique_value_under_threads_and_flushes() {
 fn indexes_equal_a_reference_after_reopen() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.wal");
-    let t = Table::new("t").unwrap();
+    let table = Table::new("t").unwrap();
     let mut rows: BTreeMap<Vec<u8>, (Vec<u8>, Vec<u8>)> = BTreeMap::new(); // pk → (handle, owner)
-    let mut x = 0x1234_5678_9ABC_DEF1_u64;
+    let mut state = 0x1234_5678_9ABC_DEF1_u64;
     let (mut refused, mut applied) = (0_u32, 0_u32);
     {
         let store = BlobStorage::open(&path).unwrap();
         for i in 0..1_500_u32 {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            let pk = format!("p{}", x % 40).into_bytes();
-            let h = format!("h{}", (x >> 8) % 60).into_bytes();
-            let o = format!("o{}", (x >> 16) % 5).into_bytes();
-            if (x >> 24).is_multiple_of(5) {
-                assert_eq!(t.delete(&store, &pk).unwrap(), rows.remove(&pk).is_some());
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let pk = format!("p{}", state % 40).into_bytes();
+            let handle_key = format!("h{}", (state >> 8) % 60).into_bytes();
+            let owner_key = format!("o{}", (state >> 16) % 5).into_bytes();
+            if (state >> 24).is_multiple_of(5) {
+                assert_eq!(
+                    table.delete(&store, &pk).unwrap(),
+                    rows.remove(&pk).is_some()
+                );
             } else {
-                let taken = rows.iter().any(|(p, (rh, _))| *rh == h && *p != pk);
-                match t.upsert(&store, &pk, &[1], &[handle(&h), owner(&o)]) {
+                let taken = rows
+                    .iter()
+                    .any(|(p, (rh, _))| *rh == handle_key && *p != pk);
+                match table.upsert(&store, &pk, &[1], &[handle(&handle_key), owner(&owner_key)]) {
                     Ok(()) => {
-                        assert!(!taken, "{h:?} was taken");
-                        rows.insert(pk, (h, o));
+                        assert!(!taken, "{handle_key:?} was taken");
+                        rows.insert(pk, (handle_key, owner_key));
                         applied += 1;
                     }
                     Err(TableError::UniqueViolation { .. }) => {
-                        assert!(taken, "{h:?} was free");
+                        assert!(taken, "{handle_key:?} was free");
                         refused += 1;
                     }
                     Err(e) => panic!("{e:?}"),
@@ -351,26 +356,26 @@ fn indexes_equal_a_reference_after_reopen() {
         "refused {refused}, applied {applied}"
     );
     let store = BlobStorage::open(&path).unwrap();
-    assert_eq!(t.count(&store).unwrap(), rows.len());
+    assert_eq!(table.count(&store).unwrap(), rows.len());
     for (pk, (h, _)) in &rows {
         assert_eq!(
-            t.find_unique(&store, "handle", h).unwrap().as_ref(),
+            table.find_unique(&store, "handle", h).unwrap().as_ref(),
             Some(pk)
         );
     }
     for o in 0..5 {
-        let o = format!("o{o}").into_bytes();
+        let owner_key = format!("o{o}").into_bytes();
         let want: BTreeSet<_> = rows
             .iter()
-            .filter(|(_, (_, ro))| *ro == o)
+            .filter(|(_, (_, ro))| *ro == owner_key)
             .map(|(p, _)| p.clone())
             .collect();
-        let got: BTreeSet<_> = t
-            .find(&store, "owner", &o, ScanOrder::Ascending, 1000)
+        let got: BTreeSet<_> = table
+            .find(&store, "owner", &owner_key, ScanOrder::Ascending, 1000)
             .unwrap()
             .into_iter()
             .collect();
-        assert_eq!(got, want, "{o:?}");
+        assert_eq!(got, want, "{owner_key:?}");
     }
 }
 

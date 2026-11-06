@@ -1003,6 +1003,7 @@ impl LoadedSstable {
     /// A value is copied out of the mapping only when the iterator reaches it;
     /// `None` is a record with an unrecognised value kind. The caller passes a
     /// range that is not inverted (`BTreeMap::range` panics on one).
+    #[must_use]
     pub fn iter_range<'a>(
         &'a self,
         start: std::ops::Bound<&'a [u8]>,

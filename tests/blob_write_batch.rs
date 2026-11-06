@@ -55,7 +55,7 @@ fn wal_with_batch(dir: &Path) -> (Vec<u8>, usize) {
         store.put(b"gone", b"2").unwrap();
         store.put(b"over", b"3").unwrap();
     }
-    let before = std::fs::metadata(&path).unwrap().len() as usize;
+    let before = usize::try_from(std::fs::metadata(&path).unwrap().len()).unwrap();
     {
         let store = BlobStorage::open(&path).unwrap();
         let mut batch = WriteBatch::new();
@@ -120,8 +120,8 @@ fn documented_frame() -> Vec<u8> {
     fn op(body: &mut Vec<u8>, kind: u8, key: &[u8], value: &[u8]) {
         body.push(kind);
         body.push(0);
-        body.extend_from_slice(&(key.len() as u32).to_le_bytes());
-        body.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        body.extend_from_slice(&u32::try_from(key.len()).unwrap().to_le_bytes());
+        body.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
         body.extend_from_slice(key);
         body.extend_from_slice(value);
     }
@@ -131,7 +131,7 @@ fn documented_frame() -> Vec<u8> {
     op(&mut body, 1, b"over", b"5");
     let mut frame = vec![3_u8];
     frame.extend_from_slice(&0_u32.to_le_bytes());
-    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
     frame.push(0);
     frame.extend_from_slice(&body);
     let crc = crc32_ieee(&frame);
@@ -156,7 +156,7 @@ fn a_body_that_does_not_parse_is_dropped_even_with_a_good_checksum() {
     let reframe = |body: &[u8]| {
         let mut frame = vec![3_u8];
         frame.extend_from_slice(&0_u32.to_le_bytes());
-        frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
         frame.push(0);
         frame.extend_from_slice(body);
         let crc = crc32_ieee(&frame);
@@ -273,7 +273,7 @@ fn a_value_that_compresses_comes_back_after_reopen() {
         let mut batch = WriteBatch::new();
         batch.put(b"big", &value);
         store.write_batch(&batch).unwrap();
-        let wal_len = std::fs::metadata(&path).unwrap().len() as usize;
+        let wal_len = usize::try_from(std::fs::metadata(&path).unwrap().len()).unwrap();
         assert!(wal_len < value.len() / 2, "stored raw: {wal_len} bytes");
     }
     let store = BlobStorage::open(&path).unwrap();

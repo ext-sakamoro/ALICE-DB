@@ -278,6 +278,10 @@ jobs:
         run: |
           python scripts/test_workflow_concurrency.py
           python scripts/workflow_concurrency.py
+      - name: workflow_pipefail (test, then check)
+        run: |
+          python scripts/test_workflow_pipefail.py
+          python scripts/workflow_pipefail.py
       - name: Python package license == crate license
         run: python scripts/check_py_license.py
       # the zero-test guard shared with ALICE-Analytics / ALICE-Edge, on each
@@ -412,6 +416,7 @@ jobs:
       - name: Import smoke
         run: python -c "import alice_db; print('alice_db', alice_db.__version__, 'imported')"
       - name: Python tests (README example + lossless), fail on 0 tests
+        shell: bash
         run: |
           collected=$(python -m pytest python/tests --collect-only -q 2>/dev/null | grep -c '::')
           echo "collected ${collected} python test(s)"

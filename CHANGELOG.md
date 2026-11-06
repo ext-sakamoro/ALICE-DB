@@ -32,6 +32,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- CI: `scripts/workflow_pipefail.py` (試験 `scripts/test_workflow_pipefail.py`、他の repo と同じ中身) が、pipe する `run` step が pipefail で走るかを全 workflow で確かめる coverage、python test の件数、ALICE-Law の block の step を `shell: bash` にした
 - CI: `dtolnay/rust-toolchain` の pin を `master` の commit に移し、toolchain (`stable` / `1.87.0` / `nightly`) は各 step の `with:` で指定する 上流は `stable` / `1.87` / `nightly` の branch を master から作り直して force push するので、その branch の commit に pin すると次の更新で branch から外れ、週次の pin audit が毎回 red になっていた (10-19 / 10-26 / 11-02) `master` は追記のみなので pin が外れない 入れる toolchain は以前と同じ
 - **動作の変更 (戻せない)**: WAL に `write_batch` の record (型 0x03) がある store を、それを持たない build で開くと、その build は batch を壊れた末尾として扱い、batch と後ろの record を WAL から切る 切った bytes は `<wal>.dropped-<offset>` に残るが、store からは消える WAL に版の header が無く、公開済みの build には拒否させられない 戻す前に `snapshot_to` で退避する
 - blob WAL: 検査値が正しく読めない record (知らない型や value kind、解析できない batch) は末尾の破損でないので、切らずに `InvalidData` で開かない (読み取り専用の open も同じ) 切るのは検査値が壊れた末尾だけ 今後 record の型を足しても、この版以降は上の形で失わない

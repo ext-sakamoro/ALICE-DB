@@ -24,10 +24,13 @@ fn listing(dir: &Path) -> BTreeMap<String, Vec<u8>> {
         .unwrap()
         .map(|e| {
             let e = e.unwrap();
-            (
-                e.file_name().into_string().unwrap(),
-                std::fs::read(e.path()).unwrap(),
-            )
+            let name = e.file_name().into_string().unwrap();
+            // Windows refuses to read a locked file; it is empty, so nothing is missed
+            if Path::new(&name).extension().is_some_and(|x| x == "lock") {
+                assert_eq!(e.metadata().unwrap().len(), 0, "{name} holds data");
+                return (name, Vec::new());
+            }
+            (name, std::fs::read(e.path()).unwrap())
         })
         .collect()
 }

@@ -206,6 +206,8 @@ store に書く process は同時に 1 つです (1 つ目が生きている間�
 
 ファイルの保存先は、開く時に blob の WAL の末尾の切れた record や壊れた record を、最後の正しい record の位置で切る (その後の書き込みが壊れた部分の後ろに隠れて失われないように) 落とす bytes は切る前に WAL の隣の `blob.wal.dropped-<offset>` に書いて fsync し、`AliceDB::blob_wal_recovery()` が何を切ったかを返す 同じ位置での後の回復は前の写しを置き換えず (`blob.wal.dropped-<offset>.<n>` に書く)、書き終えた写しは消さない 記録の境界で終わる WAL は触らない
 
+1 つの directory に 1 つの store を置く file は WAL の名前によらず `blob.sst` と `blob-000001.sst` で、writer が開いている間は `blob.lock` が WAL の名前を持つ 同じ directory の 2 つ目の WAL の名前は開く時に止まり、記録された WAL が無い時は `BlobStorage::take_over_store` で新しい名前に渡す `AliceDB` は `blob.wal` を使う
+
 回復は WAL を最初の壊れた record の手前までだけ残し、それより後ろは使わない そのため log の途中の record が壊れると、その後に書いて ack した record も live の store から落ちる それらは落とした写しにだけ残る (長さを信用できない record の先は replay しない)
 
 ## Feature

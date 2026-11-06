@@ -228,7 +228,7 @@ fn assert_refused(wal: &[u8], name: &str) {
         "{name}: the WAL was changed"
     );
     assert_eq!(
-        std::fs::read_dir(tmp.path()).unwrap().count(),
+        count_beside_the_lock(tmp.path()),
         1,
         "{name}: a file was added"
     );
@@ -260,7 +260,15 @@ fn a_bad_checksum_at_the_end_is_still_cut_with_its_bytes_kept() {
     let store = BlobStorage::open(&path).unwrap();
     assert!(state(&store).is_empty());
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
-    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 2);
+    assert_eq!(count_beside_the_lock(tmp.path()), 2);
+}
+
+/// The files in `dir` other than `blob.lock`, which every writer leaves.
+fn count_beside_the_lock(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().file_name() != "blob.lock")
+        .count()
 }
 
 #[test]
@@ -354,7 +362,8 @@ fn a_concurrent_reader_sees_all_of_a_batch_or_none() {
     // The writer runs until the reads are done, however the threads are scheduled.
     let mut seen_pairs = 0_u64;
     let mut values = std::collections::BTreeSet::new();
-    while seen_pairs < READS || values.len() < 2 {
+    // A writer that stops early ends the loop too, and the join reports why.
+    while (seen_pairs < READS || values.len() < 2) && !writer.is_finished() {
         let got = store.scan_prefix(b"pair/").unwrap();
         if got.len() == 2 {
             assert_eq!(got[0].1, got[1].1, "a part of a batch was visible");
@@ -366,6 +375,7 @@ fn a_concurrent_reader_sees_all_of_a_batch_or_none() {
     }
     stop.store(true, Ordering::SeqCst);
     writer.join().unwrap();
+    assert!(seen_pairs >= READS);
 }
 
 /// Every acknowledged write survives flushes that other threads start, in the

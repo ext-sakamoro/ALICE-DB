@@ -241,6 +241,12 @@ recovery at the same offset never replaces an earlier copy (it writes
 `blob.wal.dropped-<offset>.<n>`), and finished copies are never removed. A WAL
 that ends on a record boundary is left as it is.
 
+One directory holds one store. Its files are `blob.sst` and `blob-000001.sst`
+whatever the WAL is called, and `blob.lock` holds the WAL's name while a writer
+has it open. A second WAL name in the directory stops at the open, and
+`BlobStorage::take_over_store` gives the files to a new name when the recorded
+WAL is gone. `AliceDB` uses `blob.wal`.
+
 Recovery keeps the WAL up to its first bad record and nothing after it: a
 corrupt record in the middle of the log also drops every acknowledged record
 written after it from the live store. Those records are kept only in the

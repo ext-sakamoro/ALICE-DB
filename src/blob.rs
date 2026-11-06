@@ -42,6 +42,11 @@ use crate::blob_sstable::{
     BlobSstable, FlushMode, LoadedSstable,
 };
 #[cfg(feature = "fs")]
+use crate::blob_store::{
+    check_open, move_earlier_file, recorded_wal, source_files, store_dir, wal_name, Record,
+    StoreLock,
+};
+#[cfg(feature = "fs")]
 use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord, WalRecovery};
 
 /// Default byte threshold above which a subsequent `put` / `delete`
@@ -220,6 +225,9 @@ pub struct BlobStorage {
     /// path's parent directory to place its numbered `SSTables`.
     #[cfg(feature = "fs")]
     sstable_path: Option<PathBuf>,
+    /// `blob.lock`, held for as long as this store is open.
+    #[cfg(feature = "fs")]
+    _store_lock: Option<Arc<StoreLock>>,
     /// Auto-flush threshold (see [`BlobStorageConfig`]). Only consulted
     /// on the durable variant.
     #[cfg(feature = "fs")]
@@ -278,11 +286,12 @@ impl BlobStorage {
     pub fn open_existing_read_only(wal_path: impl AsRef<Path>) -> io::Result<Self> {
         const ATTEMPTS: u32 = 200;
         let wal_path = wal_path.as_ref();
-        let dir = wal_path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let name = wal_name(wal_path)?;
+        let dir = store_dir(wal_path);
+        std::fs::metadata(wal_path)?;
+        check_open(&dir, wal_path, &name, recorded_wal(&dir)?.as_deref())?;
         for _ in 0..ATTEMPTS {
-            if let Some(memtable) = read_one_moment(wal_path, &dir, || {})? {
+            if let Some(memtable) = read_one_moment(wal_path, &dir, &name, || {})? {
                 return Ok(Self {
                     memtable: Arc::new(RwLock::new(memtable)),
                     read_only: true,
@@ -297,6 +306,21 @@ impl BlobStorage {
         ))
     }
 
+    /// Make the WAL at `wal_path` the owner of the files in its directory.
+    ///
+    /// For a store whose WAL is gone or was renamed: nothing on disk can tell that
+    /// from a new store with an unrelated WAL, so [`Self::open`] stops until this
+    /// is called. It records the name and touches no other file; calling it again
+    /// changes nothing, and it can be repeated after a crash.
+    ///
+    /// # Errors
+    /// `WouldBlock` while a writer holds the directory; `InvalidData` while the
+    /// recorded WAL still exists, since it may hold writes the files do not.
+    #[cfg(feature = "fs")]
+    pub fn take_over_store(wal_path: impl AsRef<Path>) -> io::Result<()> {
+        crate::blob_store::take_over(wal_path.as_ref())
+    }
+
     /// Open a durable blob store backed by a WAL at `wal_path` using
     /// the default [`SyncPolicy::EveryWrite`] and default flush
     /// threshold.
@@ -308,9 +332,17 @@ impl BlobStorage {
     /// makes v0.2.0-alpha.3 databases (which never wrote an `SSTable`)
     /// upgrade transparently: the missing `SSTable` is treated as empty.
     ///
+    /// One directory holds one store. Its files are `blob.sst` and
+    /// `blob-000001.sst` whatever the WAL is called, and `blob.lock` records the
+    /// WAL's name.
+    ///
     /// # Errors
     /// Returns `io::Error` if either the WAL or the `SSTable` cannot be
-    /// opened, locked, or parsed.
+    /// opened, locked, or parsed; `WouldBlock` while a writer holds the directory;
+    /// `InvalidData` when the directory's files belong to a WAL of another name, or
+    /// when the owner cannot be told ([`Self::take_over_store`] resolves a WAL that
+    /// is gone); `InvalidInput` for a WAL with the name of one of the store's files,
+    /// a name that is not UTF-8, or a link to another directory.
     #[cfg(feature = "fs")]
     pub fn open(wal_path: impl AsRef<Path>) -> io::Result<Self> {
         Self::open_with_config(wal_path, BlobStorageConfig::default())
@@ -346,11 +378,16 @@ impl BlobStorage {
         config: BlobStorageConfig,
     ) -> io::Result<Self> {
         let wal_path = wal_path.as_ref().to_path_buf();
-        let sstable_path = sibling_sstable_path(&wal_path);
-        let dir = wal_path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+        let name = wal_name(&wal_path)?;
+        let dir = store_dir(&wal_path);
+        let sstable_path = dir.join("blob.sst");
+        let mut store_lock = StoreLock::acquire(&dir)?;
+        let record = check_open(&dir, &wal_path, &name, recorded_wal(&dir)?.as_deref())?;
         let wal = BlobWal::open_with_policy(&wal_path, config.sync_policy)?;
+        move_earlier_file(&dir, &name)?;
+        if record == Record::Write {
+            store_lock.record(&name)?;
+        }
 
         // The WAL lock is held from here on, so no other writer can be
         // mid-write in this directory: any `.tmp` left behind belongs to
@@ -386,6 +423,7 @@ impl BlobStorage {
             read_only: false,
             wal: Some(Arc::new(wal)),
             sstable_path: Some(sstable_path),
+            _store_lock: Some(Arc::new(store_lock)),
             wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
             flush_mode: config.flush_mode,
             max_sstables_before_compaction: config.max_sstables_before_compaction,
@@ -1218,13 +1256,14 @@ impl BlobStorage {
 fn read_one_moment(
     wal_path: &Path,
     dir: &Path,
+    wal_name: &str,
     between: impl FnOnce(),
 ) -> io::Result<Option<BTreeMap<Vec<u8>, BlobValue>>> {
     // Fails with NotFound before anything else is read.
     std::fs::metadata(wal_path)?;
-    let before = sstable_signature(dir)?;
+    let before = sstable_signature(dir, wal_name)?;
     let mut memtable = BTreeMap::new();
-    for path in enumerate_sstables(dir)? {
+    for path in source_files(dir, wal_name)? {
         match BlobSstable::open(&path) {
             Ok(Some(sst)) => memtable.extend(sst.into_records()),
             // removed by a compaction after the listing: the signature below differs
@@ -1237,7 +1276,7 @@ fn read_one_moment(
     let Some(records) = crate::blob_wal::read_existing(wal_path)? else {
         return Ok(None);
     };
-    if sstable_signature(dir)? != before {
+    if sstable_signature(dir, wal_name)? != before {
         return Ok(None);
     }
     for record in records {
@@ -1255,8 +1294,11 @@ fn read_one_moment(
 
 /// What identifies the current `SSTable` files: a flush or compaction changes it.
 #[cfg(feature = "fs")]
-fn sstable_signature(dir: &Path) -> io::Result<Vec<(PathBuf, u64, Option<std::time::SystemTime>)>> {
-    enumerate_sstables(dir)?
+fn sstable_signature(
+    dir: &Path,
+    wal_name: &str,
+) -> io::Result<Vec<(PathBuf, u64, Option<std::time::SystemTime>)>> {
+    source_files(dir, wal_name)?
         .into_iter()
         .filter_map(|path| match std::fs::metadata(&path) {
             Ok(meta) => Some(Ok((path, meta.len(), meta.modified().ok()))),
@@ -1278,23 +1320,6 @@ fn load_sstables_newest_first(dir: &Path) -> io::Result<Vec<LoadedSstable>> {
     }
     out.reverse();
     Ok(out)
-}
-
-/// Derive the `SSTable` path from the WAL path.
-///
-/// The convention is `blob.wal` -> `blob.sst`. Any other stem is
-/// preserved verbatim so a caller passing `foo.wal` sees `foo.sst`.
-#[cfg(feature = "fs")]
-fn sibling_sstable_path(wal_path: &Path) -> PathBuf {
-    let mut sst = wal_path.to_path_buf();
-    let file_stem = sst
-        .file_stem()
-        .map(std::ffi::OsStr::to_os_string)
-        .unwrap_or_default();
-    let mut with_ext = file_stem;
-    with_ext.push(".sst");
-    sst.set_file_name(with_ext);
-    sst
 }
 
 /// The direction of [`BlobStorage::scan_range`].
@@ -1491,15 +1516,21 @@ mod tests {
         let path = tmp.path().join("blob.wal");
         let writer = BlobStorage::open(&path).unwrap();
         writer.put(b"a", b"1").unwrap();
-        let moment = read_one_moment(&path, tmp.path(), || {}).unwrap().unwrap();
+        let moment = read_one_moment(&path, tmp.path(), "blob.wal", || {})
+            .unwrap()
+            .unwrap();
         assert!(moment.contains_key(b"a".as_slice()));
-        let moved = read_one_moment(&path, tmp.path(), || writer.flush_to_sstable().unwrap());
+        let moved = read_one_moment(&path, tmp.path(), "blob.wal", || {
+            writer.flush_to_sstable().unwrap();
+        });
         assert!(
             moved.unwrap().is_none(),
             "a moment without the moved record"
         );
         // and the next attempt sees it in the file
-        let moment = read_one_moment(&path, tmp.path(), || {}).unwrap().unwrap();
+        let moment = read_one_moment(&path, tmp.path(), "blob.wal", || {})
+            .unwrap()
+            .unwrap();
         assert!(moment.contains_key(b"a".as_slice()));
     }
 

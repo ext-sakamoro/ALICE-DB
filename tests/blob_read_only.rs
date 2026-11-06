@@ -146,7 +146,8 @@ fn every_open_sees_one_moment_of_a_busy_writer() {
     let mut last = [0_u8; 4];
     let mut opened = 0_u32;
     // The writer runs until the reader has seen enough, however the threads are scheduled.
-    while opened < READS || written.load(Ordering::SeqCst) < WRITES {
+    // A writer that stops early ends the loop too, and the join reports why.
+    while (opened < READS || written.load(Ordering::SeqCst) < WRITES) && !handle.is_finished() {
         let reader = BlobStorage::open_existing_read_only(&path).unwrap();
         let got = reader.scan_prefix(b"pair/").unwrap();
         if got.is_empty() {
@@ -161,6 +162,7 @@ fn every_open_sees_one_moment_of_a_busy_writer() {
     }
     stop.store(true, Ordering::SeqCst);
     handle.join().unwrap();
+    assert!(opened >= READS);
     assert!(
         u32::from_be_bytes(last) > 0,
         "only the first batch was read"
@@ -335,7 +337,8 @@ fn a_snapshot_holds_whole_batches() {
     // The writer runs until the snapshots are taken, however the threads are scheduled.
     let mut compared = 0;
     let mut values = std::collections::BTreeSet::new();
-    while compared < SNAPSHOTS || values.len() < 2 {
+    // A writer that stops early ends the loop too, and the join reports why.
+    while (compared < SNAPSHOTS || values.len() < 2) && !writer.is_finished() {
         let mut bytes = Vec::new();
         store.snapshot_to(&mut bytes).unwrap();
         let (_, blobs) = snapshot::decode(&bytes).unwrap();
@@ -349,6 +352,7 @@ fn a_snapshot_holds_whole_batches() {
     }
     stop.store(true, Ordering::SeqCst);
     writer.join().unwrap();
+    assert!(compared >= SNAPSHOTS);
 }
 
 const HOLDER_ENV: &str = "ALICE_DB_LOCK_HOLDER";

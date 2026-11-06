@@ -210,6 +210,8 @@ pub mod blob;
 #[cfg(feature = "fs")]
 pub mod blob_sstable;
 #[cfg(feature = "fs")]
+mod blob_store;
+#[cfg(feature = "fs")]
 pub mod blob_wal;
 pub mod bloom;
 pub mod checksum;

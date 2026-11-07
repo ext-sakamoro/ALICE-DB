@@ -1,12 +1,13 @@
 //! A torn or corrupt tail can hold any bytes where the lengths are. They are not
 //! checked until the checksum at the end, so reading has to stay within the bytes
-//! the file really has. Measured with a counting allocator, alone in this binary.
+//! the file really has. Measured with a counting allocator, one test at a time.
 #![cfg(feature = "fs")]
 #![allow(unsafe_code, reason = "a counting allocator around the system one")]
 
 use alice_db::blob::BlobStorage;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use tempfile::TempDir;
 
 struct Counting;
@@ -35,6 +36,8 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 const LIMIT: usize = 1024 * 1024;
+/// The count is of the whole process: a test allocating beside the measurement would be in it.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 fn tail(key_len: u32, value_len: u32) -> Vec<u8> {
     let mut bytes = vec![1_u8];
@@ -47,6 +50,7 @@ fn tail(key_len: u32, value_len: u32) -> Vec<u8> {
 
 #[test]
 fn a_garbage_length_in_the_tail_reserves_nothing_near_it() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
     let cases = [
         ("key", tail(u32::MAX, 0)),
         ("value", tail(1, u32::MAX)),
@@ -94,6 +98,7 @@ fn a_garbage_length_in_the_tail_reserves_nothing_near_it() {
 /// Real records of any size still read back whole.
 #[test]
 fn a_record_larger_than_the_limit_above_is_still_read() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.wal");
     let value: Vec<u8> = (0..4 * LIMIT)

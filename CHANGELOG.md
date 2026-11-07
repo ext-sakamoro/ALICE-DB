@@ -32,6 +32,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- CI: 共有の `scripts/semver_gate.py`、`scripts/test_semver_gate.py`、`scripts/release_baseline.py`、`scripts/test_release_baseline.py` の subprocess に `encoding="utf-8"` を明示した (text mode は既定で locale の符号化で読むため) ALICE-Law の pin を今の版へ移した
 - CI: `scripts/workflow_pipefail.py` (試験 `scripts/test_workflow_pipefail.py`、他の repo と同じ中身) が、pipe する `run` step が pipefail で走るかを全 workflow で確かめる coverage、python test の件数、ALICE-Law の block の step を `shell: bash` にした
 - CI: `dtolnay/rust-toolchain` の pin を `master` の commit に移し、toolchain (`stable` / `1.87.0` / `nightly`) は各 step の `with:` で指定する 上流は `stable` / `1.87` / `nightly` の branch を master から作り直して force push するので、その branch の commit に pin すると次の更新で branch から外れ、週次の pin audit が毎回 red になっていた (10-19 / 10-26 / 11-02) `master` は追記のみなので pin が外れない 入れる toolchain は以前と同じ
 - **動作の変更**: 1 つの directory に 1 つの store とする file は WAL の名前によらず `blob.sst` と `blob-000001.sst` で、`blob.lock` に WAL の名前を記録する `blob.wal` の store は file 名も中身も変わらない 前の版は `x.wal` の Overwrite の flush を `x.sst` に書いて読まず (flush 済みのデータが開き直すと見えなかった)、Append を `blob-*.sst` に書いていた 開いた時の扱いは次のとおり

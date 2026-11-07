@@ -19,7 +19,7 @@ jobs:
       - name: The one test, repeated
         shell: bash
         run: |
-          set -u
+          set -uo pipefail
           fails=0
           for i in $(seq 1 40); do
             if ! out=$(cargo test --test blob_read_only every_open_sees_one_moment_of_a_busy_writer -- --nocapture 2>&1); then
@@ -31,7 +31,7 @@ jobs:
       - name: The whole binary, repeated
         shell: bash
         run: |
-          set -u
+          set -uo pipefail
           fails=0
           for i in $(seq 1 40); do
             if ! out=$(cargo test --test blob_read_only -- --nocapture 2>&1); then

@@ -809,23 +809,16 @@ fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
     }
 
     let record_type = header[0];
-    let key_len = u32::from_le_bytes([header[1], header[2], header[3], header[4]]) as usize;
-    let value_len = u32::from_le_bytes([header[5], header[6], header[7], header[8]]) as usize;
+    let key_len = u32::from_le_bytes([header[1], header[2], header[3], header[4]]);
+    let value_len = u32::from_le_bytes([header[5], header[6], header[7], header[8]]);
     let value_kind = header[9];
 
-    let mut key = vec![0_u8; key_len];
-    match read_exact_or_eof(reader, &mut key)? {
-        ReadResult::Full => {}
-        ReadResult::Eof | ReadResult::Truncated => return Ok(ReadOutcome::Truncated),
-    }
-
-    let mut value = vec![0_u8; value_len];
-    if value_len > 0 {
-        match read_exact_or_eof(reader, &mut value)? {
-            ReadResult::Full => {}
-            ReadResult::Eof | ReadResult::Truncated => return Ok(ReadOutcome::Truncated),
-        }
-    }
+    let Some(key) = read_len(reader, key_len)? else {
+        return Ok(ReadOutcome::Truncated);
+    };
+    let Some(value) = read_len(reader, value_len)? else {
+        return Ok(ReadOutcome::Truncated);
+    };
 
     let mut crc_bytes = [0_u8; CRC_LEN];
     match read_exact_or_eof(reader, &mut crc_bytes)? {
@@ -857,6 +850,18 @@ fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
             .ok_or_else(|| unreadable("batch body")),
         unknown => Err(unreadable(&format!("record type {unknown:#04x}"))),
     }
+}
+
+/// `len` bytes, or `None` when fewer remain. The length comes before the checksum
+/// that could vouch for it, so the buffer grows with the bytes that arrive and a
+/// garbage length in a torn tail reserves nothing.
+fn read_len<R: Read>(reader: &mut R, len: u32) -> io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    let read = reader
+        .by_ref()
+        .take(u64::from(len))
+        .read_to_end(&mut bytes)?;
+    Ok((read == len as usize).then_some(bytes))
 }
 
 /// The checksum holds, so this is no torn tail: cutting it would lose it and

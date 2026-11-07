@@ -2,6 +2,9 @@
 # reach a Law-bearing output, with the exact line count, the SHA-256 of each
 # allowed line (stripped, in file order; the comment shows the line) and the reason
 [allow]
+"src/fs_audit.rs::threads" = { count = 1, lines = [
+    "a2abf4b1cf18d30d3a769b02dc60f4a82432fb8c65a95983b7c64c4fae898b22", # None if std::thread::panicking() => unmatched().push(path.to_path_buf()),
+], reason = "std::thread::panicking() only asks whether this thread is already unwinding, in the test-only open-file audit, to record an unmatched close instead of a second panic; it starts no thread and orders nothing" }
 "src/memtable.rs::parallel" = { count = 1, lines = [
     "6fc7a451fae4e5d89a8fe2edfbdbff45dfc1886504343cca733d407e1c316ca6", # let (poly_result, fourier_result) = rayon::join(
 ], reason = "rayon::join runs the polynomial and the Fourier fit of the same values side by side and returns both; the candidates are compared afterwards in a fixed order, no reduction combines partial results in completion order" }

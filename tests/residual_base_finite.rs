@@ -9,7 +9,7 @@
 //! The flush therefore stores such a buffer with a model that evaluates to a constant, and
 //! the residual holds the stored bits.
 //!
-//! The golden below is a segment written by this crate (alice_serial format 1); every CI OS
+//! The golden below is a segment written by this crate (`alice_serial` format 1); every CI OS
 //! writes the same bytes and reads the stored bits back from them. The same segment as an older
 //! release wrote it (bincode) is read back through a legacy data file.
 
@@ -102,7 +102,7 @@ fn the_model_of_an_exact_buffer_evaluates_finite_at_every_key() {
 /// `inf_then_line` through the default (lossy) memtable, as written by this crate
 const INF_THEN_LINE_SEGMENT: &str = include_str!("fixtures/residual_base/inf_then_line.hex");
 
-/// The same segment as alice-db wrote it before alice_serial (bincode)
+/// The same segment as alice-db wrote it before `alice_serial` (bincode)
 #[cfg(feature = "fs")]
 const INF_THEN_LINE_BINCODE: &str =
     include_str!("fixtures/residual_base/inf_then_line.bincode.hex");

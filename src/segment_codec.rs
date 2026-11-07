@@ -1,9 +1,9 @@
-//! [`DataSegment`] as alice_serial format 1: the bytes of [`DataSegment::to_bytes`].
+//! [`DataSegment`] as `alice_serial` format 1: the bytes of [`DataSegment::to_bytes`].
 //!
 //! A segment is the array `[kind, start_time, end_time, model, residual, metadata]`:
 //!
 //! - kind: the string [`SEGMENT_KIND`]
-//! - start_time / end_time: `I64`
+//! - `start_time` / `end_time`: `I64`
 //! - model: `[name, fields...]`, lists as packed arrays (Fourier and multi-sine as one packed array
 //!   per column), sizes as `U64`, data types as `"f32" / "f64" / "i32" / "i64" / "u8"`
 //! - residual: `Null` or `Bytes`
@@ -28,7 +28,7 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The alice_serial bytes of `seg`
+/// The `alice_serial` bytes of `seg`
 pub(crate) fn to_bytes(seg: &DataSegment) -> io::Result<Vec<u8>> {
     let m = &seg.metadata;
     let value = Value::Array(vec![
@@ -67,8 +67,8 @@ pub(crate) fn from_bytes(bytes: &[u8]) -> io::Result<DataSegment> {
     let [id, created_at, point_count, original_size, model_size, ratio] =
         fields::<6>(metadata, "segment metadata")?;
     Ok(DataSegment {
-        start_time: int(start, "start_time")?,
-        end_time: int(end, "end_time")?,
+        start_time: int(&start, "start_time")?,
+        end_time: int(&end, "end_time")?,
         model: model_from(model)?,
         residual_blob: match residual {
             Value::Null => None,
@@ -76,12 +76,12 @@ pub(crate) fn from_bytes(bytes: &[u8]) -> io::Result<DataSegment> {
             _ => return Err(invalid("segment residual is neither null nor bytes")),
         },
         metadata: SegmentMetadata {
-            id: uint(id, "id")?,
-            created_at: uint(created_at, "created_at")?,
-            point_count: size(point_count, "point_count")?,
-            original_size: size(original_size, "original_size")?,
-            model_size: size(model_size, "model_size")?,
-            compression_ratio: f64v(ratio, "compression_ratio")?,
+            id: uint(&id, "id")?,
+            created_at: uint(&created_at, "created_at")?,
+            point_count: size(&point_count, "point_count")?,
+            original_size: size(&original_size, "original_size")?,
+            model_size: size(&model_size, "model_size")?,
+            compression_ratio: f64v(&ratio, "compression_ratio")?,
         },
     })
 }
@@ -195,8 +195,8 @@ fn model_from(v: Value) -> io::Result<ModelType> {
             let [c, d, e] = take::<3>(rest, "polynomial")?;
             ModelType::Polynomial {
                 coefficients: f64s(c, "coefficients")?,
-                degree: size(d, "degree")?,
-                fit_error: f64v(e, "fit_error")?,
+                degree: size(&d, "degree")?,
+                fit_error: f64v(&e, "fit_error")?,
             }
         }
         "fourier" => {
@@ -211,17 +211,17 @@ fn model_from(v: Value) -> io::Result<ModelType> {
             }
             ModelType::Fourier {
                 coefficients,
-                dc_offset: f32v(dc, "dc_offset")?,
-                sample_count: size(n, "sample_count")?,
+                dc_offset: f32v(&dc, "dc_offset")?,
+                sample_count: size(&n, "sample_count")?,
             }
         }
         "sine_wave" => {
             let [f, a, p, o] = take::<4>(rest, "sine_wave")?;
             ModelType::SineWave {
-                frequency: f32v(f, "frequency")?,
-                amplitude: f32v(a, "amplitude")?,
-                phase: f32v(p, "phase")?,
-                offset: f32v(o, "offset")?,
+                frequency: f32v(&f, "frequency")?,
+                amplitude: f32v(&a, "amplitude")?,
+                phase: f32v(&p, "phase")?,
+                offset: f32v(&o, "offset")?,
             }
         }
         "multi_sine" => {
@@ -241,31 +241,31 @@ fn model_from(v: Value) -> io::Result<ModelType> {
                     .zip(p)
                     .map(|((f, a), p)| (f, a, p))
                     .collect(),
-                dc_offset: f32v(dc, "dc_offset")?,
+                dc_offset: f32v(&dc, "dc_offset")?,
             }
         }
         "perlin_noise" => {
             let [seed, scale, octaves, persistence, lacunarity] = take::<5>(rest, "perlin_noise")?;
             ModelType::PerlinNoise {
-                seed: uint(seed, "seed")?,
-                scale: f32v(scale, "scale")?,
-                octaves: u32::try_from(uint(octaves, "octaves")?)
+                seed: uint(&seed, "seed")?,
+                scale: f32v(&scale, "scale")?,
+                octaves: u32::try_from(uint(&octaves, "octaves")?)
                     .map_err(|_| invalid("perlin_noise octaves do not fit u32"))?,
-                persistence: f32v(persistence, "persistence")?,
-                lacunarity: f32v(lacunarity, "lacunarity")?,
+                persistence: f32v(&persistence, "persistence")?,
+                lacunarity: f32v(&lacunarity, "lacunarity")?,
             }
         }
         "constant" => {
             let [v] = take::<1>(rest, "constant")?;
             ModelType::Constant {
-                value: f64v(v, "value")?,
+                value: f64v(&v, "value")?,
             }
         }
         "linear" => {
             let [a, b] = take::<2>(rest, "linear")?;
             ModelType::Linear {
-                start_value: f64v(a, "start_value")?,
-                end_value: f64v(b, "end_value")?,
+                start_value: f64v(&a, "start_value")?,
+                end_value: f64v(&b, "end_value")?,
             }
         }
         "raw_lzma" => {
@@ -284,7 +284,7 @@ fn model_from(v: Value) -> io::Result<ModelType> {
             ModelType::RawLzma {
                 compressed_data,
                 dtype,
-                original_size: size(n, "original_size")?,
+                original_size: size(&n, "original_size")?,
             }
         }
         other => return Err(invalid(format!("segment model {other:?} is unknown"))),
@@ -311,16 +311,16 @@ fn text(v: Value, what: &str) -> io::Result<String> {
     }
 }
 
-fn int(v: Value, what: &str) -> io::Result<i64> {
+fn int(v: &Value, what: &str) -> io::Result<i64> {
     match v {
-        Value::I64(x) => Ok(x),
+        Value::I64(x) => Ok(*x),
         _ => Err(invalid(format!("{what} is not an i64"))),
     }
 }
 
-fn uint(v: Value, what: &str) -> io::Result<u64> {
+fn uint(v: &Value, what: &str) -> io::Result<u64> {
     match v {
-        Value::U64(x) => Ok(x),
+        Value::U64(x) => Ok(*x),
         _ => Err(invalid(format!("{what} is not a u64"))),
     }
 }
@@ -329,20 +329,20 @@ fn to_usize(x: u64, what: &str) -> io::Result<usize> {
     usize::try_from(x).map_err(|_| invalid(format!("{what} does not fit usize")))
 }
 
-fn size(v: Value, what: &str) -> io::Result<usize> {
+fn size(v: &Value, what: &str) -> io::Result<usize> {
     to_usize(uint(v, what)?, what)
 }
 
-fn f32v(v: Value, what: &str) -> io::Result<f32> {
+fn f32v(v: &Value, what: &str) -> io::Result<f32> {
     match v {
-        Value::F32(x) => Ok(x),
+        Value::F32(x) => Ok(*x),
         _ => Err(invalid(format!("{what} is not an f32"))),
     }
 }
 
-fn f64v(v: Value, what: &str) -> io::Result<f64> {
+fn f64v(v: &Value, what: &str) -> io::Result<f64> {
     match v {
-        Value::F64(x) => Ok(x),
+        Value::F64(x) => Ok(*x),
         _ => Err(invalid(format!("{what} is not an f64"))),
     }
 }

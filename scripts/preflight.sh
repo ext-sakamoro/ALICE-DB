@@ -230,7 +230,7 @@ python3 -m venv "$pf_venv"
 maturin build --out "$pf_dist"              # features from [tool.maturin]; version dynamic from Cargo.toml
 "$pf_venv/bin/pip" install -q "$pf_dist"/*.whl
 "$pf_venv/bin/python" -c "import alice_db; print('alice_db', alice_db.__version__, 'imported')"
-pf_n=$("$pf_venv/bin/python" -m pytest python/tests --collect-only -q 2>/dev/null | grep -c '::')
+pf_n=$("$pf_venv/bin/python" -m pytest python/tests --collect-only -q | grep -c '::')
 echo "collected ${pf_n} python test(s)"
 [[ "${pf_n}" -gt 0 ]] || { echo "no python tests collected" >&2; exit 1; }
 "$pf_venv/bin/python" -m pytest python/tests -v

@@ -418,7 +418,7 @@ jobs:
       - name: Python tests (README example + lossless), fail on 0 tests
         shell: bash
         run: |
-          collected=$(python -m pytest python/tests --collect-only -q 2>/dev/null | grep -c '::')
+          collected=$(python -m pytest python/tests --collect-only -q | grep -c '::')
           echo "collected ${collected} python test(s)"
           [ "${collected}" -gt 0 ] || { echo "no python tests collected"; exit 1; }
           python -m pytest python/tests -v

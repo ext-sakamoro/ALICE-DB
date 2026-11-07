@@ -247,6 +247,30 @@ fn old_bincode_bytes_are_refused_by_from_bytes() {
     assert!(e.to_string().contains("legacy data file"), "{e}");
 }
 
+/// Damage to the new form is not reported as the old one.
+#[test]
+fn a_cut_segment_of_this_format_is_not_called_legacy() {
+    let seg = segment(ModelType::Constant { value: 1.0 }, None);
+    let bytes = expected(&seg);
+    let e = DataSegment::from_bytes(&bytes[..bytes.len() / 2]).expect_err("refused");
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!e.to_string().contains("legacy data file"), "{e}");
+}
+
+#[test]
+fn multi_sine_columns_of_any_different_length_are_refused() {
+    let column = |n| Value::F32Array(vec![1.0; n]);
+    for (f, a, p) in [(2, 1, 2), (2, 2, 1), (1, 2, 2)] {
+        let _ = refused(&with_model(Value::Array(vec![
+            s("multi_sine"),
+            column(f),
+            column(a),
+            column(p),
+            Value::F32(0.0),
+        ])));
+    }
+}
+
 fn refused(v: &Value) -> std::io::Error {
     DataSegment::from_bytes(&encode(v).expect("encode")).expect_err("refused")
 }

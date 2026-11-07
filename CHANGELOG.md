@@ -41,6 +41,8 @@ All notable changes to ALICE-DB will be documented in this file.
   - 前の版が Append で 2 つの WAL から書いた `blob-*.sst` は分けられない 先に開いた方が全部を読み (前の版と同じ)、後の方は止まる
   - 記録された WAL が無く、別の名前で開く (改名と新しい store は区別できない): `InvalidData`、"BlobStorage::take_over_store on `y.wal` gives them to it" `BlobStorage::take_over_store("y.wal")` を呼ぶと開く 記録された WAL が残っている間は呼んでも `InvalidData` 記録が無い directory の新しい名前も同じ 同じ名前で WAL を作り直す時、`.sst` が無い時は止まらない
 - **動作の変更**: 別の directory の WAL への symlink、store の file の名前の WAL (`*.sst`、`blob-000001.sst.tmp`、`blob.lock`)、UTF-8 でない名前の WAL は `InvalidInput` で開かない 前の版は `.sst` の file を WAL として開いて切っていた
+- **動作の変更**: 書き込みで開く時に `blob.lock` を作るので、`blob.lock` の無い読み取り専用の directory では `PermissionDenied` で開かない (前の版は既にある WAL に書けた) 読み取り専用で開く経路は動く
+- 変わらない点: データを flush していない WAL を別の場所へ移し、番号付きの file も無い directory を別の名前で開くと空の store になり、`blob.lock` の記録はその名前に替わる 移した file の中身は消えない 元の名前で開き直すと新しい名前の store として拒否する
 - 前の版に戻す時: 前の版は `blob.sst` と `blob-*.sst` を読み、`blob.lock` を無視する この版が書いた store は前の版でそのまま読める 前の版の `x.wal` の Overwrite の flush は `x.sst` に書くので、前の版では開き直すと見えない (前の版の問題のまま) この版で開くと読める 前の版は `blob.lock` を見ないので、同じ directory の別の名前の WAL を止めない
 - **動作の変更 (戻せない)**: WAL に `write_batch` の record (型 0x03) がある store を、それを持たない build で開くと、その build は batch を壊れた末尾として扱い、batch と後ろの record を WAL から切る 切った bytes は `<wal>.dropped-<offset>` に残るが、store からは消える WAL に版の header が無く、公開済みの build には拒否させられない 戻す前に `snapshot_to` で退避する
 - blob WAL: 検査値が正しく読めない record (知らない型や value kind、解析できない batch) は末尾の破損でないので、切らずに `InvalidData` で開かない (読み取り専用の open も同じ) 切るのは検査値が壊れた末尾だけ 今後 record の型を足しても、この版以降は上の形で失わない

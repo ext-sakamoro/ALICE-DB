@@ -1,0 +1,42 @@
+name: Windows abort rate
+on:
+  push:
+    branches: ["diag/**"]
+jobs:
+  loop:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+      - name: Build
+        shell: bash
+        run: cargo test --test blob_read_only --no-run
+      - name: The one test, repeated
+        shell: bash
+        run: |
+          set -u
+          fails=0
+          for i in $(seq 1 40); do
+            if ! out=$(cargo test --test blob_read_only every_open_sees_one_moment_of_a_busy_writer -- --nocapture 2>&1); then
+              fails=$((fails + 1))
+              echo "=== run $i failed"; echo "$out" | tail -40
+            fi
+          done
+          echo "one test: $fails of 40 failed"
+      - name: The whole binary, repeated
+        shell: bash
+        run: |
+          set -u
+          fails=0
+          for i in $(seq 1 40); do
+            if ! out=$(cargo test --test blob_read_only -- --nocapture 2>&1); then
+              fails=$((fails + 1))
+              echo "=== run $i failed"; echo "$out" | tail -40
+            fi
+          done
+          echo "whole binary: $fails of 40 failed"

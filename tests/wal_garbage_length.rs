@@ -96,7 +96,9 @@ fn a_garbage_length_in_the_tail_reserves_nothing_near_it() {
 fn a_record_larger_than_the_limit_above_is_still_read() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.wal");
-    let value: Vec<u8> = (0..4 * LIMIT).map(|i| (i * 31 % 251) as u8).collect();
+    let value: Vec<u8> = (0..4 * LIMIT)
+        .map(|i| u8::try_from(i * 31 % 251).unwrap())
+        .collect();
     {
         let store = BlobStorage::open(&path).unwrap();
         store.put(b"big", &value).unwrap();

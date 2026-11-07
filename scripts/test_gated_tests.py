@@ -95,6 +95,8 @@ CASES = [
     ("--lib --tests runs the test files", {"p": PHYS}, {"ci": "cargo test --lib --tests --features physics\n"}, None, CONF_RUN, 0),
     ("--tests with a --test filter runs every test file", {"p": PHYS}, {"ci": "cargo test --features physics --test other --tests\n"}, None, CONF_RUN, 0),
     ("cargo hack check runs no test", {"p": PHYS}, {"ci": "cargo hack check --lib --feature-powerset\n"}, None, CONF_RUN, 'ci: no `cargo test` command found'),
+    ("browser tests are counted", {"w": '#![cfg(all(target_arch = "wasm32", feature = "gpu"))]\n#[wasm_bindgen_test]\nfn a() {}\n#[wasm_bindgen_test]\nasync fn b() {}\n'}, {"ci": "cargo test --target wasm32-unknown-unknown --features gpu --test w 2>&1 | python3 scripts/min_passed.py w=2\n"}, "cargo test --target wasm32-unknown-unknown --features gpu --test w 2>&1 | python3 scripts/min_passed.py w=2\n", CONF_COUNTED, 0),
+    ("a floor below the browser test count", {"w": '#![cfg(all(target_arch = "wasm32", feature = "gpu"))]\n#[wasm_bindgen_test]\nfn a() {}\n#[wasm_bindgen_test]\nasync fn b() {}\n'}, {"ci": "cargo test --target wasm32-unknown-unknown --features gpu --test w 2>&1 | python3 scripts/min_passed.py w=1\n"}, "cargo test --target wasm32-unknown-unknown --features gpu --test w 2>&1 | python3 scripts/min_passed.py w=2\n", CONF_COUNTED, "ci: tests/w.rs (features ['gpu'], 2 tests): floor 1, the file has 2 tests"),
     # run mode: no floors
     ("run mode: covered without min_passed", FILES, {"ci": RUN}, None, CONF_RUN, 0),
     ("run mode: a gated file never run", FILES, {"ci": "cargo test --features physics\n"}, None, CONF_RUN, "ci: tests/g.rs (features ['gpu'], 2 tests): features ['gpu'] not enabled"),

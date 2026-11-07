@@ -6,6 +6,7 @@ import contextlib
 import io
 import os
 import sys
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def tree(files: dict[str, str]) -> Path:
     root = Path(tempfile.mkdtemp(prefix="entropy-guard-"))
+    # removed after this module's tests
+    unittest.addModuleCleanup(shutil.rmtree, root, True)
     for rel, text in files.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)

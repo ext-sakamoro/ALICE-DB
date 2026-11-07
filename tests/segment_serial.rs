@@ -1,4 +1,4 @@
-//! `DataSegment::to_bytes` / `from_bytes` are alice_serial format 1.
+//! `DataSegment::to_bytes` / `from_bytes` are `alice_serial` format 1.
 //!
 //! The layout is written out here as a `Value` tree, independently of the crate's code: a segment
 //! is `[kind, start_time, end_time, model, residual, metadata]`, kind `"alice-db/segment/v1"`,
@@ -218,12 +218,16 @@ fn the_bytes_of_one_segment_are_pinned() {
         },
         Some(vec![6, 1]),
     );
-    let hex: String = expected(&seg).iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = expected(&seg)
+        .iter()
+        .flat_map(|b| [b >> 4, b & 0xf])
+        .map(|digit| char::from_digit(u32::from(digit), 16).unwrap())
+        .collect();
     assert_eq!(hex, GOLDEN, "{hex}");
     assert_eq!(seg.to_bytes().expect("to_bytes"), expected(&seg));
 }
 
-/// alice_serial format 1 of the segment above, checked by hand against `alice_serial::FORMAT_SPEC`
+/// `alice_serial` format 1 of the segment above, checked by hand against `alice_serial::FORMAT_SPEC`
 const GOLDEN: &str =
     "414c53520100dd00000006db00000013616c6963652d64622f7365676d656e742f7631d3fffffffffffffffbd300000000000003e8dd00000005db0000000973696e655f77617665ca3e99999aca40000000ca3ecccccdca3e800000c6000000020601dd0000000607cf0000019a03c78a00092414cb3ffccccccccccccd";
 

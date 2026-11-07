@@ -31,7 +31,7 @@ fn legacy_store(dir: &Path, start: i64, end: i64, model: &str, bytes: &[u8]) {
     index.extend_from_slice(&0u64.to_le_bytes()); // offset in data.alice
     index.extend_from_slice(&(bytes.len() as u64 + 8).to_le_bytes()); // size
     index.extend_from_slice(&1.0f64.to_le_bytes()); // compression ratio
-    index.extend_from_slice(&(model.len() as u32).to_le_bytes());
+    index.extend_from_slice(&u32::try_from(model.len()).unwrap().to_le_bytes());
     index.extend_from_slice(model.as_bytes());
     std::fs::write(dir.join("index.alice"), index).expect("index");
     let mut data = (bytes.len() as u64).to_le_bytes().to_vec();

@@ -770,7 +770,7 @@ impl DataSegment {
         decode_raw_bytes(&decompressed, dtype)
     }
 
-    /// The segment as alice_serial format 1 ([`crate::segment_codec`])
+    /// The segment as `alice_serial` format 1 ([`crate::segment_codec`])
     ///
     /// # Errors
     ///

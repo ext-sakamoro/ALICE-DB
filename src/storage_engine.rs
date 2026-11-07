@@ -1381,7 +1381,7 @@ impl StorageEngine {
         Ok(view)
     }
 
-    /// Legacy segment loading (for backwards compatibility with old data.alice format)
+    /// Legacy segment loading (for backwards compatibility with old `data.alice` format)
     #[cfg(feature = "fs")]
     fn load_segment_legacy(&self, entry: &SegmentIndexEntry) -> io::Result<Arc<SegmentView>> {
         let mut data_file = self.data_file.write();

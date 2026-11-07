@@ -111,6 +111,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- 試験の open-file audit: 巻き戻り中の destructor が報告した対応の無い close で 2 回目の panic を起こし process を止めていた (Windows で最初の失敗の文面が出ないまま 0xc0000409 で終わった) 巻き戻り中は記録だけにし (`fs_audit::take_unmatched_closes`)、directory を消した後の close も開いた時の key で照合する `tests/blob_read_only.rs` の書く側は読む側が panic しても止めて合流させる
 - blob: `BlobStorage::open` に `blob.wal` 以外の名前の WAL を渡すと、Overwrite の flush 済みのデータが開き直した時に消えていた `AliceDB::open` は `blob.wal` 固定なので影響しない 試験 `tests/blob_one_store.rs`
 - blob: `open("x.wal")` のように directory の無い名前で開くと、flush 済みのデータが開き直した時に消えていた (`./x.wal` では起きない) 試験 `tests/blob_wal_bare_name.rs`
 - blob: 相対 path で開いた store は、開いた後に current directory が変わると flush の file を別の場所に書いていた 開く時に絶対 path にする

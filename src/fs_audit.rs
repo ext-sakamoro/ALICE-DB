@@ -47,6 +47,29 @@ mod imp {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The key each opened path got, by the path as given: once the directory is
+    /// gone the parent no longer canonicalizes, and the close must still find it.
+    fn keys_by_path() -> MutexGuard<'static, BTreeMap<PathBuf, PathBuf>> {
+        static KEYS: OnceLock<Mutex<BTreeMap<PathBuf, PathBuf>>> = OnceLock::new();
+        KEYS.get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Closes the audit could not match, reported while their thread was already
+    /// unwinding (a second panic there would abort the process and hide the first).
+    fn unmatched() -> MutexGuard<'static, Vec<PathBuf>> {
+        static UNMATCHED: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+        UNMATCHED
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn take_unmatched_closes() -> Vec<PathBuf> {
+        std::mem::take(&mut *unmatched())
+    }
+
     thread_local! {
         static ARMED: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
         static SYNCS: RefCell<Vec<(String, PathBuf)>> = const { RefCell::new(Vec::new()) };
@@ -76,17 +99,26 @@ mod imp {
     }
 
     pub fn note_open(path: &Path) {
-        *open_handles().entry(key(path)).or_insert(0) += 1;
+        let k = key(path);
+        keys_by_path().insert(path.to_path_buf(), k.clone());
+        *open_handles().entry(k).or_insert(0) += 1;
     }
 
     pub fn note_close(path: &Path) {
         let mut open = open_handles();
-        let k = key(path);
+        let mut k = key(path);
+        if !open.contains_key(&k) {
+            if let Some(recorded) = keys_by_path().get(path) {
+                k.clone_from(recorded);
+            }
+        }
         match open.get_mut(&k) {
             Some(n) if *n > 1 => *n -= 1,
             Some(_) => {
                 open.remove(&k);
+                keys_by_path().retain(|_, v| *v != k);
             }
+            None if std::thread::panicking() => unmatched().push(path.to_path_buf()),
             None => panic!(
                 "open-file audit: close of `{}` which was never recorded as open",
                 path.display()
@@ -246,6 +278,14 @@ pub(crate) fn crash_point(name: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Closes that matched no open and were reported while their thread was already
+/// unwinding (recorded instead of a second panic, which would abort); clears the record.
+#[cfg(feature = "open-file-audit")]
+#[must_use]
+pub fn take_unmatched_closes() -> Vec<std::path::PathBuf> {
+    imp::take_unmatched_closes()
+}
+
 /// Whether some handle on `path` is currently recorded as open.
 #[cfg(feature = "open-file-audit")]
 #[must_use]
@@ -289,6 +329,9 @@ mod tests {
             panic!("the first failure");
         });
         assert!(result.is_err(), "the first panic is the one reported");
+        assert!(super::take_unmatched_closes()
+            .iter()
+            .any(|p| p.ends_with("never-opened")));
     }
 
     /// A handle closed after its directory was removed is the handle that was opened.

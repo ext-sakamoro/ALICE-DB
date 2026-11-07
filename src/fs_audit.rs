@@ -268,3 +268,37 @@ pub fn arm_crash_point(name: &str) {
 pub fn disarm_all_crash_points() {
     imp::disarm_all_crash_points();
 }
+
+#[cfg(all(test, feature = "open-file-audit"))]
+mod tests {
+    use super::{note_close, note_open};
+    use std::path::Path;
+
+    /// A destructor that reports a close while its thread is already unwinding must not
+    /// turn the first failure into an abort of the whole process.
+    #[test]
+    fn a_close_while_unwinding_does_not_abort() {
+        struct ClosesOnDrop;
+        impl Drop for ClosesOnDrop {
+            fn drop(&mut self) {
+                note_close(Path::new("no-such-directory-for-the-audit/never-opened"));
+            }
+        }
+        let result = std::panic::catch_unwind(|| {
+            let _closes = ClosesOnDrop;
+            panic!("the first failure");
+        });
+        assert!(result.is_err(), "the first panic is the one reported");
+    }
+
+    /// A handle closed after its directory was removed is the handle that was opened.
+    #[test]
+    fn a_close_after_the_directory_is_removed_matches_the_open() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("held");
+        note_open(&path);
+        drop(tmp);
+        let result = std::panic::catch_unwind(|| note_close(&path));
+        assert!(result.is_ok(), "the close was matched to its open");
+    }
+}

@@ -56,13 +56,10 @@ pub(crate) fn wal_name(wal_path: &Path) -> io::Result<String> {
         .filter(|name| !name.contains('\n'))
         .ok_or_else(|| refused("needs a UTF-8 file name without a newline"))?;
     let lower = name.to_ascii_lowercase();
-    let is_temporary_sstable = lower
-        .strip_suffix(".tmp")
-        .is_some_and(|published| parse_sstable_seq(published).is_some());
     let is_sstable = Path::new(&lower)
         .extension()
         .is_some_and(|extension| extension == "sst");
-    if is_sstable || is_temporary_sstable || lower == LOCK_FILE {
+    if is_sstable || is_working_file(&lower) {
         return Err(refused("has the name of a file of the store"));
     }
     Ok(name.to_owned())
@@ -144,6 +141,13 @@ pub(crate) fn recorded_wal(dir: &Path) -> io::Result<Option<String>> {
     Ok(Some(name.to_owned()))
 }
 
+/// A file the store itself writes, by its lower-cased name: an `SSTable`, an
+/// `SSTable` being written (`blob.sst.tmp`, renamed when complete) or the lock.
+fn is_working_file(lower: &str) -> bool {
+    let published = lower.strip_suffix(".tmp").unwrap_or(lower);
+    parse_sstable_seq(published).is_some() || lower == LOCK_FILE
+}
+
 /// `<stem>.sst`, which an earlier version wrote for a WAL of another name than
 /// `blob.wal`. The file system decides what the name reaches, and a file that is
 /// already the store's own under another spelling (`Blob.sst`) is not one.
@@ -160,10 +164,12 @@ fn earlier_file(dir: &Path, wal_name: &str) -> io::Result<Option<PathBuf>> {
     };
     for entry in read {
         let entry = entry?;
+        // a working file can be the candidate for a moment: a flush renames
+        // `blob.sst.tmp` while it is listed here, and the name resolves to the result
         let is_store_file = entry
             .file_name()
             .to_str()
-            .is_some_and(|name| parse_sstable_seq(name).is_some());
+            .is_some_and(|name| is_working_file(&name.to_ascii_lowercase()));
         if !is_store_file && same_file(&entry.path(), &candidate) {
             return Ok(Some(entry.path()));
         }

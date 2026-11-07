@@ -111,6 +111,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- blob: 読み取り専用で開く時、書く側の flush が `blob.sst.tmp` を `blob.sst` に名前を変える瞬間に一覧を読むと、一時 file を前の版の file と取り違えて `InvalidData` で開かなかった (Windows の CI で 40 回中 13 回、macOS でも同じ状態を作ると起きる) store が自分で書く file (`SSTable`、書きかけの `*.sst.tmp`、`blob.lock`) は名前の大文字小文字によらず前の版の file にしない 試験 `tests/blob_one_store.rs::the_flush_temporary_file_is_not_a_file_of_an_earlier_version`
 - 試験の open-file audit: 巻き戻り中の destructor が報告した対応の無い close で 2 回目の panic を起こし process を止めていた (Windows で最初の失敗の文面が出ないまま 0xc0000409 で終わった) 巻き戻り中は記録だけにし (`fs_audit::take_unmatched_closes`)、directory を消した後の close も開いた時の key で照合する `tests/blob_read_only.rs` の書く側は読む側が panic しても止めて合流させる
 - blob: `BlobStorage::open` に `blob.wal` 以外の名前の WAL を渡すと、Overwrite の flush 済みのデータが開き直した時に消えていた `AliceDB::open` は `blob.wal` 固定なので影響しない 試験 `tests/blob_one_store.rs`
 - blob: `open("x.wal")` のように directory の無い名前で開くと、flush 済みのデータが開き直した時に消えていた (`./x.wal` では起きない) 試験 `tests/blob_wal_bare_name.rs`

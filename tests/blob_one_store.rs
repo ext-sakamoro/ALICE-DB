@@ -645,3 +645,24 @@ fn a_reopen_is_not_stopped_by_a_process_being_started() {
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(spawner.join().unwrap() > 0, "no process was started");
 }
+
+/// A flush writes `blob.sst.tmp` and renames it to `blob.sst`: a reader that lists the
+/// temporary name and resolves it after the rename sees the same file as `blob.sst`.
+/// The store's own working files are never a file of an earlier version (a hard link
+/// gives the same identity on every platform).
+#[test]
+fn the_flush_temporary_file_is_not_a_file_of_an_earlier_version() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("blob.wal");
+    {
+        let store = BlobStorage::open(&path).unwrap();
+        store.put(b"k", b"v").unwrap();
+        store.flush_to_sstable().unwrap();
+    }
+    std::fs::hard_link(tmp.path().join("blob.sst"), tmp.path().join("blob.sst.tmp")).unwrap();
+    let reader = BlobStorage::open_existing_read_only(&path).unwrap();
+    assert_eq!(reader.get(b"k").unwrap(), Some(b"v".to_vec()));
+    drop(reader);
+    let writer = BlobStorage::open(&path).unwrap();
+    assert_eq!(writer.get(b"k").unwrap(), Some(b"v".to_vec()));
+}

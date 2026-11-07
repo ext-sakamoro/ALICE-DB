@@ -113,6 +113,39 @@ fn it_refuses_writes_and_changes_no_file() {
 }
 
 /// The reader sees whole batches through flushes and compactions, and never goes back in time.
+/// Stops and joins the writer however the test ends: a reader that panics must not
+/// leave the writer running while the temporary directory is removed under it.
+struct StopOnDrop {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl StopOnDrop {
+    fn is_finished(&self) -> bool {
+        self.handle
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+    }
+
+    /// The writer's own panic, if it had one, fails the test here.
+    fn join(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            h.join().unwrap();
+        }
+    }
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            // already unwinding from the reader's panic: the writer's result adds nothing
+            let _ = h.join();
+        }
+    }
+}
+
 #[test]
 fn every_open_sees_one_moment_of_a_busy_writer() {
     const READS: u32 = 100;
@@ -122,7 +155,11 @@ fn every_open_sees_one_moment_of_a_busy_writer() {
     let writer = Arc::new(BlobStorage::open(&path).unwrap());
     let stop = Arc::new(AtomicBool::new(false));
     let written = Arc::new(AtomicU32::new(0));
-    let handle = {
+    let mut handle = StopOnDrop {
+        stop: Arc::clone(&stop),
+        handle: None,
+    };
+    handle.handle = Some({
         let (writer, stop, written) =
             (Arc::clone(&writer), Arc::clone(&stop), Arc::clone(&written));
         std::thread::spawn(move || {
@@ -142,7 +179,7 @@ fn every_open_sees_one_moment_of_a_busy_writer() {
                 written.store(i, Ordering::SeqCst);
             }
         })
-    };
+    });
     let mut last = [0_u8; 4];
     let mut opened = 0_u32;
     // The writer runs until the reader has seen enough, however the threads are scheduled.
@@ -160,8 +197,7 @@ fn every_open_sees_one_moment_of_a_busy_writer() {
         last = now;
         opened += 1;
     }
-    stop.store(true, Ordering::SeqCst);
-    handle.join().unwrap();
+    handle.join();
     assert!(opened >= READS);
     assert!(
         u32::from_be_bytes(last) > 0,

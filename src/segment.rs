@@ -293,6 +293,19 @@ pub struct SegmentMetadata {
     pub compression_ratio: f64,
 }
 
+/// Bytes one point costs when a segment is read whole: the regenerated `f32` sample (4), its
+/// canonical copy (4) and its `(i64, f32)` entry in a range result (16 with padding).
+const BYTES_PER_POINT_READ: usize = 4 + 4 + 16;
+
+/// Memory a whole-segment read may take: 1 GiB.
+const SEGMENT_READ_BUDGET: usize = 1 << 30;
+
+/// The most points a segment may hold: what a whole read fits in [`SEGMENT_READ_BUDGET`],
+/// `2^30 / 24` = 44 739 242. A stored or legacy segment that claims more is refused when it is
+/// decoded, and a store whose memtable could seal more does not open; `point_count` sizes
+/// allocations, so it is never taken from the bytes past this bound.
+pub const MAX_SEGMENT_POINTS: usize = SEGMENT_READ_BUDGET / BYTES_PER_POINT_READ;
+
 /// Data Segment: A time range stored as a mathematical model
 ///
 /// This is the fundamental storage unit of ALICE-DB.

@@ -31,8 +31,8 @@ its tests); in run mode each gate must be met by some command. The command must
   - pass `--include-ignored` (or `--ignored`) after `--` when the file has an ignored test and
     `ignored = "run"`,
   - and, in counted mode, pipe into `scripts/min_passed.py` naming the file with a floor equal
-    to its `#[test]` count (a lower floor lets a new test go uncounted) and `--no-ignored` when
-    the file has an ignored test.
+    to its `#[test]` and `#[wasm_bindgen_test]` count (a lower floor lets a new test go uncounted)
+    and `--no-ignored` when the file has an ignored test.
 
 A dev-dependency on the crate itself (`path = "."`) enables its features in every command, and
 `[[test]] required-features` in Cargo.toml is a gate of the whole file. A YAML folded block (`run: >-`) is one command. A `$NAME` / `${NAME}` in a command is replaced by the value set in the same file (a YAML `env:`
@@ -257,7 +257,7 @@ def check(root: Path):
             if f.stem not in unread:
                 problems.append(f"tests/{f.stem}.rs: gate with any()/not() this script cannot read; list it in [unread] with the reason")
         elif g is not None:
-            files[f.stem] = (g, text.count("#[test]"), policy == "run" and "#[ignore" in text)
+            files[f.stem] = (g, text.count("#[test]") + text.count("#[wasm_bindgen_test]"), policy == "run" and "#[ignore" in text)
     for name in unread:
         if name not in gates:
             problems.append(f"[unread] {name}: no such file tests/{name}.rs (stale)")

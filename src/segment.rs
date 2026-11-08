@@ -892,8 +892,9 @@ impl DataSegment {
     ///
     /// # Errors
     ///
-    /// `InvalidData` when `point_count` exceeds [`MAX_SEGMENT_POINTS`], or a `RawLzma` payload
-    /// does not decompress to exactly `point_count` samples of its type.
+    /// `InvalidData` when `point_count` exceeds [`MAX_SEGMENT_POINTS`], a `PerlinNoise` model's
+    /// `point_count` × `octaves` exceeds `alice_core::generators::MAX_FBM_STEPS`, or a `RawLzma`
+    /// payload does not decompress to exactly `point_count` samples of its type.
     pub(crate) fn checked(self) -> io::Result<Self> {
         let n = self.metadata.point_count;
         if n > MAX_SEGMENT_POINTS {
@@ -903,6 +904,23 @@ impl DataSegment {
                     "segment: {n} points, more than the {MAX_SEGMENT_POINTS} a segment may hold"
                 ),
             ));
+        }
+        if let ModelType::PerlinNoise { octaves, .. } = &self.model {
+            // the generator runs `octaves` steps for each point; past its own budget it refuses,
+            // and a stored model past it would have every read spin first
+            let steps = u64::try_from(n)
+                .ok()
+                .and_then(|p| p.checked_mul(u64::from(*octaves)));
+            if steps.is_none_or(|s| s > alice_core::generators::MAX_FBM_STEPS) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "segment: {n} points of {octaves} octaves, more than the {} noise steps \
+                         the generator runs",
+                        alice_core::generators::MAX_FBM_STEPS
+                    ),
+                ));
+            }
         }
         if let ModelType::RawLzma {
             compressed_data,

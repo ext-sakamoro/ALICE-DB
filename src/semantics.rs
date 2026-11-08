@@ -102,9 +102,11 @@ pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
     ("alice-zip", alice_core::law::SEMANTICS_ID),
 ];
 
-/// The `alice-det-math` functions this crate calls itself (`ALICE-Law`'s `scripts/fold_set_check.py` compares
-/// the list with the calls in `src/`). `alice-zip`'s identifier covers only the functions `alice-zip` calls, so
-/// these are folded here, each as `det-math <function>`.
+/// The `alice-det-math` functions this crate calls itself.
+///
+/// `ALICE-Law`'s `scripts/fold_set_check.py` compares the list with the calls in `src/`. `alice-zip`'s
+/// identifier covers only the functions `alice-zip` calls, so these are folded here, each as
+/// `det-math <function>`.
 pub const DET_MATH_FUNCTIONS: &[&str] = &[
     "clamp",
     "ln64",
@@ -115,8 +117,9 @@ pub const DET_MATH_FUNCTIONS: &[&str] = &[
     "sin",
 ];
 
-/// The identifier of each function of [`DET_MATH_FUNCTIONS`], in that order, as recorded when
-/// [`DB_SEMANTICS_BY_ZIP`] was last folded. The `const _` below compares each with
+/// The identifier of each function of [`DET_MATH_FUNCTIONS`], in that order.
+///
+/// As recorded when [`DB_SEMANTICS_BY_ZIP`] was last folded. The `const _` below compares each with
 /// `alice_det_math::function_pin` at compile time, so a resolved `alice-det-math` whose function computes
 /// other bits stops the compile instead of reporting this identifier.
 pub const DET_MATH_PINS: &[(&str, [u8; 32])] = &[

@@ -108,3 +108,39 @@ fn a_damaged_raw_payload_of_the_first_format_is_refused() {
     let refused = DataSegment::from_stored_bytes(&bytes).expect_err("refused");
     assert_eq!(refused.kind(), ErrorKind::InvalidData);
 }
+
+fn noise(points: usize, octaves: u32) -> DataSegment {
+    let model = ModelType::PerlinNoise {
+        seed: 7,
+        scale: 1.0,
+        octaves,
+        persistence: 0.5,
+        lacunarity: 2.0,
+    };
+    let end = i64::try_from(points).unwrap() - 1;
+    DataSegment::new(1, 0, end, model, points, points * 4, 0)
+}
+
+/// A noise model's octaves are a loop bound per point, so points × octaves stays within the
+/// generator's own budget (`alice_core::generators::MAX_FBM_STEPS`); a segment over it is refused
+/// when it is decoded, before any read would spin.
+#[test]
+fn a_noise_segment_over_the_generator_budget_is_refused() {
+    let budget = alice_core::generators::MAX_FBM_STEPS;
+    let octaves = u32::try_from(budget).unwrap();
+    assert_eq!(read_back(&noise(1, octaves)), [Ok(()), Ok(())]);
+    assert_eq!(
+        read_back(&noise(1, octaves + 1)),
+        [Err(ErrorKind::InvalidData), Err(ErrorKind::InvalidData)]
+    );
+    assert_eq!(
+        read_back(&noise(4, u32::MAX)),
+        [Err(ErrorKind::InvalidData), Err(ErrorKind::InvalidData)]
+    );
+    let points = usize::try_from(budget / 64).unwrap();
+    assert_eq!(read_back(&noise(points, 64)), [Ok(()), Ok(())]);
+    assert_eq!(
+        read_back(&noise(points + 1, 64)),
+        [Err(ErrorKind::InvalidData), Err(ErrorKind::InvalidData)]
+    );
+}

@@ -107,15 +107,7 @@ pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
 /// `ALICE-Law`'s `scripts/fold_set_check.py` compares the list with the calls in `src/`. `alice-zip`'s
 /// identifier covers only the functions `alice-zip` calls, so these are folded here, each as
 /// `det-math <function>`.
-pub const DET_MATH_FUNCTIONS: &[&str] = &[
-    "clamp",
-    "ln64",
-    "max",
-    "max64",
-    "min",
-    "min64",
-    "sin",
-];
+pub const DET_MATH_FUNCTIONS: &[&str] = &["clamp", "ln64", "max", "max64", "min", "min64", "sin"];
 
 /// The identifier of each function of [`DET_MATH_FUNCTIONS`], in that order.
 ///

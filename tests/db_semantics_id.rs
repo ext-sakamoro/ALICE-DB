@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use alice_db::semantics::{
-    DB_SEMANTICS_BY_ZIP, DB_SEMANTICS_CHECKED_AT, DB_SEMANTICS_PINS, DET_MATH_FUNCTIONS, DET_MATH_PINS,
+    DB_SEMANTICS_BY_ZIP, DB_SEMANTICS_CHECKED_AT, DB_SEMANTICS_PINS, DET_MATH_FUNCTIONS,
+    DET_MATH_PINS,
 };
 use alice_db::DB_SEMANTICS_ID;
 use sha2::{Digest, Sha256};
@@ -53,7 +54,11 @@ fn all_entries() -> Vec<(String, [u8; 32])> {
     DB_SEMANTICS_PINS
         .iter()
         .map(|(n, d)| ((*n).to_string(), *d))
-        .chain(DET_MATH_PINS.iter().map(|(n, d)| (format!("det-math {n}"), *d)))
+        .chain(
+            DET_MATH_PINS
+                .iter()
+                .map(|(n, d)| (format!("det-math {n}"), *d)),
+        )
         .collect()
 }
 

@@ -289,15 +289,19 @@ fn semantics_id_is_the_recorded_value() {
     );
     assert_eq!(
         hex(&alice_db::SEMANTICS_ID),
-        // alice-zip 0.11's at 19f6f2c1, over alice-det-math 0.5.2 at 2d01c63f
+        // alice-zip's identifier with alice-det-math folded per function
         // (recorded in alice-zip's src/semantics.rs); the identifiers earlier
         // releases stamped stay readable through
         // `alice_core::law::PREVIOUS_SEMANTICS_IDS`
-        "17d0df1d7c0a6e63d1a7380129f12386b677ac96e7ac193dece546805f4fe84c",
+        "65f48962c757ebb619d252f8784f830aca5f3698fbd22f34150f9887863f38dd",
         "the numeric semantics changed: every residual pinned under the old \
          value is no longer applied on read"
     );
     for (release, previous) in [
+        (
+            "alice-zip 0.11 at 19f6f2c1 over alice-det-math 0.5.2 at 2d01c63f",
+            PREVIOUS_2D01C63F_ID,
+        ),
         (
             "alice-zip over alice-det-math 0.5.2 at 39507d1b, stamped before det-math 2d01c63f",
             PREVIOUS_39507D1B_ID,
@@ -469,19 +473,38 @@ fn bloom_sizing_is_the_recorded_bits() {
 // 5. Law identifiers
 // ---------------------------------------------------------------------------
 
-/// The law identifiers of the three fits under alice-zip's identifier over
-/// alice-det-math 0.5.2 at 2d01c63f (`17d0df1d…`), in fixture order
+/// The law identifiers of the three fits under alice-zip's identifier with
+/// alice-det-math folded per function (`65f48962…`), in fixture order
 ///
 /// Recorded from the code. The code's encoding of `SignalLaw::law_id`
 /// (length-prefixed domain tag and kind tag, the identifier, the domain bounds
 /// and the coefficients as big-endian bits) is the one the identifiers below
 /// were computed with outside this toolchain: under those identifiers the same
-/// fits still give [`PREVIOUS_39507D1B_LAW_IDS`] (`50a40cf6…`),
+/// fits still give [`PREVIOUS_2D01C63F_LAW_IDS`] (`17d0df1d…`),
+/// [`PREVIOUS_39507D1B_LAW_IDS`] (`50a40cf6…`),
 /// [`PREVIOUS_0_6_0_LAW_IDS`] (`51ffeb07…`), [`PREVIOUS_0_5_1_LAW_IDS`]
 /// (`85e08846…`) and [`PREVIOUS_GOLDEN_LAW_IDS`] (`135c407d…`)
 /// (`law_id_under_the_previous_identifiers_is_unchanged`), so only the
 /// identifier input differs here
 const GOLDEN_LAW_IDS: [(&str, &str); 3] = [
+    (
+        "line",
+        "85b7855f28a997c104888cbf4ad5703c945ee3199a0c0e297ad497ac3f562dd0",
+    ),
+    (
+        "parabola",
+        "c41a8c38eb53287239b0891bd9489d4647d577ba77cbe672442415b7e0ddf227",
+    ),
+    (
+        "cubic",
+        "53ce8b34eab73b196cfe29ba8028f78aea09568e24100b5cfe8ba16e71182123",
+    ),
+];
+
+/// The same identifiers under alice-zip 0.11's identifier at 19f6f2c1 over
+/// alice-det-math 0.5.2 at 2d01c63f (`17d0df1d…`), the one stamped before
+/// alice-det-math was folded per function (recorded then)
+const PREVIOUS_2D01C63F_LAW_IDS: [(&str, &str); 3] = [
     (
         "line",
         "d1f0753427462e906aebc6953c98fbe8e3e00a717ae5c29d53d1e692d0d17b09",
@@ -495,6 +518,16 @@ const GOLDEN_LAW_IDS: [(&str, &str); 3] = [
         "24d06970935229d614de5c3e1023a21f70f76302dfdf73b481ea7192e5aecccc",
     ),
 ];
+
+/// The digest of the law scenario recorded under `17d0df1d…`: reproducing it
+/// under that identifier shows that `evaluate` returns the same bits with
+/// alice-det-math folded per function, so only the identifier input moved
+const PREVIOUS_2D01C63F_LAW_DIGEST: &str =
+    "2536bbeb81fd687b2289b3f257f2dcade86d1ebd1ccbcf83d8ca0614a12fb8b9";
+
+/// alice-zip 0.11's identifier at 19f6f2c1 over alice-det-math 0.5.2 at 2d01c63f
+const PREVIOUS_2D01C63F_ID: &str =
+    "17d0df1d7c0a6e63d1a7380129f12386b677ac96e7ac193dece546805f4fe84c";
 
 /// The same identifiers under alice-zip's identifier over alice-det-math 0.5.2
 /// at 39507d1b (`50a40cf6…`), the one stamped before det-math 2d01c63f; computed
@@ -654,18 +687,18 @@ fn law_id_and_evaluation_are_the_recorded_bits() {
     assert_eq!(
         ids,
         recorded(&GOLDEN_LAW_IDS),
-        "the law identifiers under alice-zip's identifier over alice-det-math 0.5.2 at 2d01c63f"
+        "the law identifiers under alice-zip's identifier with alice-det-math folded per function"
     );
     assert_golden(
         "law_id and evaluate",
         bits,
         3 * (32 + 41 * 8),
-        // re-recorded for alice-det-math 0.5.2 at 2d01c63f: with 50a40cf6…
-        // (51ffeb07…, 85e08846…, 135c407d…) in place of `alice_db::SEMANTICS_ID`
-        // the same scenario still hashes to 649b5e82… (42a9c526…, 703f17b1…,
-        // f18a2a53…), so only the identifier moved
-        // (`law_id_under_the_previous_identifiers_is_unchanged`)
-        "2536bbeb81fd687b2289b3f257f2dcade86d1ebd1ccbcf83d8ca0614a12fb8b9",
+        // re-recorded for alice-zip's identifier 65f48962…: with 17d0df1d…
+        // (50a40cf6…, 51ffeb07…, 85e08846…, 135c407d…) in place of
+        // `alice_db::SEMANTICS_ID` the same scenario still hashes to 2536bbeb…
+        // (649b5e82…, 42a9c526…, 703f17b1…, f18a2a53…), so only the identifier
+        // moved (`law_id_under_the_previous_identifiers_is_unchanged`)
+        "4991ddf8a1415ffcaf9b71b9b58c9299dd6312cca0961e737f4dd80fd740ca25",
     );
 }
 
@@ -696,6 +729,16 @@ fn previous_law_scenario(
 
 #[test]
 fn law_id_under_the_previous_identifiers_is_unchanged() {
+    assert_golden(
+        "law_id and evaluate under the identifier before alice-det-math was folded per function",
+        previous_law_scenario(
+            "alice-zip 0.11 at 19f6f2c1 over alice-det-math 0.5.2 at 2d01c63f",
+            PREVIOUS_2D01C63F_ID,
+            &PREVIOUS_2D01C63F_LAW_IDS,
+        ),
+        3 * (32 + 41 * 8),
+        PREVIOUS_2D01C63F_LAW_DIGEST,
+    );
     assert_golden(
         "law_id and evaluate under the identifier before det-math 2d01c63f",
         previous_law_scenario(

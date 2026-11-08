@@ -10,5 +10,7 @@ inside the residual, and the law record restores the same law (its parts compare
 its identifier and the record checksum over it changed; the record is compressed, so its stored
 length can differ by a byte.
 
-Read by `tests/identifier_history.rs` as the current row of the identifier history: every value
-reads back exact as `ReadStatus::Current`.
+Read by `tests/identifier_history.rs` as a previous row of the identifier history and by
+`tests/previous_identifier_store.rs`: alice-zip lists `17d0df1d…` as a previous identifier (folding
+alice-det-math per function changed none of the bits), so every value reads back exact as
+`ReadStatus::VerifiedPrevious`.

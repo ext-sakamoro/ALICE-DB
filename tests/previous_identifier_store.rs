@@ -20,6 +20,12 @@
 //! (alice-zip at 8065587c over alice-det-math 0.5.2 at 39507d1b, `50a40cf6…`). This build stamps
 //! `17d0df1d…` (alice-det-math 0.5.2 at 2d01c63f) and alice-zip lists `50a40cf6…` as previous, so
 //! its values and its format 2 law record read back as `VerifiedPrevious` as well.
+//!
+//! `tests/fixtures/store_db_0_6_0_det_math_2d01c63f` was written by the build of `8ef87c7`
+//! (alice-zip 0.11 at 19f6f2c1 over alice-det-math 0.5.2 at 2d01c63f, `17d0df1d…`). This build
+//! stamps `65f48962…` (alice-zip with alice-det-math folded per function) and alice-zip lists
+//! `17d0df1d…` as previous, so its values and its format 2 law record read back as
+//! `VerifiedPrevious` as well.
 
 #![cfg(feature = "fs")]
 #![allow(clippy::cast_precision_loss)]
@@ -30,7 +36,11 @@ use alice_db::{AliceDB, StorageConfig};
 use std::path::{Path, PathBuf};
 
 /// `(fixture directory, the identifier its writer stamped)`, newest first
-const FIXTURES: [(&str, &str); 4] = [
+const FIXTURES: [(&str, &str); 5] = [
+    (
+        "store_db_0_6_0_det_math_2d01c63f",
+        "17d0df1d7c0a6e63d1a7380129f12386b677ac96e7ac193dece546805f4fe84c",
+    ),
     (
         "store_db_0_6_0_det_math_0_5_2",
         "50a40cf64625018acc99c940e544353b901457b4a7a80bf903544ed4ef9af406",

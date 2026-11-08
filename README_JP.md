@@ -306,7 +306,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `40973a8a7a67` と
 | | |
 |---|---|
 | release train | alice-db 0.5.1 (published)、Law への依存: あり |
-| 算術 | train の alice-det-math 0.5.1、算術の識別子 `85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315` この crate の要求は `alice-det-math = "0.5.2"` |
+| 算術 | train の alice-det-math 0.5.1、算術の識別子 `85e0884623b154a3b2b264374907b6cbac09307ca3f9a08339e48c567d3cb315` この crate の要求は `alice-det-math = "0.6"` |
 | end to end 検査 | 対象 (`alice-db = "0.5"`)、digest `9f7cf676708a272e3817ebbf0727c610f391e1547747af4307ee44d5523267c2`、aarch64 と x86_64 で同じ |
 
 ### 適合 (G1-G14)
@@ -318,7 +318,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `40973a8a7a67` と
 | G3 no-outer-fneg-of-fma | 適合 | the library's only fma calls are the fit competition's model score (not a stored value); the 114 fma calls in the IR otherwise come from alice-det-math and … |
 | G4 debug-release-arch-goldens | 適合 | boundary: a stored value read back (get / scan from the memtable, or from a segment through its residual: lossless, or a lossy-configured segment holding a … |
 | G5 release-profile-test-leg | 適合 | the aarch64 release leg is macos-latest. The repository has no branch protection; a leg is required in the sense that main moves only by a fast-forward after … |
-| G6 semantics-id | 適合 | alice-db computes its own identifier, DB_SEMANTICS_ID (670fa328...1223a7 with alice-zip 0.11 at 19f6f2c1 over alice-det-math 0.5.2 at 2d01c63f), from the bits … |
+| G6 semantics-id | 適合 | alice-db computes its own identifier, DB_SEMANTICS_ID (62d72c50...fbffa8 with alice-zip at its identifier 65f48962 and the identifiers of the 7 alice-det-math … |
 | G7 handshake-carries-id | 適合 | the Law-bearing value that crosses this crate's boundary is the stored law record (alice-zip SignalLaw parts), handed over in AliceDB::to_bytes / from_bytes … |
 | G8 persisted-semantics-id | 適合 | every durable form that carries a value computed under an arithmetic carries that arithmetic's identifier: lossless segment residuals since 0.3.0 (the … |
 | G9 persisted-meaning-change-is-major | 適合 | the audit covers the identifier this crate persists and finds no violation, and tests/identifier_history.rs reads a committed store stamped with each earlier … |

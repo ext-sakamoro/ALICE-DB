@@ -35,7 +35,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # ALICE-Zip core: procedural generators, zlib, and `law::SignalLaw`
 # (stored by `law_store`, 0.5.2+ for `law::SignalLaw::law_id`)
-alice_core = { package = "alice-zip", git = "https://github.com/ext-sakamoro/ALICE-Zip", rev = "19f6f2c1ff5537642cefca006e37e2f00570d6ba", version = "0.11" }
+alice_core = { package = "alice-zip", git = "https://github.com/ext-sakamoro/ALICE-Zip", branch = "main", version = "0.11" }
 
 # Every transcendental this crate evaluates itself (bloom filter sizing, model
 # selection error) goes through `alice-det-math`, whose kernels are built from
@@ -44,7 +44,7 @@ alice_core = { package = "alice-zip", git = "https://github.com/ext-sakamoro/ALI
 # crate stamps (`alice_core::law::SEMANTICS_ID`, pinned in
 # tests/determinism_golden.rs; DB_SEMANTICS_ID is keyed by it). This crate always
 # builds with `std`. The same source as alice-zip and alice-analytics.
-alice-det-math = { git = "https://github.com/ext-sakamoro/ALICE-DetMath", rev = "2d01c63ff0849cf0ab82eafb89f87f1b729bd2a8", version = "0.5.2", default-features = false, features = ["std"] }
+alice-det-math = { git = "https://github.com/ext-sakamoro/ALICE-DetMath", branch = "main", version = "0.6", default-features = false, features = ["std"] }
 
 # Zero-Copy Serialization (Phase 1)
 rkyv = { version = "0.8.17", default-features = false, features = ["std", "bytecheck"] }
@@ -75,7 +75,7 @@ rayon = "1.10"
 parking_lot = "0.12"
 
 # ALICE-Analytics bridge (optional)
-alice-analytics = { git = "https://github.com/ext-sakamoro/ALICE-Analytics", rev = "c70ff0439d3630e9b81dcf4404726f57d11b3686", version = ">=0.7, <0.8", optional = true }
+alice-analytics = { git = "https://github.com/ext-sakamoro/ALICE-Analytics", branch = "main", version = ">=0.7, <0.8", optional = true }
 
 # ALICE-Crypto bridge (optional)
 alice-crypto = { git = "https://github.com/ext-sakamoro/ALICE-Crypto", rev = "ed065ad1d8145384e8d4d1458d35df7f220cb52c", version = ">=0.6, <0.7", optional = true, default-features = false, features = ["std"] }

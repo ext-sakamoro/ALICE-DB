@@ -342,6 +342,12 @@ jobs:
         run: python scripts/test_build_flags_check.py
       - name: Fuzz reach gate (tests)
         run: python scripts/test_fuzz_reach.py
+      # every tracked Cargo.lock (root, fuzz/, tools/) resolves each alice-* crate to the same
+      # source: a lock left behind builds the other workspace on the old commit; nothing compared fails
+      - name: Lock agreement across workspaces (test, then check)
+        run: |
+          python scripts/test_lock_sibling_agreement.py
+          python scripts/lock_sibling_agreement.py
       - name: Tracked binaries (tests)
         run: python scripts/test_tracked_binaries.py
       - name: No built binary is tracked (0 files read fails)

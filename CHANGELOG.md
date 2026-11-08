@@ -9,6 +9,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
 ### Added
+- CI と preflight: `scripts/lock_sibling_agreement.py` (試験 `scripts/test_lock_sibling_agreement.py`) が、追跡している全ての Cargo.lock (root、fuzz/、tools/) で alice-* の各 crate が同じ source に解決しているかを比べる 根の lock だけ alice-zip を上げ fuzz/Cargo.lock が古いままだった時に fuzz の build が CI でだけ落ちた 比較 0 件で fail
 - `segment::MAX_SEGMENT_POINTS`: 1 つの segment が持てる点の数の上限 = 2^30 / 24 = 44 739 242 (segment を丸ごと読む時に 1 点が使う 24 bytes (再生成した `f32`、その正規化した写し、範囲の結果の `(i64, f32)`) で 1 GiB に収まる数) `memtable_capacity` がこれを超える store は `InvalidInput` で開かない
 - `BlobStorage::write_batch` / `AliceDB::write_blob_batch`: `WriteBatch` の全操作を全部か無しかで適用する (WAL の 1 record、型 0x03、checksum は 1 つ) reader は batch を一度に見る
 - `BlobStorage::scan_range` / `AliceDB::scan_blob_range`: 2 つの bound の間の生きた entry を昇順・降順で、上限つきで返す source は遅延で読む

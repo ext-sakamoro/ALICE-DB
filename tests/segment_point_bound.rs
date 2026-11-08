@@ -87,8 +87,24 @@ fn a_memtable_that_could_seal_more_does_not_open() {
         ..StorageConfig::default()
     };
     assert!(AliceDB::with_config(config(MAX_SEGMENT_POINTS)).is_ok());
-    let refused = AliceDB::with_config(config(MAX_SEGMENT_POINTS + 1))
-        .err()
-        .expect("refused");
+    let Err(refused) = AliceDB::with_config(config(MAX_SEGMENT_POINTS + 1)) else {
+        panic!("a memtable over the limit opened");
+    };
     assert_eq!(refused.kind(), ErrorKind::InvalidInput);
+}
+
+/// The same check on the format the first releases stored (rkyv 0.7): the fixture with one byte of
+/// its raw payload changed no longer decompresses to its 64 points.
+#[test]
+fn a_damaged_raw_payload_of_the_first_format_is_refused() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/segment_format0_variants/raw_lzma.rkyv"
+    );
+    let mut bytes = std::fs::read(path).unwrap();
+    assert!(DataSegment::from_stored_bytes(&bytes).is_ok());
+    // the archive starts with the payload: past its 13-byte header, into the coded data
+    bytes[20] ^= 0xff;
+    let refused = DataSegment::from_stored_bytes(&bytes).expect_err("refused");
+    assert_eq!(refused.kind(), ErrorKind::InvalidData);
 }

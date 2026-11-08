@@ -645,6 +645,16 @@ impl StorageEngine {
 
     /// Construct the engine around `store` without touching any stored bytes
     fn build(config: StorageConfig, store: Store) -> io::Result<Self> {
+        if config.memtable_capacity > crate::segment::MAX_SEGMENT_POINTS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "memtable_capacity {} would seal segments larger than the {} points a segment may hold",
+                    config.memtable_capacity,
+                    crate::segment::MAX_SEGMENT_POINTS
+                ),
+            ));
+        }
         let memtable = MemTable::with_config_and_created_at(
             config.memtable_capacity,
             config.fit_config.clone(),
@@ -1411,7 +1421,7 @@ impl StorageEngine {
             let mut data = vec![0u8; size];
             file.read_exact(&mut data)?;
 
-            let segment = crate::legacy_bincode::decode_segment(&data)?;
+            let segment = crate::legacy_bincode::decode_segment(&data)?.checked()?;
 
             // Encode in the stored segment format and save
             let segment_path = self.config.data_dir.join(format!("seg_{}.rkyv", entry.id));

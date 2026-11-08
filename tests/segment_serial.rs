@@ -178,8 +178,16 @@ fn every_model() -> Vec<ModelType> {
             start_value: -1.0,
             end_value: 1.0,
         },
+        // nine Int64 samples, compressed the way the writer does: a reader refuses a payload that
+        // does not decompress to `point_count` samples
         ModelType::RawLzma {
-            compressed_data: vec![0x5d, 0, 0, 0x80, 0],
+            compressed_data: {
+                let raw: Vec<u8> = (0..9i64).flat_map(i64::to_le_bytes).collect();
+                let mut out = Vec::new();
+                lzma_rs::lzma_compress(&mut std::io::Cursor::new(&raw), &mut out)
+                    .expect("compress");
+                out
+            },
             dtype: DataType::Int64,
             original_size: 72,
         },

@@ -9,6 +9,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
 ### Added
+- `segment::MAX_SEGMENT_POINTS`: 1 つの segment が持てる点の数の上限 = 2^30 / 24 = 44 739 242 (segment を丸ごと読む時に 1 点が使う 24 bytes (再生成した `f32`、その正規化した写し、範囲の結果の `(i64, f32)`) で 1 GiB に収まる数) `memtable_capacity` がこれを超える store は `InvalidInput` で開かない
 - `BlobStorage::write_batch` / `AliceDB::write_blob_batch`: `WriteBatch` の全操作を全部か無しかで適用する (WAL の 1 record、型 0x03、checksum は 1 つ) reader は batch を一度に見る
 - `BlobStorage::scan_range` / `AliceDB::scan_blob_range`: 2 つの bound の間の生きた entry を昇順・降順で、上限つきで返す source は遅延で読む
 - `BlobStorage::open_existing_read_only`: 既存の store の 1 つの時点を読む 何も作らず、切らず、lock も取らないので writer と並べて開ける
@@ -117,6 +118,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- segment を読む時に `point_count` の値で確保していた 旧 `data.alice` の entry で `point_count` 4 289 895 731 と展開できない raw の中身を持つものが、展開の失敗時に `point_count` 個の 0 を作り 17 GB を確保した (fuzz `fuzz_segment_bytes` が検出、入力は `tests/fixtures/fuzz/segment_bytes_point_count_oom.bin`) 全ての読み手 (`from_bytes`、`from_stored_bytes` の両形式、旧 data file) の最後で、`point_count` が `MAX_SEGMENT_POINTS` を超える segment と、raw の中身が `point_count` 個の値にちょうど展開されない segment を `InvalidData` で拒む 展開は出力も LZMA の辞書も `point_count` 個の分で止める PerlinNoise の失敗時の 0 と fBm の生成は、この上限の内でだけ `point_count` 個を作る
 - blob: 読み取り専用で開く時、書く側の flush が `blob.sst.tmp` を `blob.sst` に名前を変える瞬間に一覧を読むと、一時 file を前の版の file と取り違えて `InvalidData` で開かなかった (Windows の CI で 40 回中 13 回、macOS でも同じ状態を作ると起きる) store が自分で書く file (`SSTable`、書きかけの `*.sst.tmp`、`blob.lock`) は名前の大文字小文字によらず前の版の file にしない 試験 `tests/blob_one_store.rs::the_flush_temporary_file_is_not_a_file_of_an_earlier_version`
 - 試験の open-file audit: 巻き戻り中の destructor が報告した対応の無い close で 2 回目の panic を起こし process を止めていた (Windows で最初の失敗の文面が出ないまま 0xc0000409 で終わった) 巻き戻り中は記録だけにし (`fs_audit::take_unmatched_closes`)、directory を消した後の close も開いた時の key で照合する `tests/blob_read_only.rs` の書く側は読む側が panic しても止めて合流させる
 - blob: `BlobStorage::open` に `blob.wal` 以外の名前の WAL を渡すと、Overwrite の flush 済みのデータが開き直した時に消えていた `AliceDB::open` は `blob.wal` 固定なので影響しない 試験 `tests/blob_one_store.rs`

@@ -6,6 +6,9 @@
 //! differently, or cannot decode a fixture, fails here. `tests/fixtures/segment_format0_variants/` holds one
 //! segment per model variant (with -0, NaN and infinities where a variant has floats), archived and recorded
 //! by the same rkyv 0.7 reader, so every variant of the old layout stays covered after that reader is gone.
+//! `raw_lzma` was archived again by the same writer (587b216, rkyv 0.7) with a real LZMA payload of its 64
+//! points, the other fields unchanged: a reader now refuses a raw payload that does not decompress to
+//! `point_count` samples, and the first fixture carried a truncated header there.
 
 #[path = "support/segment_text.rs"]
 mod segment_text;

@@ -13,10 +13,23 @@ mod legacy_data_file;
 const FIXTURE: &str = include_str!("fixtures/legacy_bincode/every_model.txt");
 
 fn cases() -> Vec<(&'static str, ModelType, Option<Vec<u8>>)> {
-    let raw = |dtype| ModelType::RawLzma {
-        compressed_data: vec![1, 2, 3],
-        dtype,
-        original_size: 12,
+    // nine samples 0..9 of each type, compressed the way the writer does
+    let raw = |dtype: DataType| {
+        let width = dtype.size();
+        let bytes: Vec<u8> = (0..9u8)
+            .flat_map(|i| {
+                let mut b = vec![0u8; width];
+                b[0] = i;
+                b
+            })
+            .collect();
+        let mut compressed = Vec::new();
+        lzma_rs::lzma_compress(&mut std::io::Cursor::new(&bytes), &mut compressed).unwrap();
+        ModelType::RawLzma {
+            compressed_data: compressed,
+            dtype,
+            original_size: bytes.len(),
+        }
     };
     vec![
         (

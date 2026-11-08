@@ -300,7 +300,7 @@ const BYTES_PER_POINT_READ: usize = 4 + 4 + 16;
 /// Memory a whole-segment read may take: 1 GiB.
 const SEGMENT_READ_BUDGET: usize = 1 << 30;
 
-/// The most points a segment may hold: what a whole read fits in [`SEGMENT_READ_BUDGET`],
+/// The most points a segment may hold: what a whole read fits in 1 GiB at 24 bytes a point,
 /// `2^30 / 24` = 44 739 242. A stored or legacy segment that claims more is refused when it is
 /// decoded, and a store whose memtable could seal more does not open; `point_count` sizes
 /// allocations, so it is never taken from the bytes past this bound.
@@ -774,13 +774,9 @@ impl DataSegment {
     /// Decompress raw LZMA data
     #[allow(clippy::unused_self)]
     fn decompress_raw(&self, compressed: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
-        use std::io::Cursor;
-
-        let mut decompressed = Vec::new();
-        if lzma_rs::lzma_decompress(&mut Cursor::new(compressed), &mut decompressed).is_err() {
-            return vec![0.0; count];
-        }
-        decode_raw_bytes(&decompressed, dtype)
+        // A segment that was decoded is `checked`: its payload gives `count` samples. One built in
+        // memory with a payload that does not has no samples to give.
+        decompress_samples(compressed, dtype, count).unwrap_or_default()
     }
 
     /// The segment as `alice_serial` format 1 ([`crate::segment_codec`])
@@ -800,7 +796,7 @@ impl DataSegment {
     /// including the bincode bytes older releases wrote (those are read only from a legacy data
     /// file, by the storage engine).
     pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
-        crate::segment_codec::from_bytes(data)
+        crate::segment_codec::from_bytes(data)?.checked()
     }
 
     /// Write segment to file
@@ -865,7 +861,7 @@ impl DataSegment {
     /// or carry a format newer than [`SEGMENT_FORMAT`].
     pub fn from_stored_bytes(bytes: &[u8]) -> io::Result<Self> {
         let Some(rest) = bytes.strip_prefix(SEGMENT_MAGIC.as_slice()) else {
-            return crate::segment_v07::decode(bytes);
+            return crate::segment_v07::decode(bytes)?.checked();
         };
         if rest.len() < SEGMENT_HEADER_LEN - SEGMENT_MAGIC.len() {
             return Err(io::Error::new(
@@ -884,9 +880,45 @@ impl DataSegment {
         }
         let mut archive = rkyv::util::AlignedVec::<16>::with_capacity(rest.len() - 8);
         archive.extend_from_slice(&rest[8..]);
-        rkyv::from_bytes::<Self, rkyv::rancor::Error>(&archive).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("rkyv validation: {e}"))
-        })
+        rkyv::from_bytes::<Self, rkyv::rancor::Error>(&archive)
+            .map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("rkyv validation: {e}"))
+            })?
+            .checked()
+    }
+
+    /// The segment, if what it claims can be read within [`MAX_SEGMENT_POINTS`]: every decoder
+    /// ends here, because `point_count` sizes the allocations of a read.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidData` when `point_count` exceeds [`MAX_SEGMENT_POINTS`], or a `RawLzma` payload
+    /// does not decompress to exactly `point_count` samples of its type.
+    pub(crate) fn checked(self) -> io::Result<Self> {
+        let n = self.metadata.point_count;
+        if n > MAX_SEGMENT_POINTS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "segment: {n} points, more than the {MAX_SEGMENT_POINTS} a segment may hold"
+                ),
+            ));
+        }
+        if let ModelType::RawLzma {
+            compressed_data,
+            dtype,
+            ..
+        } = &self.model
+        {
+            let samples = decompress_samples(compressed_data, *dtype, n).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("segment: the raw payload does not decompress to {n} samples"),
+                )
+            })?;
+            debug_assert_eq!(samples.len(), n);
+        }
+        Ok(self)
     }
     /// Write segment to file in rkyv format
     ///
@@ -1558,6 +1590,51 @@ pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
 // =============================================================================
 
 /// Reinterpret decompressed little-endian bytes as `f32` samples of `dtype`.
+/// A `Write` that refuses to hold more than `limit` bytes
+struct Bounded {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for Bounded {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.bytes.len() + buf.len() > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "raw payload longer than its points",
+            ));
+        }
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The `count` samples of a raw payload, or `None` when it does not decompress to exactly that
+/// many: the output never grows past `count` samples, whatever the payload's header claims.
+fn decompress_samples(compressed: &[u8], dtype: DataType, count: usize) -> Option<Vec<f32>> {
+    let limit = count.checked_mul(dtype.size())?;
+    let mut out = Bounded {
+        bytes: Vec::new(),
+        limit,
+    };
+    // the decoder's dictionary grows only as far as the output may: the stream's header would let
+    // it reach its own stated size
+    let options = lzma_rs::decompress::Options {
+        memlimit: Some(limit),
+        ..lzma_rs::decompress::Options::default()
+    };
+    lzma_rs::lzma_decompress_with_options(
+        &mut std::io::Cursor::new(compressed),
+        &mut out,
+        &options,
+    )
+    .ok()?;
+    (out.bytes.len() == limit).then(|| decode_raw_bytes(&out.bytes, dtype))
+}
+
 fn decode_raw_bytes(decompressed: &[u8], dtype: DataType) -> Vec<f32> {
     match dtype {
         DataType::Float32 => decompressed

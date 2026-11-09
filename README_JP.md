@@ -298,10 +298,10 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | 保存時暗号化 (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | 組込み機器でのモデル当てはめ |
 
-<!-- law-integration:begin law=5261d18eaf6c679432bbe392864a665b95b48f06 -->
+<!-- law-integration:begin law=5b19cf68bf4e7b8fc80c01e486a8c3436de98af0 -->
 ## ALICE-Law との統合
 
-ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5261d18eaf6c` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
+ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5b19cf68bf4e` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
 
 | | |
 |---|---|

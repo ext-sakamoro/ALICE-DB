@@ -208,6 +208,8 @@ pub struct ReadmeJpDoctests;
 pub mod analytics_bridge;
 pub mod blob;
 #[cfg(feature = "fs")]
+pub mod blob_dir;
+#[cfg(feature = "fs")]
 pub mod blob_sstable;
 #[cfg(feature = "fs")]
 mod blob_store;

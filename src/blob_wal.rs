@@ -103,15 +103,15 @@
 //! this as the canonical way to detect a running writer; multi-writer coordination
 //! (leases, coordinator process) is out of scope for alpha.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-#[cfg(not(windows))]
-use fs2::FileExt;
 use parking_lot::Mutex;
 
 use crate::blob::BlobValue;
+pub(crate) use crate::blob_dir::open_exclusive;
+use crate::blob_dir::{BlobDir, BlobFile, StdDir};
 
 /// How aggressively the WAL should `fsync` after each append.
 ///
@@ -207,69 +207,9 @@ pub struct WalRecovery {
 #[derive(Debug)]
 pub struct BlobWal {
     path: PathBuf,
+    dir: Arc<dyn BlobDir>,
     state: Mutex<WalState>,
     sync_policy: SyncPolicy,
-}
-
-/// Whether the WAL handle is opened with the append flag. It is not:
-/// Windows maps an append handle to `FILE_APPEND_DATA` without
-/// `FILE_WRITE_DATA`, which makes [`BlobWal::truncate`] fail with
-/// `ERROR_ACCESS_DENIED`. Kept as a named constant so the open-file
-/// audit checks the same value the open call uses.
-const OPEN_WITH_APPEND: bool = false;
-
-/// `FILE_SHARE_READ`: other handles may read the WAL while this writer holds it.
-#[cfg(windows)]
-const WINDOWS_SHARE_READ: u32 = 0x1;
-/// `FILE_SHARE_DELETE`: as in the default share mode, for the rename of a file
-/// over the WAL's directory entry. `FILE_SHARE_WRITE` is left out, which refuses
-/// another writer of this file by any name.
-#[cfg(windows)]
-const WINDOWS_SHARE_DELETE: u32 = 0x4;
-
-/// `ERROR_SHARING_VIOLATION`: another handle's share mode refuses this open.
-fn is_sharing_violation(e: &io::Error) -> bool {
-    cfg!(windows) && e.raw_os_error() == Some(32)
-}
-
-fn already_locked(path: &Path, e: &io::Error, kind: io::ErrorKind) -> io::Error {
-    io::Error::new(
-        kind,
-        format!(
-            "`{}` is already locked by another writer: {e}",
-            path.display()
-        ),
-    )
-}
-
-/// Open `path` for one writer at a time: other handles may read it, a second
-/// writer gets `WouldBlock`, and the hold ends with the process.
-pub(crate) fn open_exclusive(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
-    #[cfg(windows)]
-    std::os::windows::fs::OpenOptionsExt::share_mode(
-        options,
-        WINDOWS_SHARE_READ | WINDOWS_SHARE_DELETE,
-    );
-    let file = options.open(path).map_err(|e| {
-        if is_sharing_violation(&e) {
-            already_locked(path, &e, io::ErrorKind::WouldBlock)
-        } else {
-            e
-        }
-    })?;
-    // Exclusive advisory lock. If another process (or the same process) already
-    // holds the lock we bail with a descriptive error so the caller can surface it
-    // as "database already open" rather than a mysterious later corruption.
-    #[cfg(not(windows))]
-    FileExt::try_lock_exclusive(&file).map_err(|e| {
-        let kind = if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
-            io::ErrorKind::WouldBlock
-        } else {
-            e.kind()
-        };
-        already_locked(path, &e, kind)
-    })?;
-    Ok(file)
 }
 
 /// Interior state guarded by the outer `Mutex`. Kept separate so a
@@ -277,7 +217,7 @@ pub(crate) fn open_exclusive(options: &mut OpenOptions, path: &Path) -> io::Resu
 /// batched-write counter.
 #[derive(Debug)]
 struct WalState {
-    file: File,
+    file: Box<dyn BlobFile>,
     /// Number of appended records not yet reflected on disk via
     /// `sync_data`. `EveryWrite` keeps this at zero because it fsyncs
     /// unconditionally; `Batched` and `Manual` allow it to grow.
@@ -307,25 +247,28 @@ impl BlobWal {
     /// # Errors
     /// See [`Self::open`].
     pub fn open_with_policy(path: impl AsRef<Path>, sync_policy: SyncPolicy) -> io::Result<Self> {
+        Self::open_in(Arc::new(StdDir), path, sync_policy)
+    }
+
+    /// Same as [`Self::open_with_policy`], with the files kept in `dir`.
+    ///
+    /// # Errors
+    /// See [`Self::open`].
+    pub fn open_in(
+        dir: Arc<dyn BlobDir>,
+        path: impl AsRef<Path>,
+        sync_policy: SyncPolicy,
+    ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            dir.create_dir_all(parent)?;
         }
-        // Opened read + write, *not* append: on Windows an append handle
-        // carries FILE_APPEND_DATA without FILE_WRITE_DATA, and
-        // `truncate` (`set_len`) then fails with ERROR_ACCESS_DENIED.
-        // Every write seeks to the end first instead (see `write_frame`).
-        let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .append(OPEN_WITH_APPEND)
-            .create(true)
-            .truncate(false);
-        let file = open_exclusive(&mut options, &path)?;
-        crate::fs_audit::note_open(&path);
+        // Opened read + write, *not* append (see `blob_dir::OPEN_WITH_APPEND`): every write
+        // goes to the end explicitly instead (see `write_frame`).
+        let file = dir.open_exclusive(&path)?;
         Ok(Self {
             path,
+            dir,
             state: Mutex::new(WalState {
                 file,
                 pending_ops: 0,
@@ -354,7 +297,7 @@ impl BlobWal {
         if state.pending_ops == 0 {
             return Ok(());
         }
-        crate::fs_audit::sync_data(&state.file, "wal", &self.path)?;
+        state.file.sync_data("wal")?;
         state.pending_ops = 0;
         Ok(())
     }
@@ -371,7 +314,7 @@ impl BlobWal {
     /// Propagates the underlying `metadata` error.
     pub fn size_on_disk(&self) -> io::Result<u64> {
         let state = self.state.lock();
-        state.file.metadata().map(|m| m.len())
+        state.file.len()
     }
 
     /// Truncate the WAL back to zero bytes.
@@ -386,12 +329,10 @@ impl BlobWal {
     /// Propagates any `seek` / `set_len` / `sync_all` error.
     pub fn truncate(&self) -> io::Result<()> {
         let mut state = self.state.lock();
-        crate::fs_audit::check_set_len(&self.path, OPEN_WITH_APPEND);
-        state.file.seek(SeekFrom::Start(0))?;
         state.file.set_len(0)?;
         // sync_all here so the truncation reaches disk before we
         // consider the WAL "empty" from the caller's point of view.
-        crate::fs_audit::sync_all(&state.file, "wal", &self.path)?;
+        state.file.sync_all("wal")?;
         state.pending_ops = 0;
         Ok(())
     }
@@ -472,22 +413,19 @@ impl BlobWal {
 
     fn write_frame(&self, frame: &[u8]) -> io::Result<()> {
         let mut state = self.state.lock();
-        // The handle is not opened in append mode (see `open_with_policy`),
-        // and `replay` leaves the cursor wherever it stopped reading, so
-        // position at the end explicitly. The mutex makes seek + write
-        // one step with respect to other writers in this process, and
-        // the exclusive file lock rules out writers in other processes.
-        state.file.seek(SeekFrom::End(0))?;
-        state.file.write_all(frame)?;
+        // `append` writes at the end whatever was read before. The mutex makes the
+        // write one step with respect to other writers in this process, and the
+        // exclusive hold on the file rules out writers in other processes.
+        state.file.append(frame)?;
         state.pending_ops += 1;
         match self.sync_policy {
             SyncPolicy::EveryWrite => {
-                crate::fs_audit::sync_data(&state.file, "wal", &self.path)?;
+                state.file.sync_data("wal")?;
                 state.pending_ops = 0;
             }
             SyncPolicy::Batched { max_pending_ops } => {
                 if state.pending_ops >= max_pending_ops {
-                    crate::fs_audit::sync_data(&state.file, "wal", &self.path)?;
+                    state.file.sync_data("wal")?;
                     state.pending_ops = 0;
                 }
             }
@@ -509,10 +447,12 @@ impl BlobWal {
     /// propagates.
     pub fn replay(&self) -> io::Result<Vec<WalRecord>> {
         let mut state = self.state.lock();
-        // Seek to start; `write_frame` seeks back to the end before each
-        // write, so wherever we leave the read cursor does not matter.
-        state.file.seek(SeekFrom::Start(0))?;
-        let mut reader = BufReader::new(&state.file);
+        // Read from the start; `write_frame` appends at the end, so where the
+        // reading stops does not matter.
+        let mut reader = BufReader::new(AtReader {
+            file: state.file.as_mut(),
+            pos: 0,
+        });
 
         let mut out = Vec::new();
         while let ReadOutcome::Records(records) = read_one(&mut reader)? {
@@ -535,10 +475,12 @@ impl BlobWal {
     /// error the WAL is either uncut or cut after the copy is durable.
     pub fn recover(&self) -> io::Result<(Vec<WalRecord>, Option<WalRecovery>)> {
         let mut state = self.state.lock();
-        remove_stale_dropped_tmp(&self.path)?;
-        state.file.seek(SeekFrom::Start(0))?;
+        remove_stale_dropped_tmp(self.dir.as_ref(), &self.path)?;
         let mut reader = Counting {
-            inner: BufReader::new(&state.file),
+            inner: BufReader::new(AtReader {
+                file: state.file.as_mut(),
+                pos: 0,
+            }),
             pos: 0,
         };
         let mut out = Vec::new();
@@ -560,14 +502,16 @@ impl BlobWal {
         };
 
         let mut dropped = Vec::new();
-        state.file.seek(SeekFrom::Start(good_end))?;
-        state.file.read_to_end(&mut dropped)?;
-        let dropped_copy = keep_dropped(&self.path, good_end, &dropped)?;
+        AtReader {
+            file: state.file.as_mut(),
+            pos: good_end,
+        }
+        .read_to_end(&mut dropped)?;
+        let dropped_copy = keep_dropped(self.dir.as_ref(), &self.path, good_end, &dropped)?;
         crate::fs_audit::crash_point("wal_recover:before_cut")?;
 
-        crate::fs_audit::check_set_len(&self.path, OPEN_WITH_APPEND);
         state.file.set_len(good_end)?;
-        crate::fs_audit::sync_all(&state.file, "wal", &self.path)?;
+        state.file.sync_all("wal")?;
         Ok((
             out,
             Some(WalRecovery {
@@ -608,15 +552,15 @@ fn dropped_copy_name(wal: &Path, offset: u64, n: u64) -> PathBuf {
 /// with other bytes (an earlier recovery at the same offset) is never
 /// replaced, and the new copy takes the lowest free `.<n>` name. The
 /// caller holds the WAL lock, so no other writer picks a name meanwhile.
-fn keep_dropped(wal: &Path, offset: u64, bytes: &[u8]) -> io::Result<PathBuf> {
+fn keep_dropped(dir: &dyn BlobDir, wal: &Path, offset: u64, bytes: &[u8]) -> io::Result<PathBuf> {
     let mut n = 0;
     loop {
         let path = dropped_copy_name(wal, offset, n);
-        match std::fs::read(&path) {
+        match dir.read(&path) {
             Ok(existing) if existing == bytes => return Ok(path),
             Ok(_) => n += 1,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                write_durable(&path, bytes)?;
+                write_durable(dir, &path, bytes)?;
                 return Ok(path);
             }
             Err(e) => return Err(e),
@@ -627,51 +571,42 @@ fn keep_dropped(wal: &Path, offset: u64, bytes: &[u8]) -> io::Result<PathBuf> {
 /// Write `bytes` to the free name `path` through `<path>.tmp` (created
 /// with `create_new`): write, fsync, rename, then fsync the directory so
 /// the name survives a crash too.
-fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+fn write_durable(dir: &dyn BlobDir, path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut tmp_name = path
         .file_name()
         .map(std::ffi::OsStr::to_os_string)
         .unwrap_or_default();
     tmp_name.push(".tmp");
     let tmp = path.with_file_name(tmp_name);
-    {
-        let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        f.write_all(bytes)?;
-        crate::fs_audit::sync_all(&f, "file", &tmp)?;
-    }
-    crate::fs_audit::check_replace_target(path);
-    std::fs::rename(&tmp, path)?;
-    sync_dir(path, "dir")
+    dir.write_new(&tmp, bytes)?;
+    dir.rename(&tmp, path)?;
+    dir.sync_parent(path, "dir")
 }
 
 /// Remove `<wal>.dropped-*.tmp` left by a copy that was interrupted
 /// before its rename. Finished copies (no `.tmp`) are never removed. The
 /// caller holds the WAL lock, so no copy is being written meanwhile.
-fn remove_stale_dropped_tmp(wal: &Path) -> io::Result<()> {
+fn remove_stale_dropped_tmp(store: &dyn BlobDir, wal: &Path) -> io::Result<()> {
     let dir = match wal.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
         _ => Path::new("."),
     };
     let prefix = dropped_prefix(wal);
     let prefix = prefix.to_string_lossy();
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match store.list(dir) {
         Ok(r) => r,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e),
     };
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
+    for path in entries {
+        let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
             continue;
         };
         // exactly the lowercase `.tmp` recovery writes (a `.TMP` is not ours)
         if name.starts_with(prefix.as_ref())
             && Path::new(name).extension() == Some(std::ffi::OsStr::new("tmp"))
         {
-            let path = entry.path();
-            crate::fs_audit::check_remove(&path);
-            match std::fs::remove_file(&path) {
+            match store.remove(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e),
@@ -685,18 +620,21 @@ fn remove_stale_dropped_tmp(wal: &Path) -> io::Result<()> {
 /// directory fsync and makes the rename durable through the file system's
 /// own metadata journal).
 pub(crate) fn sync_dir(path: &Path, what: &str) -> io::Result<()> {
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        let dir = if dir.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            dir
-        };
-        crate::fs_audit::sync_all(&File::open(dir)?, what, dir)?;
+    StdDir.sync_parent(path, what)
+}
+
+/// A reader over a [`BlobFile`] from `pos` on.
+struct AtReader<'a> {
+    file: &'a mut dyn BlobFile,
+    pos: u64,
+}
+
+impl Read for AtReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.file.read_at(self.pos, buf)?;
+        self.pos += n as u64;
+        Ok(n)
     }
-    #[cfg(not(unix))]
-    let _ = (path, what);
-    Ok(())
 }
 
 /// A reader that counts the bytes it has handed out, so recovery knows
@@ -721,13 +659,11 @@ impl Drop for BlobWal {
         // exiting normally (where the lock is released implicitly by
         // handle close) or in a panic path (where surfacing a secondary
         // error would obscure the primary panic).
+        // The handle's own drop then releases the hold on the file.
         let state = self.state.lock();
         if state.pending_ops > 0 {
-            let _ = crate::fs_audit::sync_data(&state.file, "wal", &self.path);
+            let _ = state.file.sync_data("wal");
         }
-        #[cfg(not(windows))]
-        let _ = FileExt::unlock(&state.file);
-        crate::fs_audit::note_close(&self.path);
     }
 }
 
@@ -740,7 +676,7 @@ impl Drop for BlobWal {
 /// # Errors
 /// `NotFound` when there is no file; any read error.
 pub fn read_existing(path: &Path) -> io::Result<Option<Vec<WalRecord>>> {
-    stable_records(|| std::fs::read(path))
+    stable_records(|| StdDir.read(path))
 }
 
 /// Read twice: the good records of the first read must still be the start of the

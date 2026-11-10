@@ -100,11 +100,19 @@ pub trait BlobDir: Send + Sync + fmt::Debug {
     /// Any I/O error (`NotFound` included).
     fn remove(&self, path: &Path) -> io::Result<()>;
 
-    /// Write `bytes` to a new file at `path` (refused when it exists) and make it durable.
+    /// Write `bytes` to a new file at `path` (refused when it exists) and make it durable
+    /// (`what` names it for the audit).
     ///
     /// # Errors
     /// Any I/O error.
-    fn write_new(&self, path: &Path, bytes: &[u8]) -> io::Result<()>;
+    fn write_new(&self, path: &Path, bytes: &[u8], what: &str) -> io::Result<()>;
+
+    /// Write `bytes` to `path`, replacing what it held (created when missing), and make it
+    /// durable (`what` names it for the audit).
+    ///
+    /// # Errors
+    /// Any I/O error.
+    fn write_replacing(&self, path: &Path, bytes: &[u8], what: &str) -> io::Result<()>;
 
     /// Move `from` over `to` in one step (replacing `to` when it exists).
     ///
@@ -244,13 +252,24 @@ impl Drop for StdFile {
     }
 }
 
-/// A memory map of a published file.
+/// A memory map of a published file, with the file kept open for the map's lifetime (some
+/// platforms release the handle when it drops; the map must outlive it).
 #[derive(Debug)]
-pub struct StdBytes(memmap2::Mmap);
+pub struct StdBytes {
+    _file: File,
+    map: memmap2::Mmap,
+    path: PathBuf,
+}
 
 impl BlobBytes for StdBytes {
     fn bytes(&self) -> &[u8] {
-        &self.0
+        &self.map
+    }
+}
+
+impl Drop for StdBytes {
+    fn drop(&mut self) {
+        crate::fs_audit::note_close(&self.path);
     }
 }
 
@@ -278,10 +297,20 @@ impl BlobDir for StdDir {
         std::fs::remove_file(path)
     }
 
-    fn write_new(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fn write_new(&self, path: &Path, bytes: &[u8], what: &str) -> io::Result<()> {
         let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;
         f.write_all(bytes)?;
-        crate::fs_audit::sync_all(&f, "file", path)
+        crate::fs_audit::sync_all(&f, what, path)
+    }
+
+    fn write_replacing(&self, path: &Path, bytes: &[u8], what: &str) -> io::Result<()> {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        f.write_all(bytes)?;
+        crate::fs_audit::sync_all(&f, what, path)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -326,7 +355,12 @@ impl BlobDir for StdDir {
         let file = File::open(path)?;
         // SAFETY: the store never writes to a published file (it writes a new file and
         // renames it into place), so the mapped bytes do not change while held.
-        let mmap = unsafe { memmap2::Mmap::map(&file)? };
-        Ok(Box::new(StdBytes(mmap)))
+        let map = unsafe { memmap2::Mmap::map(&file)? };
+        crate::fs_audit::note_open(path);
+        Ok(Box::new(StdBytes {
+            _file: file,
+            map,
+            path: path.to_path_buf(),
+        }))
     }
 }

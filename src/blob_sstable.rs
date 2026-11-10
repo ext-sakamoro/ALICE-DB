@@ -89,11 +89,10 @@
 //! the rule is checked on every platform.
 
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use memmap2::Mmap;
+use crate::blob_dir::{BlobBytes, BlobDir, StdDir};
 
 use crate::blob::BlobValue;
 use crate::bloom::BloomFilter;
@@ -264,19 +263,17 @@ pub fn sstable_filename_for_seq(seq: u64) -> String {
 pub fn enumerate_sstables(dir: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
     let dir = dir.as_ref();
     let mut hits: Vec<(u64, PathBuf)> = Vec::new();
-    let read = match std::fs::read_dir(dir) {
+    let read = match StdDir.list(dir) {
         Ok(r) => r,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
-    for entry in read {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
+    for path in read {
+        let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
             continue;
         };
         if let Some(seq) = parse_sstable_seq(name) {
-            hits.push((seq, entry.path()));
+            hits.push((seq, path));
         }
     }
     hits.sort_by_key(|(seq, _)| *seq);
@@ -299,16 +296,14 @@ pub fn enumerate_sstables(dir: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
 /// Propagates directory scan errors and delete errors other than
 /// `NotFound`.
 pub(crate) fn remove_stale_tmp_files(dir: &Path) -> io::Result<usize> {
-    let read = match std::fs::read_dir(dir) {
+    let read = match StdDir.list(dir) {
         Ok(r) => r,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e),
     };
     let mut removed = 0;
-    for entry in read {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
+    for path in read {
+        let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
             continue;
         };
         let Some(stem) = name.strip_suffix(".tmp") else {
@@ -317,9 +312,7 @@ pub(crate) fn remove_stale_tmp_files(dir: &Path) -> io::Result<usize> {
         if parse_sstable_seq(stem).is_none() {
             continue;
         }
-        let path = entry.path();
-        crate::fs_audit::check_remove(&path);
-        match std::fs::remove_file(&path) {
+        match StdDir.remove(&path) {
             Ok(()) => removed += 1,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
@@ -476,12 +469,8 @@ impl BlobSstable {
             )
         })?;
 
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
-        let mut writer = BufWriter::new(file);
+        // The whole file is assembled in memory, then written and made durable in one call.
+        let mut writer: Vec<u8> = Vec::new();
 
         // Build the Bloom filter as we iterate — sized for this exact
         // record count and 1% false-positive rate.
@@ -524,11 +513,7 @@ impl BlobSstable {
         writer.write_all(&bloom_size.to_le_bytes())?;
         writer.write_all(FOOTER_MAGIC)?;
 
-        let file = writer
-            .into_inner()
-            .map_err(std::io::IntoInnerError::into_error)?;
-        crate::fs_audit::sync_all(&file, "sstable", &tmp_path)?;
-        drop(file);
+        StdDir.write_replacing(&tmp_path, &writer, "sstable")?;
 
         Ok(tmp_path)
     }
@@ -540,8 +525,7 @@ impl BlobSstable {
     /// to rename over such a file; the open-file audit enforces this in
     /// test builds).
     pub(crate) fn commit_tmp(tmp_path: &Path, path: &Path) -> io::Result<()> {
-        crate::fs_audit::check_replace_target(path);
-        std::fs::rename(tmp_path, path)
+        StdDir.rename(tmp_path, path)
     }
 
     /// Load an `SSTable` from disk. Returns `Ok(None)` if `path` does not
@@ -555,16 +539,13 @@ impl BlobSstable {
     /// back to WAL-only load or to abort.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Option<Self>> {
         let path = path.as_ref().to_path_buf();
-        let mut file = match File::open(&path) {
-            Ok(f) => f,
+        // Read the whole file — alpha-3.2a/α-3.3b-1 are not memory-frugal
+        // by design. α-3.3b-2 will keep the file mmap'd instead.
+        let bytes = match StdDir.read(&path) {
+            Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
-
-        // Read the whole file — alpha-3.2a/α-3.3b-1 are not memory-frugal
-        // by design. α-3.3b-2 will keep the file mmap'd instead.
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
 
         if bytes.len() < HEADER_LEN + FOOTER_LEN_V1 {
             return Err(io::Error::new(
@@ -730,10 +711,8 @@ struct RecordOffset {
 /// through to the index directly (correct, just not accelerated).
 pub struct LoadedSstable {
     path: PathBuf,
-    /// Kept alive for the lifetime of the mmap. Some platforms release
-    /// the file handle when it drops; the mmap must outlive it.
-    _file: File,
-    mmap: Mmap,
+    /// The file's bytes, held for reading (natively a memory map that keeps the file open).
+    mmap: Box<dyn BlobBytes>,
     bloom: Option<BloomFilter>,
     /// Where `bloom` came from
     bloom_source: BloomSource,
@@ -749,16 +728,10 @@ impl std::fmt::Debug for LoadedSstable {
         // count, whether the file carries a Bloom).
         f.debug_struct("LoadedSstable")
             .field("path", &self.path)
-            .field("mmap_len", &self.mmap.len())
+            .field("mmap_len", &self.mmap.bytes().len())
             .field("bloom", &self.bloom.is_some())
             .field("records", &self.index.len())
             .finish_non_exhaustive()
-    }
-}
-
-impl Drop for LoadedSstable {
-    fn drop(&mut self) {
-        crate::fs_audit::note_close(&self.path);
     }
 }
 
@@ -784,14 +757,12 @@ impl LoadedSstable {
     /// it renames over or deletes the file, which Windows requires.
     pub fn open_mmap(path: impl AsRef<Path>) -> io::Result<Option<Self>> {
         let path = path.as_ref().to_path_buf();
-        let file = match File::open(&path) {
-            Ok(f) => f,
+        let held = match StdDir.map(&path) {
+            Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
-
-        // SAFETY: see the `Safety` note above.
-        let mmap = unsafe { Mmap::map(&file)? };
+        let mmap = held.bytes();
 
         if mmap.len() < HEADER_LEN + FOOTER_LEN_V1 {
             return Err(io::Error::new(
@@ -914,11 +885,9 @@ impl LoadedSstable {
         let index = build_offset_index(&mmap[HEADER_LEN..records_end], num_records, HEADER_LEN)?;
         let (bloom, bloom_source) = settle_bloom(version, bloom, index.keys().map(Vec::as_slice));
 
-        crate::fs_audit::note_open(&path);
         Ok(Some(Self {
             path,
-            _file: file,
-            mmap,
+            mmap: held,
             bloom,
             bloom_source,
             index,
@@ -1032,7 +1001,7 @@ impl LoadedSstable {
         let value_len = offset.value_len as usize;
         let value_start = record_start.checked_add(9)?.checked_add(key_len)?;
         let value_end = value_start.checked_add(value_len)?;
-        if value_end > self.mmap.len() {
+        if value_end > self.mmap.bytes().len() {
             return None;
         }
         // Tombstones carry no value bytes; short-circuit before
@@ -1040,7 +1009,7 @@ impl LoadedSstable {
         if offset.value_kind == VALUE_KIND_TOMBSTONE {
             return Some(BlobValue::Tombstone);
         }
-        let bytes = self.mmap[value_start..value_end].to_vec();
+        let bytes = self.mmap.bytes()[value_start..value_end].to_vec();
         match offset.value_kind {
             VALUE_KIND_RAW => Some(BlobValue::Raw(bytes)),
             VALUE_KIND_COMPRESSED => Some(BlobValue::Compressed(bytes)),
@@ -1377,8 +1346,8 @@ fn tmp_sibling(path: &Path) -> PathBuf {
 /// # Errors
 /// Propagates unexpected `io::Error`s.
 pub fn sstable_size_on_disk(path: impl AsRef<Path>) -> io::Result<Option<u64>> {
-    match std::fs::metadata(path) {
-        Ok(m) => Ok(Some(m.len())),
+    match StdDir.file_len(path.as_ref()) {
+        Ok(n) => Ok(Some(n)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }

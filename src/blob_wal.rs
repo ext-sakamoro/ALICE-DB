@@ -578,7 +578,7 @@ fn write_durable(dir: &dyn BlobDir, path: &Path, bytes: &[u8]) -> io::Result<()>
         .unwrap_or_default();
     tmp_name.push(".tmp");
     let tmp = path.with_file_name(tmp_name);
-    dir.write_new(&tmp, bytes)?;
+    dir.write_new(&tmp, bytes, "file")?;
     dir.rename(&tmp, path)?;
     dir.sync_parent(path, "dir")
 }

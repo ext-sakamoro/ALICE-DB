@@ -258,7 +258,7 @@ impl StoreLock {
         self.file.set_len(0)?;
         self.file
             .append(format!("{RECORD_VERSION}\n{wal_name}\n").as_bytes())?;
-        self.file.sync_all("store-lock")
+        self.file.persist_all("store-lock")
     }
 }
 

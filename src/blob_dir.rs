@@ -24,11 +24,11 @@ use fs2::FileExt;
 /// and make durable. Opened by [`BlobDir::open_exclusive`]; while it is open no other
 /// writer can open the same file.
 pub trait BlobFile: Send + Sync + fmt::Debug {
-    /// The file's length in bytes.
+    /// The file's size in bytes.
     ///
     /// # Errors
     /// Any I/O error.
-    fn len(&self) -> io::Result<u64>;
+    fn size(&self) -> io::Result<u64>;
 
     /// Read up to `buf.len()` bytes at `offset`; `Ok(0)` at or past the end.
     ///
@@ -52,13 +52,13 @@ pub trait BlobFile: Send + Sync + fmt::Debug {
     ///
     /// # Errors
     /// Any I/O error.
-    fn sync_data(&self, what: &str) -> io::Result<()>;
+    fn persist_data(&self, what: &str) -> io::Result<()>;
 
     /// Make the written bytes and the length durable.
     ///
     /// # Errors
     /// Any I/O error.
-    fn sync_all(&self, what: &str) -> io::Result<()>;
+    fn persist_all(&self, what: &str) -> io::Result<()>;
 }
 
 /// The bytes of a published file, held for reading (natively a memory map).
@@ -232,7 +232,7 @@ pub struct StdFile {
 }
 
 impl BlobFile for StdFile {
-    fn len(&self) -> io::Result<u64> {
+    fn size(&self) -> io::Result<u64> {
         self.file.metadata().map(|m| m.len())
     }
 
@@ -254,11 +254,11 @@ impl BlobFile for StdFile {
         self.file.set_len(len)
     }
 
-    fn sync_data(&self, what: &str) -> io::Result<()> {
+    fn persist_data(&self, what: &str) -> io::Result<()> {
         crate::fs_audit::sync_data(&self.file, what, &self.path)
     }
 
-    fn sync_all(&self, what: &str) -> io::Result<()> {
+    fn persist_all(&self, what: &str) -> io::Result<()> {
         crate::fs_audit::sync_all(&self.file, what, &self.path)
     }
 }

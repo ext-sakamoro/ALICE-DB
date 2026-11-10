@@ -296,7 +296,7 @@ impl BlobWal {
         if state.pending_ops == 0 {
             return Ok(());
         }
-        state.file.sync_data("wal")?;
+        state.file.persist_data("wal")?;
         state.pending_ops = 0;
         Ok(())
     }
@@ -313,7 +313,7 @@ impl BlobWal {
     /// Propagates the underlying `metadata` error.
     pub fn size_on_disk(&self) -> io::Result<u64> {
         let state = self.state.lock();
-        state.file.len()
+        state.file.size()
     }
 
     /// Truncate the WAL back to zero bytes.
@@ -331,7 +331,7 @@ impl BlobWal {
         state.file.set_len(0)?;
         // sync_all here so the truncation reaches disk before we
         // consider the WAL "empty" from the caller's point of view.
-        state.file.sync_all("wal")?;
+        state.file.persist_all("wal")?;
         state.pending_ops = 0;
         Ok(())
     }
@@ -419,12 +419,12 @@ impl BlobWal {
         state.pending_ops += 1;
         match self.sync_policy {
             SyncPolicy::EveryWrite => {
-                state.file.sync_data("wal")?;
+                state.file.persist_data("wal")?;
                 state.pending_ops = 0;
             }
             SyncPolicy::Batched { max_pending_ops } => {
                 if state.pending_ops >= max_pending_ops {
-                    state.file.sync_data("wal")?;
+                    state.file.persist_data("wal")?;
                     state.pending_ops = 0;
                 }
             }
@@ -510,7 +510,7 @@ impl BlobWal {
         crate::fs_audit::crash_point("wal_recover:before_cut")?;
 
         state.file.set_len(good_end)?;
-        state.file.sync_all("wal")?;
+        state.file.persist_all("wal")?;
         Ok((
             out,
             Some(WalRecovery {
@@ -654,7 +654,7 @@ impl Drop for BlobWal {
         // The handle's own drop then releases the hold on the file.
         let state = self.state.lock();
         if state.pending_ops > 0 {
-            let _ = state.file.sync_data("wal");
+            let _ = state.file.persist_data("wal");
         }
     }
 }

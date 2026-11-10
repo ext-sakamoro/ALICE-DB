@@ -110,7 +110,6 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::blob::BlobValue;
-pub(crate) use crate::blob_dir::open_exclusive;
 use crate::blob_dir::{BlobDir, BlobFile, StdDir};
 
 /// How aggressively the WAL should `fsync` after each append.
@@ -614,13 +613,6 @@ fn remove_stale_dropped_tmp(store: &dyn BlobDir, wal: &Path) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-/// fsync the directory holding `path` (Unix; Windows has no handle for a
-/// directory fsync and makes the rename durable through the file system's
-/// own metadata journal).
-pub(crate) fn sync_dir(path: &Path, what: &str) -> io::Result<()> {
-    StdDir.sync_parent(path, what)
 }
 
 /// A reader over a [`BlobFile`] from `pos` on.

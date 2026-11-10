@@ -37,6 +37,8 @@ use alice_core::compression::{zlib_compress, zlib_decompress};
 use parking_lot::RwLock;
 
 #[cfg(feature = "fs")]
+use crate::blob_dir::{BlobDir, StdDir};
+#[cfg(feature = "fs")]
 use crate::blob_sstable::{
     enumerate_sstables, max_sstable_seq, remove_stale_tmp_files, sstable_filename_for_seq,
     BlobSstable, FlushMode, LoadedSstable,
@@ -288,7 +290,7 @@ impl BlobStorage {
         let wal_path = wal_path.as_ref();
         let name = wal_name(wal_path)?;
         let dir = store_dir(wal_path);
-        std::fs::metadata(wal_path)?;
+        StdDir.file_len(wal_path)?;
         check_open(&dir, wal_path, &name, recorded_wal(&dir)?.as_deref())?;
         for _ in 0..ATTEMPTS {
             if let Some(memtable) = read_one_moment(wal_path, &dir, &name, || {})? {
@@ -712,8 +714,7 @@ impl BlobStorage {
             if old_path == target_path {
                 continue;
             }
-            crate::fs_audit::check_remove(&old_path);
-            match std::fs::remove_file(&old_path) {
+            match StdDir.remove(&old_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => {
@@ -1263,7 +1264,7 @@ fn read_one_moment(
     between: impl FnOnce(),
 ) -> io::Result<Option<BTreeMap<Vec<u8>, BlobValue>>> {
     // Fails with NotFound before anything else is read.
-    std::fs::metadata(wal_path)?;
+    StdDir.file_len(wal_path)?;
     let before = sstable_signature(dir, wal_name)?;
     let mut memtable = BTreeMap::new();
     for path in source_files(dir, wal_name)? {
@@ -1303,8 +1304,8 @@ fn sstable_signature(
 ) -> io::Result<Vec<(PathBuf, u64, Option<std::time::SystemTime>)>> {
     source_files(dir, wal_name)?
         .into_iter()
-        .filter_map(|path| match std::fs::metadata(&path) {
-            Ok(meta) => Some(Ok((path, meta.len(), meta.modified().ok()))),
+        .filter_map(|path| match StdDir.stat(&path) {
+            Ok((len, modified)) => Some(Ok((path, len, modified))),
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => Some(Err(e)),
         })

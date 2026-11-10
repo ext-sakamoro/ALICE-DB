@@ -9,10 +9,9 @@
 //! The record is `1\n<file name>\n`. A record that ends before its last newline
 //! is a write cut short and counts as no record.
 
+use crate::blob_dir::{BlobDir, BlobFile, StdDir};
 use crate::blob_sstable::{enumerate_sstables, parse_sstable_seq};
-use crate::blob_wal::{open_exclusive, sync_dir};
-use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 const LOCK_FILE: &str = "blob.lock";
@@ -44,9 +43,9 @@ pub(crate) fn wal_name(wal_path: &Path) -> io::Result<String> {
             format!("blob WAL `{}` {why}", wal_path.display()),
         )
     };
-    let is_link = std::fs::symlink_metadata(wal_path).is_ok_and(|m| m.file_type().is_symlink());
+    let is_link = StdDir.is_link(wal_path);
     let real = if is_link {
-        std::fs::canonicalize(wal_path)?
+        StdDir.canonicalize(wal_path)?
     } else {
         wal_path.to_path_buf()
     };
@@ -68,12 +67,11 @@ pub(crate) fn wal_name(wal_path: &Path) -> io::Result<String> {
 /// A symlink is the same store only beside its target: the files are found next
 /// to the path that was given.
 fn refuse_symlink_elsewhere(wal_path: &Path, dir: &Path) -> io::Result<()> {
-    let is_link = std::fs::symlink_metadata(wal_path).is_ok_and(|m| m.file_type().is_symlink());
-    if !is_link {
+    if !StdDir.is_link(wal_path) {
         return Ok(());
     }
-    let target = std::fs::canonicalize(wal_path)?;
-    if target.parent() != Some(std::fs::canonicalize(dir)?.as_path()) {
+    let target = StdDir.canonicalize(wal_path)?;
+    if target.parent() != Some(StdDir.canonicalize(dir)?.as_path()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -88,19 +86,7 @@ fn refuse_symlink_elsewhere(wal_path: &Path, dir: &Path) -> io::Result<()> {
 
 /// Whether two names are one file, as the file system sees it.
 fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        match (std::fs::metadata(a), std::fs::metadata(b)) {
-            (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
-            _ => false,
-        }
-    }
-    #[cfg(not(unix))]
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
+    StdDir.same_file(a, b)
 }
 
 /// `dir` as a path that means the same after the current directory changes: a
@@ -110,7 +96,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// Any error of creating or resolving the directory.
 pub(crate) fn writer_dir(wal_path: &Path) -> io::Result<PathBuf> {
     let dir = store_dir(wal_path);
-    std::fs::create_dir_all(&dir)?;
+    StdDir.create_dir_all(&dir)?;
     std::path::absolute(dir)
 }
 
@@ -120,7 +106,7 @@ pub(crate) fn writer_dir(wal_path: &Path) -> io::Result<PathBuf> {
 /// `InvalidData` for a whole record that cannot be read.
 pub(crate) fn recorded_wal(dir: &Path) -> io::Result<Option<String>> {
     let path = dir.join(LOCK_FILE);
-    let bytes = match std::fs::read(&path) {
+    let bytes = match StdDir.read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
@@ -157,21 +143,20 @@ fn earlier_file(dir: &Path, wal_name: &str) -> io::Result<Option<PathBuf>> {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(wal_name);
     let candidate = dir.join(format!("{stem}.sst"));
-    let read = match std::fs::read_dir(dir) {
+    let read = match StdDir.list(dir) {
         Ok(read) => read,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    for entry in read {
-        let entry = entry?;
+    for path in read {
         // a working file can be the candidate for a moment: a flush renames
         // `blob.sst.tmp` while it is listed here, and the name resolves to the result
-        let is_store_file = entry
+        let is_store_file = path
             .file_name()
-            .to_str()
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| is_working_file(&name.to_ascii_lowercase()));
-        if !is_store_file && same_file(&entry.path(), &candidate) {
-            return Ok(Some(entry.path()));
+        if !is_store_file && same_file(&path, &candidate) {
+            return Ok(Some(path));
         }
     }
     Ok(None)
@@ -254,20 +239,16 @@ pub(crate) fn check_open(
 /// `blob.lock`, held for as long as the writer lives.
 #[derive(Debug)]
 pub(crate) struct StoreLock {
-    file: File,
-    path: PathBuf,
+    file: Box<dyn BlobFile>,
 }
 
 impl StoreLock {
     /// # Errors
     /// `WouldBlock` while another writer holds the directory.
     pub(crate) fn acquire(dir: &Path) -> io::Result<Self> {
-        std::fs::create_dir_all(dir)?;
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        let path = dir.join(LOCK_FILE);
-        let file = open_exclusive(&mut options, &path)?;
-        Ok(Self { file, path })
+        StdDir.create_dir_all(dir)?;
+        let file = StdDir.open_exclusive(&dir.join(LOCK_FILE))?;
+        Ok(Self { file })
     }
 
     /// # Errors
@@ -275,21 +256,9 @@ impl StoreLock {
     pub(crate) fn record(&mut self, wal_name: &str) -> io::Result<()> {
         crate::fs_audit::crash_point("store:before_record")?;
         self.file.set_len(0)?;
-        self.file.seek(SeekFrom::Start(0))?;
         self.file
-            .write_all(format!("{RECORD_VERSION}\n{wal_name}\n").as_bytes())?;
-        crate::fs_audit::sync_all(&self.file, "store-lock", &self.path)
-    }
-}
-
-impl Drop for StoreLock {
-    fn drop(&mut self) {
-        // Released here and not only by the close: a process being started by
-        // another thread holds a copy of the handle until it execs, and the lock
-        // would outlive this store for that moment. Windows ends the share mode
-        // at the close.
-        #[cfg(not(windows))]
-        let _ = fs2::FileExt::unlock(&self.file);
+            .append(format!("{RECORD_VERSION}\n{wal_name}\n").as_bytes())?;
+        self.file.sync_all("store-lock")
     }
 }
 
@@ -305,9 +274,9 @@ pub(crate) fn move_earlier_file(dir: &Path, wal_name: &str) -> io::Result<()> {
     };
     crate::fs_audit::crash_point("store:before_rename")?;
     let target = dir.join("blob.sst");
-    std::fs::rename(&earlier, &target)?;
+    StdDir.rename(&earlier, &target)?;
     crate::fs_audit::crash_point("store:before_dir_sync")?;
-    sync_dir(&target, "store-dir")
+    StdDir.sync_parent(&target, "store-dir")
 }
 
 /// See [`crate::blob::BlobStorage::take_over_store`].

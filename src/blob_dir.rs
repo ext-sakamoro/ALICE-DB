@@ -23,7 +23,7 @@ use fs2::FileExt;
 /// The one writer's handle on a file (the WAL): read anywhere, append at the end, cut,
 /// and make durable. Opened by [`BlobDir::open_exclusive`]; while it is open no other
 /// writer can open the same file.
-pub trait BlobFile: Send + fmt::Debug {
+pub trait BlobFile: Send + Sync + fmt::Debug {
     /// The file's length in bytes.
     ///
     /// # Errors
@@ -80,6 +80,13 @@ pub trait BlobDir: Send + Sync + fmt::Debug {
     /// # Errors
     /// Any I/O error.
     fn file_len(&self, path: &Path) -> io::Result<u64>;
+
+    /// The length of the file at `path` and when it was last modified, when the storage
+    /// knows (`NotFound` when there is none).
+    ///
+    /// # Errors
+    /// Any I/O error.
+    fn stat(&self, path: &Path) -> io::Result<(u64, Option<std::time::SystemTime>)>;
 
     /// The whole file at `path` (`NotFound` when there is none).
     ///
@@ -138,6 +145,18 @@ pub trait BlobDir: Send + Sync + fmt::Debug {
     /// # Errors
     /// Any I/O error.
     fn map(&self, path: &Path) -> io::Result<Box<dyn BlobBytes>>;
+
+    /// Whether `path` is a symbolic link (false when it does not exist).
+    fn is_link(&self, path: &Path) -> bool;
+
+    /// `path` with every link and relative step resolved.
+    ///
+    /// # Errors
+    /// Any I/O error (`NotFound` included).
+    fn canonicalize(&self, path: &Path) -> io::Result<PathBuf>;
+
+    /// Whether two names are one file, as the storage sees it (false when either is missing).
+    fn same_file(&self, a: &Path, b: &Path) -> bool;
 }
 
 /// The native directory: `std::fs`, an advisory lock (`fs2`, a share mode on Windows) and
@@ -282,6 +301,10 @@ impl BlobDir for StdDir {
         std::fs::metadata(path).map(|m| m.len())
     }
 
+    fn stat(&self, path: &Path) -> io::Result<(u64, Option<std::time::SystemTime>)> {
+        std::fs::metadata(path).map(|m| (m.len(), m.modified().ok()))
+    }
+
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         std::fs::read(path)
     }
@@ -349,6 +372,30 @@ impl BlobDir for StdDir {
             file,
             path: path.to_path_buf(),
         }))
+    }
+
+    fn is_link(&self, path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+    }
+
+    fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
+        std::fs::canonicalize(path)
+    }
+
+    fn same_file(&self, a: &Path, b: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            match (std::fs::metadata(a), std::fs::metadata(b)) {
+                (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+                _ => false,
+            }
+        }
+        #[cfg(not(unix))]
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
     }
 
     fn map(&self, path: &Path) -> io::Result<Box<dyn BlobBytes>> {

@@ -78,7 +78,7 @@ parking_lot = "0.12"
 alice-analytics = { git = "https://github.com/ext-sakamoro/ALICE-Analytics", branch = "main", version = ">=0.7, <0.8", optional = true }
 
 # ALICE-Crypto bridge (optional)
-alice-crypto = { git = "https://github.com/ext-sakamoro/ALICE-Crypto", rev = "ed065ad1d8145384e8d4d1458d35df7f220cb52c", version = ">=0.6, <0.7", optional = true, default-features = false, features = ["std"] }
+alice-crypto = { git = "https://github.com/ext-sakamoro/ALICE-Crypto", branch = "main", version = "0.7", optional = true, default-features = false, features = ["std"] }
 
 # Advisory file locking (cross-platform, `fs` feature only)
 fs2 = { version = "0.4", optional = true }

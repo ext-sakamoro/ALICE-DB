@@ -55,7 +55,7 @@ memmap2 = { version = "0.9", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 # DataSegment::to_bytes / from_bytes: alice_serial format 1 (src/segment_codec.rs); the bounded
 # lengths of the legacy data-file reader (src/legacy_bincode.rs)
-alice-serial = { git = "https://github.com/ext-sakamoro/ALICE-Serial", rev = "16b34ebcaf3a195fe6500defb4d1e6002cb3d09d", version = "0.2" }
+alice-serial = { git = "https://github.com/ext-sakamoro/ALICE-Serial", branch = "main", version = "0.2" }
 
 # Compression
 lzma-rs = "0.3"

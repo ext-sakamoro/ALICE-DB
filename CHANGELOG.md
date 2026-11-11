@@ -18,7 +18,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `BlobStorage::snapshot_to`: 生きた entry を `snapshot` の形式で `Write` へ順に書く
 - `table::Table`: blob store の上の行と二次 index 行と index は 1 つの batch で一緒に変わり、一意の index の検査は書き込みと同じ排他の中で行う
 - `table::SealedTable` (feature `crypto`): 値を `alice_crypto::envelope` で封じて store に渡す table associated data が table と主キーを名指すので別の行に写すと開かない `reseal` は全行を今の鍵へ移す (鍵は `KeyProvider` から受け取る)
-- 依存 `alice-serial` (git rev 16b34eb、0.2)
+- 依存 `alice-serial` (git の `branch = "main"`、0.2、他の crate と同じ出所で解決する)
 - 試験 `tests/segment_serial.rs` (segment の alice_serial の形を試験の側で書いて 8 model × residual の有無で照合、1 つの segment の bytes を golden で固定、旧い bytes と壊れた形を断る) と `tests/legacy_data_file.rs` (旧 `data.alice` の segment を data file の経路で読んで rkyv の file に書き直す、切れた bytes・長すぎる長さ・不明な model / residual の tag・末尾の余り・file より長い entry を断り何も書かない)
 - fuzz target `fuzz_segment_bytes`: 任意の bytes を `DataSegment::from_bytes` と、旧 `data.alice` の entry として store から読む
 - `DataSegment::from_stored_bytes` と `segment::SEGMENT_FORMAT`: segment の file の bytes を、保存形式を見分けて owned の `DataSegment` に戻す (形式 1 は rkyv 0.8 の検査つき deserialize、形式 0 は旧い layout を読む組み込みの reader) `SegmentView::segment` は decode した segment を返す

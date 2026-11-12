@@ -141,6 +141,10 @@ name = "ts_wal_framing"
 required-features = ["fs", "open-file-audit"]
 
 [[test]]
+name = "blob_wal_failed_append"
+required-features = ["fs", "open-file-audit"]
+
+[[test]]
 name = "blob_store_crash"
 required-features = ["fs", "open-file-audit"]
 

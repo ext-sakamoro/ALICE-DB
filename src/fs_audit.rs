@@ -158,16 +158,41 @@ mod imp {
         );
     }
 
+    /// Crash points armed for whichever thread hits them first (the background flush thread)
+    static ARMED_ANY: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
+
     pub fn arm_crash_point(name: &str) {
         ARMED.with(|a| a.borrow_mut().insert(name.to_owned()));
     }
 
+    pub fn arm_crash_point_any_thread(name: &str) {
+        ARMED_ANY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name.to_owned());
+    }
+
+    pub fn is_armed_any_thread(name: &str) -> bool {
+        ARMED_ANY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(name)
+    }
+
     pub fn disarm_all_crash_points() {
         ARMED.with(|a| a.borrow_mut().clear());
+        ARMED_ANY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     pub fn take_crash_point(name: &str) -> bool {
         ARMED.with(|a| a.borrow_mut().remove(name))
+            || ARMED_ANY
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(name)
     }
 }
 
@@ -297,13 +322,28 @@ pub fn is_open(path: &Path) -> bool {
 ///
 /// Names in use: `compact:after_write`, `compact:after_swap`,
 /// `compact:before_remove`, `compact:after_first_remove`,
-/// `compact:before_wal_truncate`, `wal_recover:before_cut`.
+/// `compact:before_wal_truncate`, `wal_recover:before_cut`, `segment:before_write`, `segment:before_sync`,
+/// `segment:before_index`.
 #[cfg(feature = "open-file-audit")]
 pub fn arm_crash_point(name: &str) {
     imp::arm_crash_point(name);
 }
 
-/// Disarm every crash point on the current thread.
+/// Arm the crash point `name` for the next hit on any thread (a background thread's work, such as the time-series
+/// flush thread).
+#[cfg(feature = "open-file-audit")]
+pub fn arm_crash_point_any_thread(name: &str) {
+    imp::arm_crash_point_any_thread(name);
+}
+
+/// Whether the crash point `name` armed for any thread is still waiting for its hit.
+#[cfg(feature = "open-file-audit")]
+#[must_use]
+pub fn is_armed_any_thread(name: &str) -> bool {
+    imp::is_armed_any_thread(name)
+}
+
+/// Disarm every crash point on the current thread, and every one armed for any thread.
 #[cfg(feature = "open-file-audit")]
 pub fn disarm_all_crash_points() {
     imp::disarm_all_crash_points();

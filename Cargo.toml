@@ -133,6 +133,10 @@ name = "wal_recovery_crash"
 required-features = ["fs", "open-file-audit"]
 
 [[test]]
+name = "segment_persist_failure"
+required-features = ["fs", "open-file-audit"]
+
+[[test]]
 name = "blob_store_crash"
 required-features = ["fs", "open-file-audit"]
 

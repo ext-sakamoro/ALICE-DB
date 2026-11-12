@@ -127,6 +127,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- blob の WAL への追記が途中で失敗するか fsync が失敗すると、半端な record が残り、後の record がその後ろに書かれて次の open で一緒に切られた (受け付けた書き込みが失われる) fsync だけが失敗した record は `Err` を返したのに次の open で戻った 失敗した追記と fsync は WAL を追記の前の長さに戻して fsync し、書き込みを受け付けない 戻せない時は WAL が以後の書き込みを断る (次の open が半端な record を切る) 試験 `tests/blob_wal_failed_append.rs` (record の途中と fsync の前で失敗させる / 戻せない時は以後を断り、それより前の書き込みは残る) 変異 4 件は red
 - blob の WAL: 開く時に、壊れた末尾の長さの欄の値 (最大 4 GiB を 2 つ) でそのまま buffer を確保していた 長さは後ろの checksum で確かめるまで信用できないので、実際に読めた bytes の分だけ伸ばす 試験 `tests/wal_garbage_length.rs` (allocator で最大の確保を測る)
 - `PerlinNoise` の segment は、点の数 × octaves が alice-zip の `generators::MAX_FBM_STEPS` を超えると読む時に `InvalidData` で拒む octaves は点ごとの繰り返しの回数で、`u32::MAX` 近くの octaves の小さな segment は読むたびに 1 点 約 40 億回の計算をした alice-zip を ad06e53 (同じ上限で生成器も拒む) に上げた
 - segment を読む時に `point_count` の値で確保していた 旧 `data.alice` の entry で `point_count` 4 289 895 731 と展開できない raw の中身を持つものが、展開の失敗時に `point_count` 個の 0 を作り 17 GB を確保した (fuzz `fuzz_segment_bytes` が検出、入力は `tests/fixtures/fuzz/segment_bytes_point_count_oom.bin`) 全ての読み手 (`from_bytes`、`from_stored_bytes` の両形式、旧 data file) の最後で、`point_count` が `MAX_SEGMENT_POINTS` を超える segment と、raw の中身が `point_count` 個の値にちょうど展開されない segment を `InvalidData` で拒む 展開は出力も LZMA の辞書も `point_count` 個の分で止める PerlinNoise の失敗時の 0 と fBm の生成は、この上限の内でだけ `point_count` 個を作る

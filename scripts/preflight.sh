@@ -70,8 +70,8 @@ python3 scripts/build_config_guard.py
 python3 scripts/test_build_flags_check.py
 python3 scripts/test_run_tests.py
 python3 scripts/test_fuzz_reach.py
-python3 scripts/test_lock_sibling_agreement.py
-python3 scripts/lock_sibling_agreement.py
+python3 scripts/test_lock_sources_check.py
+python3 scripts/lock_sources_check.py
 python3 scripts/test_tracked_binaries.py
 python3 scripts/tracked_binaries.py
 

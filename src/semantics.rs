@@ -18,10 +18,10 @@
 //! residual or law record was measured against (`alice-zip`'s), which is what a
 //! reader compares a stored value with.
 //!
-//! # Hex form (with `alice-zip` 0.11 at its identifier 65f48962, and the `alice-det-math` function identifiers of [`DET_MATH_PINS`])
+//! # Hex form (with `alice-zip` 0.11 at its identifier 922b2865, and the `alice-det-math` function identifiers of [`DET_MATH_PINS`])
 //!
 //! ```text
-//! 62d72c5042a8e0b894a02a655803850557882a94abb0de1fc4455c22ecfbffa8
+//! 97d6853c2d8eda9e80fa985081ca8e982d7a4dc9cd276f9b83c95c153f6000bb
 //! ```
 //!
 //! # Fold
@@ -95,7 +95,7 @@ pub const DB_SEMANTICS_PINS: &[(&str, [u8; 32])] = &[
     ),
     (
         "law_id and evaluate",
-        hex32("4991ddf8a1415ffcaf9b71b9b58c9299dd6312cca0961e737f4dd80fd740ca25"),
+        hex32("be459f7efa77c3ad94de8bf77fb1630950acbf6d4737dd557ca336b83f356f09"),
     ),
     // the resolved alice-zip's own identifier, not a copy of it: the
     // identifier below is looked up by it
@@ -180,14 +180,20 @@ pub const DB_SEMANTICS_BY_ZIP: &[([u8; 32], [u8; 32])] = &[
         hex32("65f48962c757ebb619d252f8784f830aca5f3698fbd22f34150f9887863f38dd"),
         hex32("62d72c5042a8e0b894a02a655803850557882a94abb0de1fc4455c22ecfbffa8"),
     ),
+    // alice-zip at its identifier 922b2865 (the kind tag of its causal 2-D law folded as an entry),
+    // with this crate's own alice-det-math functions folded from DET_MATH_PINS
+    (
+        hex32("922b28656da64d8651eae0db86d0070078c4b5dc183c4a4d0219107f73ffca78"),
+        hex32("97d6853c2d8eda9e80fa985081ca8e982d7a4dc9cd276f9b83c95c153f6000bb"),
+    ),
 ];
 
 /// Content hash of this crate's own arithmetic: the fold of
 /// [`DB_SEMANTICS_PINS`] described in the [module documentation](self),
 /// taken from [`DB_SEMANTICS_BY_ZIP`] by the resolved `alice-zip`.
 ///
-/// Hex (with `alice-zip` at its identifier 65f48962):
-/// `62d72c5042a8e0b894a02a655803850557882a94abb0de1fc4455c22ecfbffa8`.
+/// Hex (with `alice-zip` at its identifier 922b2865):
+/// `97d6853c2d8eda9e80fa985081ca8e982d7a4dc9cd276f9b83c95c153f6000bb`.
 pub const DB_SEMANTICS_ID: [u8; 32] = semantics_id_for(&alice_core::law::SEMANTICS_ID);
 
 /// The [`DB_SEMANTICS_ID`] of a build that resolved the `alice-zip` with

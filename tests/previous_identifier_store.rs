@@ -22,9 +22,14 @@
 //! its values and its format 2 law record read back as `VerifiedPrevious` as well.
 //!
 //! `tests/fixtures/store_db_0_6_0_det_math_2d01c63f` was written by the build of `8ef87c7`
-//! (alice-zip 0.11 at 19f6f2c1 over alice-det-math 0.5.2 at 2d01c63f, `17d0df1d…`). This build
-//! stamps `65f48962…` (alice-zip with alice-det-math folded per function) and alice-zip lists
-//! `17d0df1d…` as previous, so its values and its format 2 law record read back as
+//! (alice-zip 0.11 at 19f6f2c1 over alice-det-math 0.5.2 at 2d01c63f, `17d0df1d…`) and alice-zip
+//! lists `17d0df1d…` as previous, so its values and its format 2 law record read back as
+//! `VerifiedPrevious` as well.
+//!
+//! `tests/fixtures/store_db_0_6_0_det_math_per_function` was written by the build of `af45ce9`
+//! (alice-zip with alice-det-math folded per function, `65f48962…`). This build stamps
+//! `922b2865…` (alice-zip with the kind tag of its causal 2-D law folded too) and alice-zip lists
+//! `65f48962…` as previous, so its values and its format 2 law record read back as
 //! `VerifiedPrevious` as well.
 
 #![cfg(feature = "fs")]
@@ -36,7 +41,11 @@ use alice_db::{AliceDB, StorageConfig};
 use std::path::{Path, PathBuf};
 
 /// `(fixture directory, the identifier its writer stamped)`, newest first
-const FIXTURES: [(&str, &str); 5] = [
+const FIXTURES: [(&str, &str); 6] = [
+    (
+        "store_db_0_6_0_det_math_per_function",
+        "65f48962c757ebb619d252f8784f830aca5f3698fbd22f34150f9887863f38dd",
+    ),
     (
         "store_db_0_6_0_det_math_2d01c63f",
         "17d0df1d7c0a6e63d1a7380129f12386b677ac96e7ac193dece546805f4fe84c",

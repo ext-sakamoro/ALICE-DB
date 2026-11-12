@@ -12,5 +12,7 @@ compressed, so its stored length differs by a byte (305 bytes against 304). The 
 `blob.lock` (written by the open since the one-store rule) is not committed: it is not part of
 the data and is written again by every open.
 
-Read by `tests/identifier_history.rs` as the current row of the identifier history: every value
-reads back exact as `ReadStatus::Current`.
+Read by `tests/identifier_history.rs` as a previous row of the identifier history and by
+`tests/previous_identifier_store.rs`: alice-zip lists `65f48962…` as a previous identifier (the
+kind tag of its causal 2-D law moved no output bits), so every value reads back exact as
+`ReadStatus::VerifiedPrevious`.

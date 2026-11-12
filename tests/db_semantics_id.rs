@@ -65,13 +65,22 @@ fn all_entries() -> Vec<(String, [u8; 32])> {
 /// 64-hex literals of the golden file that are not folded digests, each
 /// with its reason
 const UNFOLDED_DIGESTS: &[&str] = &[
-    // alice-zip's identifier with alice-det-math folded per function, folded as the alice-zip entry
-    "65f48962c757ebb619d252f8784f830aca5f3698fbd22f34150f9887863f38dd",
+    // alice-zip's identifier with alice-det-math folded per function and the kind tag of its
+    // causal 2-D law, folded as the alice-zip entry
+    "922b28656da64d8651eae0db86d0070078c4b5dc183c4a4d0219107f73ffca78",
     // the law identifiers of the three fits: `law_scenario` hashes them into
     // the bits of "law_id and evaluate", so they are folded through it
+    "b5bfb1ab445a714430402caaa292c6dd5b8dd2979a562637126454210c4a5772",
+    "ec968c8ef584e8fd196a0e81005730d072b5d84d0f2fdaf579ee495921477868",
+    "30153fb24e53d823d8d050b802e8c5923e01f35e2cabd42cb846c69d59f05e7a",
+    // alice-zip's identifier with alice-det-math folded per function (stamped before
+    // the causal law's kind tag), what it gave (law identifiers) and the law scenario's
+    // digest under it: history, not a current output
+    "65f48962c757ebb619d252f8784f830aca5f3698fbd22f34150f9887863f38dd",
     "85b7855f28a997c104888cbf4ad5703c945ee3199a0c0e297ad497ac3f562dd0",
     "c41a8c38eb53287239b0891bd9489d4647d577ba77cbe672442415b7e0ddf227",
     "53ce8b34eab73b196cfe29ba8028f78aea09568e24100b5cfe8ba16e71182123",
+    "4991ddf8a1415ffcaf9b71b9b58c9299dd6312cca0961e737f4dd80fd740ca25",
     // alice-zip 0.11's identifier at 19f6f2c1 over alice-det-math 0.5.2 at
     // 2d01c63f (stamped before alice-det-math was folded per function), what it
     // gave (law identifiers) and the law scenario's digest under it: history,
@@ -122,9 +131,13 @@ const UNFOLDED_GOLDENS: &[(&str, usize)] = &[
     // the checker's own canaries: a fixed digest of eight zero bytes and a
     // wrong one, no scenario of the crate
     ("canary", 4),
-    // the same scenario under the identifiers stamped before (alice-zip 0.11's
-    // at 19f6f2c1 and over alice-det-math 0.5.1, and alice-det-math 0.5.1's and 0.5.0's), kept to
-    // show that the identifier is what moved the digest; not current outputs
+    // the same scenario under the identifiers stamped before (alice-zip's 65f48962,
+    // alice-zip 0.11's at 19f6f2c1 and over alice-det-math 0.5.1, and alice-det-math 0.5.1's and
+    // 0.5.0's), kept to show that the identifier is what moved the digest; not current outputs
+    (
+        "law_id and evaluate under the identifier before alice-zip's causal-law kind tag",
+        1,
+    ),
     (
         "law_id and evaluate under the identifier before alice-det-math was folded per function",
         1,
@@ -457,9 +470,10 @@ fn the_identifier_is_the_recorded_value() {
     assert_eq!(
         hex(&DB_SEMANTICS_ID),
         // the fold recomputed outside this toolchain from the documented
-        // procedure, which also reproduces the previous 670fa328… from the
-        // previous table (alice-zip entry 17d0df1d…, no det-math entries)
-        "62d72c5042a8e0b894a02a655803850557882a94abb0de1fc4455c22ecfbffa8"
+        // procedure, which also reproduces the previous 62d72c50… from the
+        // previous table (alice-zip entry 65f48962…) and 670fa328… from the
+        // one before (alice-zip entry 17d0df1d…, no det-math entries)
+        "97d6853c2d8eda9e80fa985081ca8e982d7a4dc9cd276f9b83c95c153f6000bb"
     );
 }
 

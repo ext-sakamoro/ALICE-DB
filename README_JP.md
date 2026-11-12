@@ -318,7 +318,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `5b19cf68bf4e` と
 | G3 no-outer-fneg-of-fma | 適合 | the library's only fma calls are the fit competition's model score (not a stored value); the 114 fma calls in the IR otherwise come from alice-det-math and … |
 | G4 debug-release-arch-goldens | 適合 | boundary: a stored value read back (get / scan from the memtable, or from a segment through its residual: lossless, or a lossy-configured segment holding a … |
 | G5 release-profile-test-leg | 適合 | the aarch64 release leg is macos-latest. The repository has no branch protection; a leg is required in the sense that main moves only by a fast-forward after … |
-| G6 semantics-id | 適合 | alice-db computes its own identifier, DB_SEMANTICS_ID (62d72c50...fbffa8 with alice-zip at its identifier 65f48962 and the identifiers of the 7 alice-det-math … |
+| G6 semantics-id | 適合 | alice-db computes its own identifier, DB_SEMANTICS_ID (97d6853c...6000bb with alice-zip at its identifier 922b2865 and the identifiers of the 7 alice-det-math … |
 | G7 handshake-carries-id | 適合 | the Law-bearing value that crosses this crate's boundary is the stored law record (alice-zip SignalLaw parts), handed over in AliceDB::to_bytes / from_bytes … |
 | G8 persisted-semantics-id | 適合 | every durable form that carries a value computed under an arithmetic carries that arithmetic's identifier: lossless segment residuals since 0.3.0 (the … |
 | G9 persisted-meaning-change-is-major | 適合 | the audit covers the identifier this crate persists and finds no violation, and tests/identifier_history.rs reads a committed store stamped with each earlier … |

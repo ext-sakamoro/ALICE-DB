@@ -289,15 +289,19 @@ fn semantics_id_is_the_recorded_value() {
     );
     assert_eq!(
         hex(&alice_db::SEMANTICS_ID),
-        // alice-zip's identifier with alice-det-math folded per function
-        // (recorded in alice-zip's src/semantics.rs); the identifiers earlier
-        // releases stamped stay readable through
-        // `alice_core::law::PREVIOUS_SEMANTICS_IDS`
-        "65f48962c757ebb619d252f8784f830aca5f3698fbd22f34150f9887863f38dd",
+        // alice-zip's identifier with alice-det-math folded per function and
+        // the kind tag of its causal 2-D law (recorded in alice-zip's
+        // src/semantics.rs); the identifiers earlier releases stamped stay
+        // readable through `alice_core::law::PREVIOUS_SEMANTICS_IDS`
+        "922b28656da64d8651eae0db86d0070078c4b5dc183c4a4d0219107f73ffca78",
         "the numeric semantics changed: every residual pinned under the old \
          value is no longer applied on read"
     );
     for (release, previous) in [
+        (
+            "alice-zip with alice-det-math folded per function, before the causal law's kind tag",
+            PREVIOUS_65F48962_ID,
+        ),
         (
             "alice-zip 0.11 at 19f6f2c1 over alice-det-math 0.5.2 at 2d01c63f",
             PREVIOUS_2D01C63F_ID,
@@ -474,19 +478,39 @@ fn bloom_sizing_is_the_recorded_bits() {
 // ---------------------------------------------------------------------------
 
 /// The law identifiers of the three fits under alice-zip's identifier with
-/// alice-det-math folded per function (`65f48962…`), in fixture order
+/// alice-det-math folded per function and the kind tag of its causal 2-D law
+/// (`922b2865…`), in fixture order
 ///
 /// Recorded from the code. The code's encoding of `SignalLaw::law_id`
 /// (length-prefixed domain tag and kind tag, the identifier, the domain bounds
 /// and the coefficients as big-endian bits) is the one the identifiers below
 /// were computed with outside this toolchain: under those identifiers the same
-/// fits still give [`PREVIOUS_2D01C63F_LAW_IDS`] (`17d0df1d…`),
+/// fits still give [`PREVIOUS_65F48962_LAW_IDS`] (`65f48962…`),
+/// [`PREVIOUS_2D01C63F_LAW_IDS`] (`17d0df1d…`),
 /// [`PREVIOUS_39507D1B_LAW_IDS`] (`50a40cf6…`),
 /// [`PREVIOUS_0_6_0_LAW_IDS`] (`51ffeb07…`), [`PREVIOUS_0_5_1_LAW_IDS`]
 /// (`85e08846…`) and [`PREVIOUS_GOLDEN_LAW_IDS`] (`135c407d…`)
 /// (`law_id_under_the_previous_identifiers_is_unchanged`), so only the
 /// identifier input differs here
 const GOLDEN_LAW_IDS: [(&str, &str); 3] = [
+    (
+        "line",
+        "b5bfb1ab445a714430402caaa292c6dd5b8dd2979a562637126454210c4a5772",
+    ),
+    (
+        "parabola",
+        "ec968c8ef584e8fd196a0e81005730d072b5d84d0f2fdaf579ee495921477868",
+    ),
+    (
+        "cubic",
+        "30153fb24e53d823d8d050b802e8c5923e01f35e2cabd42cb846c69d59f05e7a",
+    ),
+];
+
+/// The same identifiers under alice-zip's identifier with alice-det-math
+/// folded per function (`65f48962…`), the one stamped before alice-zip folded
+/// the kind tag of its causal 2-D law (recorded then)
+const PREVIOUS_65F48962_LAW_IDS: [(&str, &str); 3] = [
     (
         "line",
         "85b7855f28a997c104888cbf4ad5703c945ee3199a0c0e297ad497ac3f562dd0",
@@ -500,6 +524,17 @@ const GOLDEN_LAW_IDS: [(&str, &str); 3] = [
         "53ce8b34eab73b196cfe29ba8028f78aea09568e24100b5cfe8ba16e71182123",
     ),
 ];
+
+/// The digest of the law scenario recorded under `65f48962…`: reproducing it
+/// under that identifier shows that `evaluate` returns the same bits with
+/// alice-zip's causal-law kind tag folded, so only the identifier input moved
+const PREVIOUS_65F48962_LAW_DIGEST: &str =
+    "4991ddf8a1415ffcaf9b71b9b58c9299dd6312cca0961e737f4dd80fd740ca25";
+
+/// alice-zip's identifier with alice-det-math folded per function, before the
+/// kind tag of its causal 2-D law
+const PREVIOUS_65F48962_ID: &str =
+    "65f48962c757ebb619d252f8784f830aca5f3698fbd22f34150f9887863f38dd";
 
 /// The same identifiers under alice-zip 0.11's identifier at 19f6f2c1 over
 /// alice-det-math 0.5.2 at 2d01c63f (`17d0df1d…`), the one stamped before
@@ -687,18 +722,18 @@ fn law_id_and_evaluation_are_the_recorded_bits() {
     assert_eq!(
         ids,
         recorded(&GOLDEN_LAW_IDS),
-        "the law identifiers under alice-zip's identifier with alice-det-math folded per function"
+        "the law identifiers under alice-zip's identifier with alice-det-math folded per function and its causal-law kind tag"
     );
     assert_golden(
         "law_id and evaluate",
         bits,
         3 * (32 + 41 * 8),
-        // re-recorded for alice-zip's identifier 65f48962…: with 17d0df1d…
-        // (50a40cf6…, 51ffeb07…, 85e08846…, 135c407d…) in place of
-        // `alice_db::SEMANTICS_ID` the same scenario still hashes to 2536bbeb…
-        // (649b5e82…, 42a9c526…, 703f17b1…, f18a2a53…), so only the identifier
-        // moved (`law_id_under_the_previous_identifiers_is_unchanged`)
-        "4991ddf8a1415ffcaf9b71b9b58c9299dd6312cca0961e737f4dd80fd740ca25",
+        // re-recorded for alice-zip's identifier 922b2865…: with 65f48962…
+        // (17d0df1d…, 50a40cf6…, 51ffeb07…, 85e08846…, 135c407d…) in place of
+        // `alice_db::SEMANTICS_ID` the same scenario still hashes to 4991ddf8…
+        // (2536bbeb…, 649b5e82…, 42a9c526…, 703f17b1…, f18a2a53…), so only the
+        // identifier moved (`law_id_under_the_previous_identifiers_is_unchanged`)
+        "be459f7efa77c3ad94de8bf77fb1630950acbf6d4737dd557ca336b83f356f09",
     );
 }
 
@@ -729,6 +764,16 @@ fn previous_law_scenario(
 
 #[test]
 fn law_id_under_the_previous_identifiers_is_unchanged() {
+    assert_golden(
+        "law_id and evaluate under the identifier before alice-zip's causal-law kind tag",
+        previous_law_scenario(
+            "alice-zip with alice-det-math folded per function",
+            PREVIOUS_65F48962_ID,
+            &PREVIOUS_65F48962_LAW_IDS,
+        ),
+        3 * (32 + 41 * 8),
+        PREVIOUS_65F48962_LAW_DIGEST,
+    );
     assert_golden(
         "law_id and evaluate under the identifier before alice-det-math was folded per function",
         previous_law_scenario(

@@ -43,7 +43,7 @@ dependencies = [
 [[package]]
 name = "alice-det-math"
 version = "0.6.1"
-source = "git+https://github.com/ext-sakamoro/ALICE-DetMath?branch=main#8cb532f332be03db8ccc6a98612ae206ca23275d"
+source = "git+https://github.com/ext-sakamoro/ALICE-DetMath?branch=main#d80446ebce73c5c397f7df12435cf574460400bf"
 
 [[package]]
 name = "alice-serial"
@@ -53,7 +53,7 @@ source = "git+https://github.com/ext-sakamoro/ALICE-Serial?branch=main#16b34ebca
 [[package]]
 name = "alice-zip"
 version = "0.11.0"
-source = "git+https://github.com/ext-sakamoro/ALICE-Zip?branch=main#ad06e53c3e3e3e10eb26d662382ba44d6d177276"
+source = "git+https://github.com/ext-sakamoro/ALICE-Zip?branch=main#c498e1769a71532239aed179e918734dd6329d8a"
 dependencies = [
  "alice-det-math",
  "flate2",

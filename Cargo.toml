@@ -137,6 +137,10 @@ name = "segment_persist_failure"
 required-features = ["fs", "open-file-audit"]
 
 [[test]]
+name = "ts_wal_framing"
+required-features = ["fs", "open-file-audit"]
+
+[[test]]
 name = "blob_store_crash"
 required-features = ["fs", "open-file-audit"]
 

@@ -245,7 +245,10 @@ The time-series WAL (`wal.alice`) is framed: a versioned header, then one frame 
 sealed when a key is configured). On open it is replayed up to its last whole frame; a torn or damaged tail is kept in
 `wal.alice.dropped-<offset>`. The replayed segment files and the index are fsynced (the index is written whole and
 renamed into place) before the WAL is emptied, and an open that cannot replay the WAL leaves it untouched. A write
-that fails partway is rolled back and accepts nothing. A WAL in the earlier unframed format is still replayed.
+that fails partway is rolled back and accepts nothing. A WAL in the earlier unframed format is still replayed. A frame whose CRC matches but that does not open with the
+configured key (another key) stops the open with `InvalidData` and leaves the WAL as it is: open it with the key it was
+written with. Close the store cleanly before going back to a build older than the framed WAL, which would read a
+framed WAL as points.
 
 One directory holds one store. Its files are `blob.sst` and `blob-000001.sst`
 whatever the WAL is called, and `blob.lock` holds the WAL's name while a writer

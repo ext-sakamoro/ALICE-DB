@@ -1102,7 +1102,8 @@ impl StorageEngine {
         fs::rename(&tmp, &path)?;
         crate::fs_audit::crash_point("index:before_dir_sync")?;
         if durable {
-            crate::blob_wal::sync_dir(&path, "index-dir")?;
+            use crate::blob_dir::BlobDir as _;
+            crate::blob_dir::StdDir.sync_parent(&path, "index-dir")?;
         }
         Ok(())
     }
@@ -1610,7 +1611,9 @@ impl StorageEngine {
             if matches!(self.shared.store, Store::Dir) {
                 for id in &replayed {
                     let path = self.config.data_dir.join(segment_file_name(*id));
-                    crate::fs_audit::sync_all(&File::open(&path)?, "segment", &path)?;
+                    // a handle with write access: Windows refuses `FlushFileBuffers` on a read-only one
+                    let file = OpenOptions::new().write(true).open(&path)?;
+                    crate::fs_audit::sync_all(&file, "segment", &path)?;
                 }
             }
             self.save_index_with(true)?;

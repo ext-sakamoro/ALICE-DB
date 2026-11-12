@@ -513,6 +513,8 @@ struct Pending {
     entry: SegmentIndexEntry,
     segment: Arc<DataSegment>,
     failed: Option<(io::ErrorKind, String)>,
+    /// A write of it is under way (by the flush thread or a retry): another retry leaves it alone
+    writing: bool,
 }
 
 /// Storage Engine: Core persistence layer
@@ -1063,7 +1065,8 @@ impl StorageEngine {
     ///
     /// # Errors
     ///
-    /// The segment cannot be encoded.
+    /// The segment cannot be encoded (its points are in the WAL, so a reopen replays them; until then they are not
+    /// readable and the call reports it).
     fn hand_over(&self, segments: Vec<DataSegment>) -> io::Result<()> {
         for segment in segments {
             let id = Self::add_pending(&self.shared, segment)?;
@@ -1112,6 +1115,7 @@ impl StorageEngine {
                 entry,
                 segment: Arc::new(segment),
                 failed: None,
+                writing: false,
             },
         );
         Ok(id)
@@ -1130,21 +1134,29 @@ impl StorageEngine {
     ///
     /// The store's error.
     fn write_pending(shared: &SharedState, config: &StorageConfig, id: u64) -> io::Result<()> {
-        let Some(segment) = shared
-            .pending
-            .read()
-            .get(&id)
-            .map(|p| Arc::clone(&p.segment))
-        else {
-            return Ok(()); // written already
+        let segment = {
+            let mut pending = shared.pending.write();
+            let Some(p) = pending.get_mut(&id) else {
+                return Ok(()); // written already
+            };
+            if p.writing {
+                return Ok(()); // another writer has it; its outcome stays on the entry
+            }
+            p.writing = true;
+            Arc::clone(&p.segment)
         };
-        match Self::persist_segment_shared(shared, config, &segment) {
+        let result = Self::persist_segment_shared(shared, config, &segment);
+        let mut pending = shared.pending.write();
+        match result {
             Ok(()) => {
-                shared.pending.write().remove(&id);
+                pending.remove(&id);
                 Ok(())
             }
             Err(e) => {
-                Self::mark_failed(shared, id, &e);
+                if let Some(p) = pending.get_mut(&id) {
+                    p.writing = false;
+                    p.failed = Some((e.kind(), e.to_string()));
+                }
                 Err(e)
             }
         }
@@ -1572,19 +1584,27 @@ impl StorageEngine {
     /// K = number of overlapping segments returned.
     pub fn find_segments(&self, start: i64, end: i64) -> Vec<SegmentIndexEntry> {
         // Use Interval Tree for efficient range query
+        // the sealed segments not yet written answer too (their points were accepted); they are read before the
+        // index: a segment enters the index before it leaves the pending set, so reading in this order sees it in
+        // one of the two whatever is written in between
+        let pending: Vec<SegmentIndexEntry> = self
+            .shared
+            .pending
+            .read()
+            .values()
+            .filter(|p| p.entry.start_time <= end && p.entry.end_time >= start)
+            .map(|p| p.entry.clone())
+            .collect();
         let segment_ids = self.shared.interval_tree.read().query_range(start, end);
         let index = self.shared.index.read();
-
         let mut found: Vec<SegmentIndexEntry> = segment_ids
             .into_iter()
             .filter_map(|id| index.get(&id).cloned())
             .collect();
         drop(index);
-        // the sealed segments not yet written answer too (their points were accepted)
-        for p in self.shared.pending.read().values() {
-            let e = &p.entry;
-            if e.start_time <= end && e.end_time >= start && !found.iter().any(|f| f.id == e.id) {
-                found.push(e.clone());
+        for e in pending {
+            if !found.iter().any(|f| f.id == e.id) {
+                found.push(e);
             }
         }
         found

@@ -9,6 +9,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
 ### Added
+- 試験の open-file audit: `fs_audit::arm_crash_point_any_thread` / `is_armed_any_thread` (どの thread が先に当たっても発火する crash point、background flush の失敗の試験用) と crash point `segment:before_write` / `segment:before_sync` / `segment:before_index`
 - CI と preflight: `scripts/lock_sibling_agreement.py` (試験 `scripts/test_lock_sibling_agreement.py`) が、追跡している全ての Cargo.lock (root、fuzz/、tools/) で alice-* の各 crate が同じ source に解決しているかを比べる 根の lock だけ alice-zip を上げ fuzz/Cargo.lock が古いままだった時に fuzz の build が CI でだけ落ちた 比較 0 件で fail
 - `segment::MAX_SEGMENT_POINTS`: 1 つの segment が持てる点の数の上限 = 2^30 / 24 = 44 739 242 (segment を丸ごと読む時に 1 点が使う 24 bytes (再生成した `f32`、その正規化した写し、範囲の結果の `(i64, f32)`) で 1 GiB に収まる数) `memtable_capacity` がこれを超える store は `InvalidInput` で開かない
 - `BlobStorage::write_batch` / `AliceDB::write_blob_batch`: `WriteBatch` の全操作を全部か無しかで適用する (WAL の 1 record、型 0x03、checksum は 1 つ) reader は batch を一度に見る
@@ -126,6 +127,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- 時系列の segment の書き込みが失敗しても、受け付けた点を失わない これまでは memtable が segment を封じて取り出した後に store への書き込み (`persist_segment`) が失敗すると、点は WAL にあるが memtable にも index にも無く、reopen まで読めなかった (同じ時刻の書き直しは lossless の順序の検査で断られた) background flush では失敗を log に書くだけで segment を捨てていた 封じた segment は書き込みの前から読める (`get` / `scan` が答える) 書けなかった segment は残り、次の書き込みか `flush` が書き直す それまで `flush` は store の error を返し、新しい書き込みは何も受け付けずに断る `put` / `put_batch` が `Ok` を返した点は受け付け済み、`Err` を返した点は受け付けていない 試験 `tests/segment_persist_failure.rs`: segment の書き込みの各段 (bytes の前、fsync の前、index の前) で store を失敗させる (書く thread と background thread、`flush` の memtable) 変異 7 件は red
 - blob の WAL: 開く時に、壊れた末尾の長さの欄の値 (最大 4 GiB を 2 つ) でそのまま buffer を確保していた 長さは後ろの checksum で確かめるまで信用できないので、実際に読めた bytes の分だけ伸ばす 試験 `tests/wal_garbage_length.rs` (allocator で最大の確保を測る)
 - `PerlinNoise` の segment は、点の数 × octaves が alice-zip の `generators::MAX_FBM_STEPS` を超えると読む時に `InvalidData` で拒む octaves は点ごとの繰り返しの回数で、`u32::MAX` 近くの octaves の小さな segment は読むたびに 1 点 約 40 億回の計算をした alice-zip を ad06e53 (同じ上限で生成器も拒む) に上げた
 - segment を読む時に `point_count` の値で確保していた 旧 `data.alice` の entry で `point_count` 4 289 895 731 と展開できない raw の中身を持つものが、展開の失敗時に `point_count` 個の 0 を作り 17 GB を確保した (fuzz `fuzz_segment_bytes` が検出、入力は `tests/fixtures/fuzz/segment_bytes_point_count_oom.bin`) 全ての読み手 (`from_bytes`、`from_stored_bytes` の両形式、旧 data file) の最後で、`point_count` が `MAX_SEGMENT_POINTS` を超える segment と、raw の中身が `point_count` 個の値にちょうど展開されない segment を `InvalidData` で拒む 展開は出力も LZMA の辞書も `point_count` 個の分で止める PerlinNoise の失敗時の 0 と fBm の生成は、この上限の内でだけ `point_count` 個を作る

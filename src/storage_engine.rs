@@ -368,8 +368,8 @@ pub struct SegmentIndexEntry {
 
 /// Job for background flush thread
 enum FlushJob {
-    /// A segment to persist to disk
-    Segment(DataSegment),
+    /// A pending segment (by id) to write to the store
+    Segment(u64),
     /// Shutdown signal
     Shutdown,
 }
@@ -500,8 +500,19 @@ struct SharedState {
     segment_cache: RwLock<BTreeMap<u64, Arc<SegmentView>>>,
     /// Number of in-flight background flush jobs (for synchronization)
     in_flight: std::sync::atomic::AtomicUsize,
+    /// Sealed segments not yet written to the store (see [`Pending`]): readable, retried until written
+    pending: RwLock<BTreeMap<u64, Pending>>,
     /// Backend holding the index and segment bytes
     store: Store,
+}
+
+/// A sealed segment that is not yet in the store: its points were accepted, so reads answer from it (its view is in
+/// the segment cache) until it is written and indexed. `failed` holds the store's error of the last attempt; while
+/// one is held, flush fails and new writes are refused until a retry writes it.
+struct Pending {
+    entry: SegmentIndexEntry,
+    segment: Arc<DataSegment>,
+    failed: Option<(io::ErrorKind, String)>,
 }
 
 /// Storage Engine: Core persistence layer
@@ -666,6 +677,7 @@ impl StorageEngine {
             interval_tree: RwLock::new(IntervalTree::new()),
             segment_cache: RwLock::new(BTreeMap::new()),
             in_flight: std::sync::atomic::AtomicUsize::new(0),
+            pending: RwLock::new(BTreeMap::new()),
             store,
         });
 
@@ -983,6 +995,9 @@ impl StorageEngine {
             None
         };
 
+        // A sealed segment the store refused is written first: until it is, nothing new is accepted
+        self.retry_failed()?;
+
         // Write to WAL first for durability (directory backend only)
         #[cfg(feature = "fs")]
         if self.config.enable_wal {
@@ -995,18 +1010,7 @@ impl StorageEngine {
             **guard = Some(timestamp);
         }
         drop(lossless);
-        if let Some(segment) = sealed {
-            if let Some(ref sender) = self.flush_sender {
-                self.shared
-                    .in_flight
-                    .fetch_add(1, std::sync::atomic::Ordering::Acquire);
-                let _ = sender.send(FlushJob::Segment(segment));
-            } else {
-                self.persist_segment(&segment)?;
-            }
-        }
-
-        Ok(())
+        self.hand_over(sealed.into_iter().collect())
     }
 
     /// Insert multiple values (batch)
@@ -1033,6 +1037,9 @@ impl StorageEngine {
             None
         };
 
+        // A sealed segment the store refused is written first: until it is, nothing new is accepted
+        self.retry_failed()?;
+
         // Write to WAL first (directory backend only)
         #[cfg(feature = "fs")]
         if self.config.enable_wal {
@@ -1047,17 +1054,119 @@ impl StorageEngine {
             **guard = *last;
         }
         drop(lossless);
+        self.hand_over(segments)
+    }
+
+    /// Hand sealed segments over: each is readable at once (pending), then written to the store on the background
+    /// thread or here. A write that fails keeps its segment pending (readable, retried by the next write or flush)
+    /// and is not an error of this call: the segment's points were accepted.
+    ///
+    /// # Errors
+    ///
+    /// The segment cannot be encoded.
+    fn hand_over(&self, segments: Vec<DataSegment>) -> io::Result<()> {
         for segment in segments {
+            let id = Self::add_pending(&self.shared, segment)?;
             if let Some(ref sender) = self.flush_sender {
                 self.shared
                     .in_flight
                     .fetch_add(1, std::sync::atomic::Ordering::Acquire);
-                let _ = sender.send(FlushJob::Segment(segment));
+                if sender.send(FlushJob::Segment(id)).is_err() {
+                    // the flush thread is gone: the segment stays pending and is written by the next flush
+                    self.shared
+                        .in_flight
+                        .fetch_sub(1, std::sync::atomic::Ordering::Release);
+                    Self::mark_failed(
+                        &self.shared,
+                        id,
+                        &io::Error::other("the background flush thread has stopped"),
+                    );
+                }
             } else {
-                self.persist_segment(&segment)?;
+                // a failure is kept on the pending segment (see above)
+                let _ = Self::write_pending(&self.shared, &self.config, id);
             }
         }
+        Ok(())
+    }
 
+    /// Make `segment` readable before it is written: its view in the segment cache and its entry among the pending
+    /// segments. Returns its id.
+    fn add_pending(shared: &SharedState, segment: DataSegment) -> io::Result<u64> {
+        let rkyv_bytes = segment.to_rkyv_bytes()?;
+        let entry = SegmentIndexEntry {
+            id: segment.metadata.id,
+            start_time: segment.start_time,
+            end_time: segment.end_time,
+            offset: 0,
+            size: rkyv_bytes.len() as u64,
+            model_type: segment.model.name().to_string(),
+            compression_ratio: segment.metadata.compression_ratio,
+        };
+        let view = SegmentView::from_vec(rkyv_bytes)?;
+        let id = entry.id;
+        shared.segment_cache.write().insert(id, Arc::new(view));
+        shared.pending.write().insert(
+            id,
+            Pending {
+                entry,
+                segment: Arc::new(segment),
+                failed: None,
+            },
+        );
+        Ok(id)
+    }
+
+    fn mark_failed(shared: &SharedState, id: u64, e: &io::Error) {
+        if let Some(p) = shared.pending.write().get_mut(&id) {
+            p.failed = Some((e.kind(), e.to_string()));
+        }
+    }
+
+    /// Write the pending segment `id` to the store and index it; it leaves the pending segments only once indexed.
+    /// A failure is kept on it ([`Pending::failed`]).
+    ///
+    /// # Errors
+    ///
+    /// The store's error.
+    fn write_pending(shared: &SharedState, config: &StorageConfig, id: u64) -> io::Result<()> {
+        let Some(segment) = shared
+            .pending
+            .read()
+            .get(&id)
+            .map(|p| Arc::clone(&p.segment))
+        else {
+            return Ok(()); // written already
+        };
+        match Self::persist_segment_shared(shared, config, &segment) {
+            Ok(()) => {
+                shared.pending.write().remove(&id);
+                Ok(())
+            }
+            Err(e) => {
+                Self::mark_failed(shared, id, &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Write every pending segment the store refused, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// The store's error for the first one it refuses again.
+    fn retry_failed(&self) -> io::Result<()> {
+        let failed: Vec<u64> = self
+            .shared
+            .pending
+            .read()
+            .iter()
+            .filter(|(_, p)| p.failed.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in failed {
+            Self::write_pending(&self.shared, &self.config, id)?;
+        }
         Ok(())
     }
 
@@ -1069,8 +1178,9 @@ impl StorageEngine {
     ) {
         while let Ok(job) = rx.recv() {
             match job {
-                FlushJob::Segment(segment) => {
-                    if let Err(e) = Self::persist_segment_shared(shared, config, &segment) {
+                FlushJob::Segment(id) => {
+                    // a failure stays on the pending segment: readable, and reported by the next write or flush
+                    if let Err(e) = Self::write_pending(shared, config, id) {
                         log::error!("Background flush failed: {e}");
                     }
                     shared
@@ -1098,6 +1208,8 @@ impl StorageEngine {
         let rkyv_bytes = segment.to_rkyv_bytes()?;
         let segment_size = rkyv_bytes.len() as u64;
 
+        #[cfg(feature = "fs")]
+        crate::fs_audit::crash_point("segment:before_write")?;
         let view = SegmentView::from_vec(rkyv_bytes.clone())?;
         shared
             .segment_cache
@@ -1132,6 +1244,7 @@ impl StorageEngine {
                 }
 
                 if config.sync_writes {
+                    crate::fs_audit::crash_point("segment:before_sync")?;
                     let file = File::open(&segment_path)?;
                     crate::fs_audit::sync_all(&file, "segment", &segment_path)?;
                 }
@@ -1153,6 +1266,8 @@ impl StorageEngine {
             compression_ratio,
         };
 
+        #[cfg(feature = "fs")]
+        crate::fs_audit::crash_point("segment:before_index")?;
         shared.index.write().insert(segment_id, entry);
         {
             let mut tree = shared.interval_tree.write();
@@ -1291,6 +1406,7 @@ impl StorageEngine {
     ///
     /// This ensures queries can hit the cache instantly after `MemTable` flush,
     /// without waiting for disk I/O to complete.
+    #[cfg(feature = "fs")]
     fn persist_segment(&self, segment: &DataSegment) -> io::Result<()> {
         Self::persist_segment_shared(&self.shared, &self.config, segment)
     }
@@ -1459,10 +1575,19 @@ impl StorageEngine {
         let segment_ids = self.shared.interval_tree.read().query_range(start, end);
         let index = self.shared.index.read();
 
-        segment_ids
+        let mut found: Vec<SegmentIndexEntry> = segment_ids
             .into_iter()
             .filter_map(|id| index.get(&id).cloned())
-            .collect()
+            .collect();
+        drop(index);
+        // the sealed segments not yet written answer too (their points were accepted)
+        for p in self.shared.pending.read().values() {
+            let e = &p.entry;
+            if e.start_time <= end && e.end_time >= start && !found.iter().any(|f| f.id == e.id) {
+                found.push(e.clone());
+            }
+        }
+        found
     }
 
     /// Query a single point (through the cached `SegmentView`s)
@@ -1670,9 +1795,12 @@ impl StorageEngine {
             }
         }
 
-        // Force flush memtable synchronously (bypass channel)
+        // The segments the store refused before, then the memtable (synchronously, bypassing the channel); a
+        // segment that cannot be written stays pending and readable, and the flush fails
+        self.retry_failed()?;
         if let Some(segment) = self.memtable.force_flush() {
-            Self::persist_segment_shared(&self.shared, &self.config, &segment)?;
+            let id = Self::add_pending(&self.shared, segment)?;
+            Self::write_pending(&self.shared, &self.config, id)?;
         }
 
         // Rebuild Interval Tree after flush (jitter-free writes)

@@ -221,6 +221,9 @@ struct WalState {
     /// `sync_data`. `EveryWrite` keeps this at zero because it fsyncs
     /// unconditionally; `Batched` and `Manual` allow it to grow.
     pending_ops: usize,
+    /// Why the WAL refuses writes: a record that failed part-way could not be removed, so a later record would land
+    /// behind it and be cut with it at the next open
+    poisoned: Option<String>,
 }
 
 impl BlobWal {
@@ -271,6 +274,7 @@ impl BlobWal {
             state: Mutex::new(WalState {
                 file,
                 pending_ops: 0,
+                poisoned: None,
             }),
             sync_policy,
         })
@@ -412,26 +416,47 @@ impl BlobWal {
 
     fn write_frame(&self, frame: &[u8]) -> io::Result<()> {
         let mut state = self.state.lock();
+        if let Some(reason) = &state.poisoned {
+            return Err(io::Error::other(format!(
+                "the blob WAL refuses writes: {reason}"
+            )));
+        }
         // `append` writes at the end whatever was read before. The mutex makes the
         // write one step with respect to other writers in this process, and the
         // exclusive hold on the file rules out writers in other processes.
-        state.file.append(frame)?;
-        state.pending_ops += 1;
-        match self.sync_policy {
-            SyncPolicy::EveryWrite => {
-                state.file.persist_data("wal")?;
-                state.pending_ops = 0;
-            }
-            SyncPolicy::Batched { max_pending_ops } => {
-                if state.pending_ops >= max_pending_ops {
+        let start = state.file.size()?;
+        let sync_now = match self.sync_policy {
+            SyncPolicy::EveryWrite => true,
+            SyncPolicy::Batched { max_pending_ops } => state.pending_ops + 1 >= max_pending_ops,
+            SyncPolicy::Manual => false,
+        };
+        let half = frame.len() / 2;
+        let written = state
+            .file
+            .append(&frame[..half])
+            .and_then(|()| crate::fs_audit::crash_point("wal:mid_frame"))
+            .and_then(|()| state.file.append(&frame[half..]))
+            .and_then(|()| {
+                if sync_now {
+                    crate::fs_audit::crash_point("wal:before_sync")?;
                     state.file.persist_data("wal")?;
-                    state.pending_ops = 0;
                 }
+                Ok(())
+            });
+        if let Err(e) = written {
+            // the record is not accepted: put the WAL back to its length before it, so no partial record stays for
+            // later records to land behind (and a record whose fsync failed does not come back at the next open)
+            let rolled = crate::fs_audit::crash_point("wal:before_rollback")
+                .and_then(|()| state.file.set_len(start))
+                .and_then(|()| state.file.persist_data("wal"));
+            if let Err(r) = rolled {
+                state.poisoned = Some(format!(
+                    "a record that failed at offset {start} could not be removed ({r}) after: {e}"
+                ));
             }
-            SyncPolicy::Manual => {
-                // Never auto-sync; caller invokes flush() explicitly.
-            }
+            return Err(e);
         }
+        state.pending_ops = if sync_now { 0 } else { state.pending_ops + 1 };
         Ok(())
     }
 

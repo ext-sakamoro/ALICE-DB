@@ -128,6 +128,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - **破壊的:** `segment::compress_residual` (識別子を持たない加算の残差を書く 0.2.0-beta.2 の形式) を削除した 0.2.0-beta.2 以降 crate 内の呼び出しは試験だけで、識別子の無い残差を新たに書く経路を残さないため 残差は `compress_residual_xor` で書く
 
 ### Fixed
+- `sync_writes` の時、segment の file の fsync は読み取り専用で開き直した handle で行っていたため、Windows では毎回 os error 5 (`FlushFileBuffers` は書き込み権のある handle が要る) で失敗していた 書いた handle で fsync する
 - 時系列の segment の書き込みが失敗しても、受け付けた点を失わない これまでは memtable が segment を封じて取り出した後に store への書き込み (`persist_segment`) が失敗すると、点は WAL にあるが memtable にも index にも無く、reopen まで読めなかった (同じ時刻の書き直しは lossless の順序の検査で断られた) background flush では失敗を log に書くだけで segment を捨てていた 封じた segment は書き込みの前から読める (`get` / `scan` が答える) 書けなかった segment は残り、次の書き込みか `flush` が書き直す それまで `flush` は store の error を返し、新しい書き込みは何も受け付けずに断る `put` / `put_batch` が `Ok` を返した点は受け付け済み、`Err` を返した点は受け付けていない 試験 `tests/segment_persist_failure.rs`: segment の書き込みの各段 (bytes の前、fsync の前、index の前) で store を失敗させる (書く thread と background thread、`flush` の memtable) 変異 7 件は red
 - blob の WAL: 開く時に、壊れた末尾の長さの欄の値 (最大 4 GiB を 2 つ) でそのまま buffer を確保していた 長さは後ろの checksum で確かめるまで信用できないので、実際に読めた bytes の分だけ伸ばす 試験 `tests/wal_garbage_length.rs` (allocator で最大の確保を測る)
 - `PerlinNoise` の segment は、点の数 × octaves が alice-zip の `generators::MAX_FBM_STEPS` を超えると読む時に `InvalidData` で拒む octaves は点ごとの繰り返しの回数で、`u32::MAX` 近くの octaves の小さな segment は読むたびに 1 点 約 40 億回の計算をした alice-zip を ad06e53 (同じ上限で生成器も拒む) に上げた

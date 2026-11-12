@@ -1249,16 +1249,18 @@ impl StorageEngine {
 
                     let file = File::create(&segment_path)?;
                     file.lock_exclusive()?;
-                    let mut writer = BufWriter::new(&file);
-                    writer.write_all(&bytes_to_write)?;
-                    writer.flush()?;
+                    {
+                        let mut writer = BufWriter::new(&file);
+                        writer.write_all(&bytes_to_write)?;
+                        writer.flush()?;
+                    }
+                    // fsync through the handle that wrote it: Windows refuses `FlushFileBuffers` on a handle opened
+                    // read-only (os error 5), which is what reopening the file to fsync it gave
+                    if config.sync_writes {
+                        crate::fs_audit::crash_point("segment:before_sync")?;
+                        crate::fs_audit::sync_all(&file, "segment", &segment_path)?;
+                    }
                     // Lock released on file drop
-                }
-
-                if config.sync_writes {
-                    crate::fs_audit::crash_point("segment:before_sync")?;
-                    let file = File::open(&segment_path)?;
-                    crate::fs_audit::sync_all(&file, "segment", &segment_path)?;
                 }
             }
             Store::Memory(files) => {

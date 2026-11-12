@@ -14,6 +14,14 @@ import lock_sibling_agreement as m  # noqa: E402
 
 ZIP_A = "git+https://example.invalid/ALICE-Zip?branch=main#aaaa"
 ZIP_B = "git+https://example.invalid/ALICE-Zip?branch=main#bbbb"
+DM_GIT = "git+https://example.invalid/ALICE-DetMath?branch=main#cccc"
+REG = "registry+https://github.com/rust-lang/crates.io-index"
+EXEMPT = """[[exempt]]
+lock = "compat/Cargo.lock"
+crate = "alice-det-math"
+reason = "old reader"
+test = "compat/tests/old_reader.rs"
+"""
 
 
 def lock(*packages: tuple[str, str | None]) -> str:
@@ -55,9 +63,58 @@ class LockAgreement(unittest.TestCase):
         })
         self.assertEqual(m.check(d)[2], 1)
 
-    def test_nothing_compared_fails(self) -> None:
+    def test_locks_that_share_no_alice_crate_pass_and_compare_nothing(self) -> None:
         d = self.repo({"Cargo.lock": lock(("alice-zip", ZIP_A)), "fuzz/Cargo.lock": lock(("serde", "registry+x"))})
+        self.assertEqual(m.check(d)[1:], (2, 0))
+        self.assertEqual(m.main(["x", str(d)]), 0)
+
+    def test_registry_and_git_sources_disagree(self) -> None:
+        d = self.repo({
+            "Cargo.lock": lock(("alice-det-math", REG)),
+            "fuzz/Cargo.lock": lock(("alice-det-math", DM_GIT)),
+        })
         self.assertEqual(m.main(["x", str(d)]), 1)
+
+    def exempt_files(self, entry: str, test_file: bool = True) -> dict[str, str]:
+        files = {
+            "Cargo.lock": lock(("alice-det-math", DM_GIT)),
+            "fuzz/Cargo.lock": lock(("alice-det-math", DM_GIT)),
+            "compat/Cargo.lock": lock(("alice-det-math", REG)),
+            "scripts/lock_agreement.toml": entry,
+        }
+        if test_file:
+            files["compat/tests/old_reader.rs"] = "// reads data written by the old release\n"
+        return files
+
+    def test_an_exempt_lock_is_left_out_of_the_comparison(self) -> None:
+        d = self.repo(self.exempt_files(EXEMPT))
+        problems, locks, compared = m.check(d)
+        self.assertEqual((problems, locks, compared), ([], 3, 1))
+        self.assertEqual(m.main(["x", str(d)]), 0)
+
+    def test_without_the_exemption_the_old_source_fails(self) -> None:
+        d = self.repo(self.exempt_files(""))
+        self.assertEqual(m.main(["x", str(d)]), 1)
+
+    def test_an_exemption_the_lock_does_not_need_fails(self) -> None:
+        files = self.exempt_files(EXEMPT)
+        files["compat/Cargo.lock"] = lock(("alice-det-math", DM_GIT))
+        d = self.repo(files)
+        problems = m.check(d)[0]
+        self.assertEqual(len(problems), 1)
+        self.assertIn("agrees without it", problems[0])
+
+    def test_an_exemption_for_a_crate_not_in_the_lock_fails(self) -> None:
+        d = self.repo(self.exempt_files(EXEMPT.replace("alice-det-math", "alice-zip")))
+        self.assertTrue(any("no such crate" in p for p in m.check(d)[0]))
+
+    def test_an_exemption_without_its_test_file_fails(self) -> None:
+        d = self.repo(self.exempt_files(EXEMPT, test_file=False))
+        self.assertTrue(any("is not a file here" in p for p in m.check(d)[0]))
+
+    def test_an_exemption_without_a_reason_fails(self) -> None:
+        d = self.repo(self.exempt_files(EXEMPT.replace('reason = "old reader"', 'reason = ""')))
+        self.assertTrue(any("missing reason" in p for p in m.check(d)[0]))
 
     def test_no_lock_fails(self) -> None:
         d = self.repo({"README.md": "x\n"})

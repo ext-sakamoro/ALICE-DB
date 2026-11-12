@@ -241,6 +241,12 @@ recovery at the same offset never replaces an earlier copy (it writes
 `blob.wal.dropped-<offset>.<n>`), and finished copies are never removed. A WAL
 that ends on a record boundary is left as it is.
 
+The time-series WAL (`wal.alice`) is framed: a versioned header, then one frame per point (length, CRC-32, payload,
+sealed when a key is configured). On open it is replayed up to its last whole frame; a torn or damaged tail is kept in
+`wal.alice.dropped-<offset>`. The replayed segment files and the index are fsynced (the index is written whole and
+renamed into place) before the WAL is emptied, and an open that cannot replay the WAL leaves it untouched. A write
+that fails partway is rolled back and accepts nothing. A WAL in the earlier unframed format is still replayed.
+
 One directory holds one store. Its files are `blob.sst` and `blob-000001.sst`
 whatever the WAL is called, and `blob.lock` holds the WAL's name while a writer
 has it open. A second WAL name in the directory stops at the open, and

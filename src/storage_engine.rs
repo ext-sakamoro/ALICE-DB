@@ -506,6 +506,81 @@ struct SharedState {
     store: Store,
 }
 
+/// The first bytes of a framed time-series WAL: magic, then the version (u32 LE), then the CRC-32 of those 12 bytes
+/// (u32 LE). A WAL without it is in an earlier unframed format (12-byte entries, or length-prefixed sealed entries)
+/// and is read as such.
+#[cfg(feature = "fs")]
+const WAL_MAGIC: &[u8; 8] = b"ALDBWAL\0";
+/// The framed WAL's version
+#[cfg(feature = "fs")]
+const WAL_VERSION: u32 = 2;
+/// The length of [`wal_header`]
+#[cfg(feature = "fs")]
+const WAL_HEADER_LEN: usize = 16;
+/// The longest frame payload a WAL holds (a sealed 12-byte point is far shorter): a longer length is damage
+#[cfg(feature = "fs")]
+const WAL_MAX_PAYLOAD: usize = 4096;
+
+#[cfg(feature = "fs")]
+fn wal_header() -> [u8; WAL_HEADER_LEN] {
+    let mut h = [0u8; WAL_HEADER_LEN];
+    h[..8].copy_from_slice(WAL_MAGIC);
+    h[8..12].copy_from_slice(&WAL_VERSION.to_le_bytes());
+    let crc = wal_crc(&h[..12]);
+    h[12..].copy_from_slice(&crc.to_le_bytes());
+    h
+}
+
+#[cfg(feature = "fs")]
+fn wal_crc(data: &[u8]) -> u32 {
+    // CRC-32 keeps its value in the low 32 bits of the 64-bit field
+    (crate::checksum::Checksum::crc32(data).value & 0xFFFF_FFFF) as u32
+}
+
+/// One WAL frame: payload length (u32 LE) ‖ CRC-32 of the payload (u32 LE) ‖ payload
+#[cfg(feature = "fs")]
+fn wal_frame(payload: &[u8]) -> io::Result<Vec<u8>> {
+    if payload.len() > WAL_MAX_PAYLOAD {
+        return Err(io::Error::other("WAL payload longer than a frame holds"));
+    }
+    let mut f = Vec::with_capacity(8 + payload.len());
+    f.extend_from_slice(
+        &u32::try_from(payload.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    f.extend_from_slice(&wal_crc(payload).to_le_bytes());
+    f.extend_from_slice(payload);
+    Ok(f)
+}
+
+/// The payloads of a framed WAL `data` (header included) in order, and the offset where the whole frames end (a
+/// torn or damaged tail starts there); `None` when `data` does not start with a valid header.
+#[cfg(feature = "fs")]
+fn wal_frames(data: &[u8]) -> Option<(Vec<&[u8]>, usize)> {
+    if data.len() < WAL_HEADER_LEN || data[..WAL_HEADER_LEN] != wal_header() {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut pos = WAL_HEADER_LEN;
+    while let (Some(len), Some(crc)) = (data.get(pos..pos + 4), data.get(pos + 4..pos + 8)) {
+        let len = u32::from_le_bytes(len.try_into().unwrap_or([0xFF; 4])) as usize;
+        let crc = u32::from_le_bytes(crc.try_into().unwrap_or([0; 4]));
+        if len > WAL_MAX_PAYLOAD {
+            break;
+        }
+        let Some(payload) = data.get(pos + 8..pos + 8 + len) else {
+            break;
+        };
+        if wal_crc(payload) != crc {
+            break;
+        }
+        out.push(payload);
+        pos += 8 + len;
+    }
+    Some((out, pos))
+}
+
 /// A sealed segment that is not yet in the store: its points were accepted, so reads answer from it (its view is in
 /// the segment cache) until it is written and indexed. `failed` holds the store's error of the last attempt; while
 /// one is held, flush fails and new writes are refused until a retry writes it.
@@ -529,6 +604,9 @@ pub struct StorageEngine {
     /// WAL file handle
     #[cfg(feature = "fs")]
     wal_file: RwLock<Option<File>>,
+    /// Why the WAL refuses writes: a failed frame that could not be rolled back
+    #[cfg(feature = "fs")]
+    wal_poisoned: parking_lot::Mutex<Option<String>>,
     /// Current data file offset
     #[cfg(feature = "fs")]
     current_offset: RwLock<u64>,
@@ -543,6 +621,9 @@ pub struct StorageEngine {
     /// Lossless mode: the largest key accepted so far (see
     /// [`LosslessKeyOrderError`]); also serialises lossless writes
     lossless_last_key: parking_lot::Mutex<Option<i64>>,
+    /// Set once the engine is open (files, index, replay done): only an open engine is closed on drop, so an open
+    /// that fails part-way (a WAL that does not replay) never flushes or deletes what it could not read
+    opened: std::sync::atomic::AtomicBool,
 }
 
 /// A write that lossless mode refuses: keys must be strictly increasing
@@ -608,6 +689,9 @@ impl StorageEngine {
         engine.replay_wal()?;
         engine.init_lossless_last_key();
 
+        engine
+            .opened
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(engine)
     }
 
@@ -644,6 +728,9 @@ impl StorageEngine {
         engine.load_index()?;
         engine.reserve_loaded_segment_ids();
         engine.init_lossless_last_key();
+        engine
+            .opened
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(engine)
     }
 
@@ -710,10 +797,13 @@ impl StorageEngine {
             #[cfg(feature = "fs")]
             wal_file: RwLock::new(None),
             #[cfg(feature = "fs")]
+            wal_poisoned: parking_lot::Mutex::new(None),
+            #[cfg(feature = "fs")]
             current_offset: RwLock::new(0),
             flush_sender,
             flush_handle,
             lossless_last_key: parking_lot::Mutex::new(None),
+            opened: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -834,11 +924,17 @@ impl StorageEngine {
 
         if self.config.enable_wal {
             let wal_path = self.config.data_dir.join("wal.alice");
-            let wal = OpenOptions::new()
+            // not append: a failed frame is rolled back with `set_len`, which Windows refuses through an append-only
+            // handle; every write seeks to the end first
+            let mut wal = OpenOptions::new()
                 .read(true)
+                .write(true)
                 .create(true)
-                .append(true)
+                .truncate(false)
                 .open(&wal_path)?;
+            if wal.metadata()?.len() == 0 {
+                self.start_wal(&mut wal, &wal_path)?;
+            }
             *self.wal_file.write() = Some(wal);
         }
 
@@ -938,6 +1034,12 @@ impl StorageEngine {
     /// Save index to disk (encrypted if crypto key is configured)
     #[allow(clippy::significant_drop_tightening)]
     fn save_index(&self) -> io::Result<()> {
+        self.save_index_with(self.config.sync_writes)
+    }
+
+    /// Save the index; `durable` fsyncs it and its directory (see [`Self::write_index_file`])
+    #[cfg_attr(not(feature = "fs"), allow(unused_variables))]
+    fn save_index_with(&self, durable: bool) -> io::Result<()> {
         let index = self.shared.index.read();
 
         // Serialize index entries to bytes
@@ -968,7 +1070,39 @@ impl StorageEngine {
         #[cfg(not(feature = "crypto"))]
         let output = buf;
 
-        self.write_file(INDEX_FILE, output)
+        match &self.shared.store {
+            #[cfg(feature = "fs")]
+            Store::Dir => self.write_index_file(&output, durable),
+            Store::Memory(_) => self.write_file(INDEX_FILE, output),
+        }
+    }
+
+    /// Replace the index file whole: written to `index.alice.tmp`, renamed over `index.alice`, so a crash leaves the
+    /// old index or the new one, never a torn one. With `durable` the file is fsynced before the rename and its
+    /// directory after it (making the rename, and the segment files created before it, durable).
+    #[cfg(feature = "fs")]
+    fn write_index_file(&self, bytes: &[u8], durable: bool) -> io::Result<()> {
+        let path = self.config.data_dir.join(INDEX_FILE);
+        let tmp = self.config.data_dir.join(format!("{INDEX_FILE}.tmp"));
+        {
+            let mut f = File::create(&tmp)?;
+            let half = bytes.len() / 2;
+            f.write_all(&bytes[..half])?;
+            crate::fs_audit::crash_point("index:mid_write")?;
+            f.write_all(&bytes[half..])?;
+            crate::fs_audit::crash_point("index:before_sync")?;
+            if durable {
+                crate::fs_audit::sync_all(&f, "index", &tmp)?;
+            }
+        }
+        crate::fs_audit::crash_point("index:before_rename")?;
+        crate::fs_audit::check_replace_target(&path);
+        fs::rename(&tmp, &path)?;
+        crate::fs_audit::crash_point("index:before_dir_sync")?;
+        if durable {
+            crate::blob_wal::sync_dir(&path, "index-dir")?;
+        }
+        Ok(())
     }
 
     /// Insert a single value
@@ -1280,34 +1414,74 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Write to WAL
+    /// Write the framed-WAL header to an empty WAL (and fsync it when writes are synced)
+    #[cfg(feature = "fs")]
+    fn start_wal(&self, wal: &mut File, path: &Path) -> io::Result<()> {
+        wal.seek(SeekFrom::Start(0))?;
+        wal.write_all(&wal_header())?;
+        if self.config.sync_writes {
+            crate::fs_audit::sync_all(wal, "ts-wal", path)?;
+        }
+        Ok(())
+    }
+
+    /// Append one point to the WAL as a frame ([`wal_frame`]): length, CRC-32 of the payload, payload (the 12 bytes
+    /// of the point, sealed when a key is configured). A write or fsync that fails rolls the WAL back to its length
+    /// before the frame, so no partial frame stays for later frames to land behind, and the point is not accepted;
+    /// when the roll-back fails too, the WAL refuses every later write.
     #[cfg(feature = "fs")]
     fn write_wal(&self, timestamp: i64, value: f32) -> io::Result<()> {
-        if let Some(ref mut wal) = *self.wal_file.write() {
-            #[cfg(feature = "crypto")]
-            if let Some(ref key) = self.config.encryption_key {
-                // Encrypted WAL: length-prefixed sealed entries
-                let mut plaintext = Vec::with_capacity(12);
-                plaintext.extend_from_slice(&timestamp.to_le_bytes());
-                plaintext.extend_from_slice(&value.to_le_bytes());
-                let sealed = alice_crypto::seal(key, &plaintext)
-                    .map_err(|e| io::Error::other(format!("WAL encrypt failed: {e:?}")))?;
-                wal.write_all(&(sealed.len() as u32).to_le_bytes())?;
-                wal.write_all(&sealed)?;
-            } else {
-                wal.write_all(&timestamp.to_le_bytes())?;
-                wal.write_all(&value.to_le_bytes())?;
-            }
+        let mut plain = [0u8; 12];
+        plain[..8].copy_from_slice(&timestamp.to_le_bytes());
+        plain[8..].copy_from_slice(&value.to_le_bytes());
+        #[cfg(feature = "crypto")]
+        let payload = if let Some(ref key) = self.config.encryption_key {
+            alice_crypto::seal(key, &plain)
+                .map_err(|e| io::Error::other(format!("WAL encrypt failed: {e:?}")))?
+        } else {
+            plain.to_vec()
+        };
+        #[cfg(not(feature = "crypto"))]
+        let payload = plain.to_vec();
+        let frame = wal_frame(&payload)?;
 
-            #[cfg(not(feature = "crypto"))]
-            {
-                wal.write_all(&timestamp.to_le_bytes())?;
-                wal.write_all(&value.to_le_bytes())?;
+        let path = self.config.data_dir.join("wal.alice");
+        let mut slot = self.wal_file.write();
+        let Some(ref mut wal) = *slot else {
+            if let Some(reason) = self.wal_poisoned.lock().as_ref() {
+                return Err(io::Error::other(format!(
+                    "the WAL refuses writes: {reason}"
+                )));
             }
-
+            return Ok(());
+        };
+        let start = wal.seek(SeekFrom::End(0))?;
+        let written = (|| {
+            wal.write_all(&frame[..4])?;
+            crate::fs_audit::crash_point("ts_wal:mid_frame")?;
+            wal.write_all(&frame[4..])?;
             if self.config.sync_writes {
-                crate::fs_audit::sync_all(wal, "ts-wal", &self.config.data_dir.join("wal.alice"))?;
+                crate::fs_audit::crash_point("ts_wal:before_sync")?;
+                crate::fs_audit::sync_all(wal, "ts-wal", &path)?;
             }
+            Ok::<(), io::Error>(())
+        })();
+        if let Err(e) = written {
+            crate::fs_audit::check_set_len(&path, false);
+            let rolled = wal.set_len(start).and_then(|()| {
+                if self.config.sync_writes {
+                    crate::fs_audit::sync_all(wal, "ts-wal", &path)
+                } else {
+                    Ok(())
+                }
+            });
+            if let Err(r) = rolled {
+                *self.wal_poisoned.lock() = Some(format!(
+                    "a failed frame at {start} could not be rolled back ({r}) after: {e}"
+                ));
+                *slot = None;
+            }
+            return Err(e);
         }
         Ok(())
     }
@@ -1331,71 +1505,167 @@ impl StorageEngine {
         }
 
         let mut recovered = 0usize;
+        let mut replayed: Vec<u64> = Vec::new();
 
-        #[cfg(feature = "crypto")]
-        let is_encrypted = self.config.encryption_key.is_some();
-        #[cfg(not(feature = "crypto"))]
-        let is_encrypted = false;
-
-        if is_encrypted {
-            // Encrypted WAL: length-prefixed sealed entries
+        if let Some((frames, end)) = wal_frames(&wal_data) {
+            // framed WAL: every whole frame, then the torn or damaged tail (kept aside, never silently dropped)
+            for payload in frames {
+                let plain = Self::wal_payload(&self.config, payload)?;
+                let timestamp = i64::from_le_bytes(plain[0..8].try_into().unwrap_or_default());
+                let value = f32::from_le_bytes(plain[8..12].try_into().unwrap_or_default());
+                if let Some(segment) = self.memtable.put(timestamp, value) {
+                    self.persist_segment(&segment)?;
+                    replayed.push(segment.metadata.id);
+                }
+                recovered += 1;
+            }
+            if end < wal_data.len() {
+                self.keep_dropped_wal_tail(end, &wal_data[end..])?;
+            }
+        } else {
             #[cfg(feature = "crypto")]
-            {
-                let key = self.config.encryption_key.as_ref().unwrap();
-                let mut pos = 0;
-                while pos + 4 <= wal_data.len() {
-                    let sealed_len =
-                        u32::from_le_bytes(wal_data[pos..pos + 4].try_into().unwrap()) as usize;
-                    pos += 4;
-                    if pos + sealed_len > wal_data.len() {
-                        break; // Partial entry
-                    }
-                    let sealed = &wal_data[pos..pos + sealed_len];
-                    pos += sealed_len;
+            let is_encrypted = self.config.encryption_key.is_some();
+            #[cfg(not(feature = "crypto"))]
+            let is_encrypted = false;
 
-                    let Ok(plaintext) = alice_crypto::open(key, sealed) else {
-                        break; // Corrupted entry
-                    };
-                    if plaintext.len() < 12 {
-                        break;
+            if is_encrypted {
+                // Encrypted WAL: length-prefixed sealed entries
+                #[cfg(feature = "crypto")]
+                {
+                    let key = self.config.encryption_key.as_ref().unwrap();
+                    let mut pos = 0;
+                    while pos + 4 <= wal_data.len() {
+                        let sealed_len =
+                            u32::from_le_bytes(wal_data[pos..pos + 4].try_into().unwrap()) as usize;
+                        pos += 4;
+                        if pos + sealed_len > wal_data.len() {
+                            break; // Partial entry
+                        }
+                        let sealed = &wal_data[pos..pos + sealed_len];
+                        pos += sealed_len;
+
+                        let Ok(plaintext) = alice_crypto::open(key, sealed) else {
+                            break; // Corrupted entry
+                        };
+                        if plaintext.len() < 12 {
+                            break;
+                        }
+                        let timestamp = i64::from_le_bytes(plaintext[0..8].try_into().unwrap());
+                        let value = f32::from_le_bytes(plaintext[8..12].try_into().unwrap());
+
+                        if let Some(segment) = self.memtable.put(timestamp, value) {
+                            self.persist_segment(&segment)?;
+                            replayed.push(segment.metadata.id);
+                        }
+                        recovered += 1;
                     }
-                    let timestamp = i64::from_le_bytes(plaintext[0..8].try_into().unwrap());
-                    let value = f32::from_le_bytes(plaintext[8..12].try_into().unwrap());
+                }
+            } else {
+                // Unencrypted WAL: fixed 12-byte entries
+                let entry_size = 12; // i64 (8) + f32 (4)
+                let full_entries = wal_data.len() / entry_size;
+
+                for i in 0..full_entries {
+                    let offset = i * entry_size;
+                    let timestamp =
+                        i64::from_le_bytes(wal_data[offset..offset + 8].try_into().unwrap());
+                    let value =
+                        f32::from_le_bytes(wal_data[offset + 8..offset + 12].try_into().unwrap());
 
                     if let Some(segment) = self.memtable.put(timestamp, value) {
                         self.persist_segment(&segment)?;
+                        replayed.push(segment.metadata.id);
                     }
                     recovered += 1;
                 }
-            }
-        } else {
-            // Unencrypted WAL: fixed 12-byte entries
-            let entry_size = 12; // i64 (8) + f32 (4)
-            let full_entries = wal_data.len() / entry_size;
-
-            for i in 0..full_entries {
-                let offset = i * entry_size;
-                let timestamp =
-                    i64::from_le_bytes(wal_data[offset..offset + 8].try_into().unwrap());
-                let value =
-                    f32::from_le_bytes(wal_data[offset + 8..offset + 12].try_into().unwrap());
-
-                if let Some(segment) = self.memtable.put(timestamp, value) {
-                    self.persist_segment(&segment)?;
-                }
-                recovered += 1;
             }
         }
 
         // Persist any remaining data in memtable
         if let Some(segment) = self.memtable.force_flush() {
             self.persist_segment(&segment)?;
+            replayed.push(segment.metadata.id);
         }
 
-        // Truncate WAL after successful replay
-        File::create(&wal_path)?;
+        // The replayed points are in segments now: make those files and the index naming them durable before the WAL
+        // that held them is emptied (until 0.6 the index was saved only by a later flush, so a crash after the replay
+        // lost those points): segment files fsynced, then the index written whole and fsynced, then its directory
+        // fsynced (which also makes the segment files' names durable), and only then the WAL emptied
+        if !replayed.is_empty() {
+            crate::fs_audit::crash_point("replay:before_segment_sync")?;
+            if matches!(self.shared.store, Store::Dir) {
+                for id in &replayed {
+                    let path = self.config.data_dir.join(segment_file_name(*id));
+                    crate::fs_audit::sync_all(&File::open(&path)?, "segment", &path)?;
+                }
+            }
+            self.save_index_with(true)?;
+        }
+        crate::fs_audit::crash_point("replay:before_wal_truncate")?;
+
+        // Start the WAL again after a successful replay: empty, framed
+        let mut fresh = File::create(&wal_path)?;
+        self.start_wal(&mut fresh, &wal_path)?;
 
         Ok(recovered)
+    }
+
+    /// The 12 bytes of a point from a framed WAL payload (opened with the key when one is configured)
+    ///
+    /// # Errors
+    ///
+    /// `InvalidData` for a payload whose CRC matched but that does not open or is not 12 bytes: not a torn write but
+    /// another key or another writer, which a replay must not drop.
+    #[cfg(feature = "fs")]
+    #[cfg_attr(not(feature = "crypto"), allow(unused_variables))]
+    fn wal_payload(config: &StorageConfig, payload: &[u8]) -> io::Result<[u8; 12]> {
+        #[cfg(feature = "crypto")]
+        let opened;
+        #[cfg(feature = "crypto")]
+        let plain: &[u8] = if let Some(ref key) = config.encryption_key {
+            opened = alice_crypto::open(key, payload).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("WAL frame does not open: {e:?}"),
+                )
+            })?;
+            &opened
+        } else {
+            payload
+        };
+        #[cfg(not(feature = "crypto"))]
+        let plain = payload;
+        plain.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("WAL frame of {} bytes, a point is 12", plain.len()),
+            )
+        })
+    }
+
+    /// Keep the bytes a replay drops (a torn or damaged tail at `offset`) in `wal.alice.dropped-<offset>` (`.<n>` when
+    /// that name holds other bytes), fsynced, before the WAL is started again
+    #[cfg(feature = "fs")]
+    fn keep_dropped_wal_tail(&self, offset: usize, bytes: &[u8]) -> io::Result<()> {
+        let base = format!("wal.alice.dropped-{offset}");
+        let mut name = base.clone();
+        let mut n = 1;
+        while let Ok(existing) = fs::read(self.config.data_dir.join(&name)) {
+            if existing == bytes {
+                return Ok(());
+            }
+            name = format!("{base}.{n}");
+            n += 1;
+        }
+        let path = self.config.data_dir.join(&name);
+        let mut f = File::create(&path)?;
+        f.write_all(bytes)?;
+        crate::fs_audit::sync_all(&f, "ts-wal-dropped", &path)?;
+        log::warn!(
+            "WAL replay kept {} damaged tail bytes in {name}",
+            bytes.len()
+        );
+        Ok(())
     }
 
     /// Persist a segment to disk in the stored segment format
@@ -1883,7 +2153,16 @@ impl StorageEngine {
 
 impl Drop for StorageEngine {
     fn drop(&mut self) {
-        let _ = self.close();
+        // an engine whose open failed part-way only stops its flush thread: it must not flush, save an index or
+        // delete the WAL it could not replay
+        if self.opened.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = self.close();
+        } else if let Some(ref sender) = self.flush_sender {
+            let _ = sender.send(FlushJob::Shutdown);
+            if let Some(handle) = self.flush_handle.lock().take() {
+                let _ = handle.join();
+            }
+        }
     }
 }
 

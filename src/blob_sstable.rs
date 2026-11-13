@@ -1615,6 +1615,82 @@ mod tests {
 
     /// Format v1 file (hand-written to alpha.5 bytes) must open through
     /// the mmap path with `bloom() == None` and still surface records.
+    /// A v1 file with one Raw record, the header claiming `num_records`.
+    fn write_v1_with_count(path: &Path, num_records: u64) {
+        let mut record: Vec<u8> = Vec::new();
+        record.extend_from_slice(&1_u32.to_le_bytes());
+        record.extend_from_slice(&1_u32.to_le_bytes());
+        record.push(0x00);
+        record.extend_from_slice(b"k");
+        record.extend_from_slice(b"v");
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&record);
+        record.extend_from_slice(&hasher.finalize().to_le_bytes());
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(HEADER_MAGIC).unwrap();
+        file.write_all(&FORMAT_VERSION_V1.to_le_bytes()).unwrap();
+        file.write_all(&num_records.to_le_bytes()).unwrap();
+        file.write_all(&0_u32.to_le_bytes()).unwrap();
+        file.write_all(&record).unwrap();
+        file.write_all(&u64::try_from(record.len()).unwrap().to_le_bytes())
+            .unwrap();
+        file.write_all(FOOTER_MAGIC).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    /// A header claiming far more records than the body can hold is refused
+    /// as corrupt by both readers, without reserving memory for the claim
+    /// (2^40 records would abort the process on allocation).
+    #[test]
+    fn a_header_record_count_larger_than_the_body_is_refused_without_reserving_it() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+        write_v1_with_count(&path, 1 << 40);
+        let err = BlobSstable::open(&path)
+            .err()
+            .expect("open refuses the count");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("header claims 1099511627776 records but body contains 1"),
+            "{err}"
+        );
+        let err = LoadedSstable::open_mmap(&path)
+            .err()
+            .expect("open_mmap refuses the count");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("header claims 1099511627776 records"),
+            "{err}"
+        );
+        // The count that matches the body still reads.
+        write_v1_with_count(&path, 1);
+        assert_eq!(BlobSstable::open(&path).unwrap().unwrap().len(), 1);
+    }
+
+    /// The version error names the range this build reads (1 to 5).
+    #[test]
+    fn an_unsupported_version_names_the_versions_read() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+        write_v1_with_count(&path, 1);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[8..12].copy_from_slice(&6_u32.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        for err in [
+            BlobSstable::open(&path).err().expect("open refuses v6"),
+            LoadedSstable::open_mmap(&path)
+                .err()
+                .expect("open_mmap refuses v6"),
+        ] {
+            assert_eq!(
+                err.to_string(),
+                "unsupported sstable version 6; expected 1 to 5"
+            );
+        }
+    }
+
     #[test]
     fn loaded_sstable_opens_legacy_v1_files_without_bloom() {
         let tmp = TempDir::new().unwrap();

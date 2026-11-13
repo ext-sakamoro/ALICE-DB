@@ -1112,7 +1112,8 @@ pub struct ResidualCorrupt {
     pub end_time: i64,
     /// Decoded residual bytes the segment's points need (4 per point)
     pub needed_bytes: usize,
-    /// Decoded residual bytes the blob held
+    /// Decoded residual bytes the blob held; `needed_bytes + 1` when the
+    /// stream expands past the need (decoding stops there)
     pub found_bytes: usize,
     /// The store the segment belongs to (its data directory), when the read
     /// went through a store; `None` for a segment read on its own
@@ -1353,8 +1354,14 @@ fn decode_residual(blob: Option<&[u8]>, point_count: usize) -> Decoded {
         },
         ResidualSemantics::Unpinned => ReadStatus::Unpinned,
     };
-    let bytes = decompress_residual(blob);
     let needed = point_count.saturating_mul(4);
+    let Some(bytes) = decompress_residual(blob, needed) else {
+        // the stream expands past what the points need (decoding stopped one byte past it)
+        return Decoded::Corrupt {
+            needed,
+            found: needed.saturating_add(1),
+        };
+    };
     if bytes.len() < needed {
         return Decoded::Corrupt {
             needed,
@@ -1543,7 +1550,7 @@ fn horner_simd(x: f64x4, coefficients: &[f64]) -> f64x4 {
     result
 }
 
-/// Decompress residual blob back to raw f32 LE bytes.
+/// Decompress residual blob back to raw f32 LE bytes, at most `max_len` of them.
 ///
 /// Handles three formats:
 /// - `[0x00][LZMA data]` — LZMA compressed (new format)
@@ -1552,54 +1559,79 @@ fn horner_simd(x: f64x4, coefficients: &[f64]) -> f64x4 {
 ///
 /// Distinguishes new-format LZMA from legacy by attempting LZMA decompression;
 /// if it fails, treats the entire blob as legacy raw f32 LE bytes.
+///
+/// `max_len` is the length the segment's points need (4 bytes each). An LZMA
+/// stream that expands past it gives `None` after at most `max_len + 1` bytes
+/// were decoded; it is never read as the legacy raw form.
 #[must_use]
-pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
+pub fn decompress_residual(blob: &[u8], max_len: usize) -> Option<Vec<u8>> {
     if blob.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
     match blob[0] {
-        RESIDUAL_LZMA => {
-            // Try LZMA decompression; if it fails, this is legacy data where
-            // the first f32 LE byte happens to be 0x00
-            let mut decompressed = Vec::new();
-            if lzma_rs::lzma_decompress(&mut std::io::Cursor::new(&blob[1..]), &mut decompressed)
-                .is_ok()
-            {
-                decompressed
-            } else {
-                // Legacy format fallback
-                blob.to_vec()
-            }
-        }
-        RESIDUAL_RAW | RESIDUAL_XOR_RAW => blob[1..].to_vec(),
-        RESIDUAL_XOR_PINNED_RAW => blob.get(1 + SEMANTICS_ID_LEN..).unwrap_or(&[]).to_vec(),
+        RESIDUAL_LZMA => match lzma_bounded(&blob[1..], max_len) {
+            Lzma::Decoded(decompressed) => Some(decompressed),
+            Lzma::TooLong => None,
+            // legacy data where the first f32 LE byte happens to be 0x00
+            Lzma::Invalid => Some(blob.to_vec()),
+        },
+        RESIDUAL_RAW | RESIDUAL_XOR_RAW => Some(blob[1..].to_vec()),
+        RESIDUAL_XOR_PINNED_RAW => Some(blob.get(1 + SEMANTICS_ID_LEN..).unwrap_or(&[]).to_vec()),
         RESIDUAL_XOR_PINNED_LZMA => {
             let Some(payload) = blob.get(1 + SEMANTICS_ID_LEN..) else {
-                return Vec::new();
+                return Some(Vec::new());
             };
-            let mut decompressed = Vec::new();
-            if lzma_rs::lzma_decompress(&mut std::io::Cursor::new(payload), &mut decompressed)
-                .is_ok()
-            {
-                decompressed
-            } else {
-                Vec::new()
+            match lzma_bounded(payload, max_len) {
+                Lzma::Decoded(decompressed) => Some(decompressed),
+                Lzma::TooLong => None,
+                Lzma::Invalid => Some(Vec::new()),
             }
         }
-        RESIDUAL_XOR_LZMA => {
-            let mut decompressed = Vec::new();
-            if lzma_rs::lzma_decompress(&mut std::io::Cursor::new(&blob[1..]), &mut decompressed)
-                .is_ok()
-            {
-                decompressed
-            } else {
-                Vec::new()
-            }
-        }
+        RESIDUAL_XOR_LZMA => match lzma_bounded(&blob[1..], max_len) {
+            Lzma::Decoded(decompressed) => Some(decompressed),
+            Lzma::TooLong => None,
+            Lzma::Invalid => Some(Vec::new()),
+        },
         _ => {
             // Legacy format: no magic byte, raw f32 LE bytes
-            blob.to_vec()
+            Some(blob.to_vec())
         }
+    }
+}
+
+/// An LZMA "alone" stream decoded up to a limit
+enum Lzma {
+    Decoded(Vec<u8>),
+    /// The stream expands past the limit (decoding stopped there)
+    TooLong,
+    /// Not a valid stream
+    Invalid,
+}
+
+fn lzma_bounded(stream: &[u8], limit: usize) -> Lzma {
+    let mut out = Bounded {
+        bytes: Vec::new(),
+        limit,
+        exceeded: false,
+    };
+    // The decoder's window grows towards the dictionary size the header declares (up to 4 GiB) before anything
+    // reaches the writer; it never needs more than the output so far, so the limit caps it, and the decoder
+    // refusing to grow it means the output would pass the limit (tests/bounded_residual_memory.rs measures it)
+    let options = lzma_rs::decompress::Options {
+        memlimit: Some(limit),
+        ..lzma_rs::decompress::Options::default()
+    };
+    match lzma_rs::lzma_decompress_with_options(
+        &mut std::io::Cursor::new(stream),
+        &mut out,
+        &options,
+    ) {
+        Ok(()) => Lzma::Decoded(out.bytes),
+        Err(_) if out.exceeded => Lzma::TooLong,
+        Err(lzma_rs::error::Error::LzmaError(m)) if m.starts_with("exceeded memory limit of") => {
+            Lzma::TooLong
+        }
+        Err(_) => Lzma::Invalid,
     }
 }
 
@@ -1612,14 +1644,17 @@ pub fn decompress_residual(blob: &[u8]) -> Vec<u8> {
 struct Bounded {
     bytes: Vec<u8>,
     limit: usize,
+    /// Set when a write would have passed `limit`
+    exceeded: bool,
 }
 
 impl Write for Bounded {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.bytes.len() + buf.len() > self.limit {
+        if buf.len() > self.limit - self.bytes.len() {
+            self.exceeded = true;
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "raw payload longer than its points",
+                "payload longer than its points",
             ));
         }
         self.bytes.extend_from_slice(buf);
@@ -1634,23 +1669,10 @@ impl Write for Bounded {
 /// many: the output never grows past `count` samples, whatever the payload's header claims.
 fn decompress_samples(compressed: &[u8], dtype: DataType, count: usize) -> Option<Vec<f32>> {
     let limit = count.checked_mul(dtype.size())?;
-    let mut out = Bounded {
-        bytes: Vec::new(),
-        limit,
-    };
-    // the decoder's dictionary grows only as far as the output may: the stream's header would let
-    // it reach its own stated size
-    let options = lzma_rs::decompress::Options {
-        memlimit: Some(limit),
-        ..lzma_rs::decompress::Options::default()
-    };
-    lzma_rs::lzma_decompress_with_options(
-        &mut std::io::Cursor::new(compressed),
-        &mut out,
-        &options,
-    )
-    .ok()?;
-    (out.bytes.len() == limit).then(|| decode_raw_bytes(&out.bytes, dtype))
+    match lzma_bounded(compressed, limit) {
+        Lzma::Decoded(bytes) if bytes.len() == limit => Some(decode_raw_bytes(&bytes, dtype)),
+        _ => None,
+    }
 }
 
 fn decode_raw_bytes(decompressed: &[u8], dtype: DataType) -> Vec<f32> {
@@ -2539,7 +2561,7 @@ mod tests {
         segment = segment.with_residual(compressed.clone());
 
         // Verify decompression roundtrip
-        let decompressed = super::decompress_residual(&compressed);
+        let decompressed = super::decompress_residual(&compressed, usize::MAX).unwrap();
         assert_eq!(decompressed.len(), raw_residuals.len());
         assert_eq!(decompressed, raw_residuals);
 
@@ -2572,7 +2594,7 @@ mod tests {
         let tiny = vec![1u8, 2, 3, 4];
         let compressed = pre_0_3_0_additive_blob(&tiny);
         assert_eq!(compressed[0], super::RESIDUAL_RAW);
-        let decompressed = super::decompress_residual(&compressed);
+        let decompressed = super::decompress_residual(&compressed, usize::MAX).unwrap();
         assert_eq!(decompressed, tiny);
     }
 
@@ -2584,7 +2606,7 @@ mod tests {
         legacy.extend_from_slice(&2.5f32.to_le_bytes());
 
         // Should still work (fallback path)
-        let decompressed = super::decompress_residual(&legacy);
+        let decompressed = super::decompress_residual(&legacy, usize::MAX).unwrap();
         assert_eq!(decompressed, legacy);
     }
 

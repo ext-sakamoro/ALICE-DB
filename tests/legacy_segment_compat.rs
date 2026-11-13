@@ -525,13 +525,13 @@ fn both_the_compressed_and_the_raw_pinned_paths_carry_the_identifier() {
 
     // 両経路の展開が元の byte 列に戻る (header を剥がし損ねたら長さが変わる)
     assert_eq!(
-        alice_db::segment::decompress_residual(&big),
-        compressible,
+        alice_db::segment::decompress_residual(&big, compressible.len()),
+        Some(compressible),
         "LZMA 経路の展開が元に戻らない"
     );
     assert_eq!(
-        alice_db::segment::decompress_residual(&tiny),
-        small,
+        alice_db::segment::decompress_residual(&tiny, small.len()),
+        Some(small),
         "raw 経路の展開が元に戻らない"
     );
 }

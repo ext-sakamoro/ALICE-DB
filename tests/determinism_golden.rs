@@ -349,7 +349,10 @@ fn model_selection_is_the_recorded_bits() {
             match &segment.residual_blob {
                 // The decompressed residual is `original ^ model` per sample:
                 // the model's bits as the writer evaluated them
-                Some(blob) => bits.raw(&decompress_residual(blob)),
+                Some(blob) => bits.raw(
+                    &decompress_residual(blob, segment.metadata.point_count * 4)
+                        .expect("the residual fits its points"),
+                ),
                 None => bits.u64(0),
             }
             points += data.len();

@@ -270,14 +270,20 @@ fn residual_blob_and_raw_lzma_round_trip_bit_exactly() {
     let raw: Vec<f32> = (0..2048).map(|_| lcg(&mut seed) * 1e3).collect();
     let bytes: Vec<u8> = raw.iter().flat_map(|v| v.to_le_bytes()).collect();
     let blob = compress_residual_xor(&bytes, &alice_db::SEMANTICS_ID);
-    assert_eq!(decompress_residual(&blob), bytes);
+    assert_eq!(
+        decompress_residual(&blob, bytes.len()).as_deref(),
+        Some(&bytes[..])
+    );
     // incompressible input takes the raw path and still round-trips
     let noise: Vec<u8> = (0..1000u32)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
         .collect();
     assert_eq!(
-        decompress_residual(&compress_residual_xor(&noise, &alice_db::SEMANTICS_ID)),
-        noise
+        decompress_residual(
+            &compress_residual_xor(&noise, &alice_db::SEMANTICS_ID),
+            noise.len()
+        ),
+        Some(noise)
     );
 
     // RawLzma model: every value comes back exactly for f32 payloads

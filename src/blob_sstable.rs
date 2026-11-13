@@ -125,6 +125,12 @@ const FORMAT_VERSION_V4: u32 = 4;
 const FORMAT_VERSION_V5: u32 = 5;
 /// Every new write stamps this. Readers accept v1 to v5.
 const CURRENT_VERSION: u32 = FORMAT_VERSION_V5;
+
+/// The smallest record: the 9-byte header (`key_len`, `value_len`, `value_kind`),
+/// an empty key and value, and the 4-byte CRC. A records section of `n`
+/// bytes holds at most `n / MIN_RECORD_LEN` records, so a reader reserves no
+/// more than that whatever the header claims.
+const MIN_RECORD_LEN: usize = 9 + 4;
 /// Bytes occupied by the fixed-size header.
 const HEADER_LEN: usize = 24;
 /// Bytes occupied by the v1 footer: `records_size (u64) + magic (8)`.
@@ -663,7 +669,7 @@ impl BlobSstable {
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("unsupported sstable version {other}; expected 1 to 4"),
+                    format!("unsupported sstable version {other}; expected 1 to {CURRENT_VERSION}"),
                 ));
             }
         };
@@ -881,7 +887,7 @@ impl LoadedSstable {
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("unsupported sstable version {other}; expected 1 to 4"),
+                    format!("unsupported sstable version {other}; expected 1 to {CURRENT_VERSION}"),
                 ));
             }
         };
@@ -1240,7 +1246,10 @@ fn parse_bloom(bytes: &[u8], version: u32) -> io::Result<(BloomFilter, Option<[u
 /// Parse the records section into `(key, value)` pairs, verifying the
 /// per-record CRC as we go.
 fn parse_records(bytes: &[u8], expected_count: u64) -> io::Result<Vec<(Vec<u8>, BlobValue)>> {
-    let mut out = Vec::with_capacity(usize::try_from(expected_count).unwrap_or(0));
+    // The header's count is checked against the body at the end; until then it
+    // only sizes the vector, and never past what the body can hold.
+    let fits = bytes.len() / MIN_RECORD_LEN;
+    let mut out = Vec::with_capacity(usize::try_from(expected_count).map_or(fits, |n| n.min(fits)));
     let mut cursor = 0_usize;
     while cursor < bytes.len() {
         if bytes.len() - cursor < 9 {
@@ -1646,18 +1655,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = sst_path(&tmp);
         write_v1_with_count(&path, 1 << 40);
-        let err = BlobSstable::open(&path)
-            .err()
-            .expect("open refuses the count");
+        let err = BlobSstable::open(&path).expect_err("open refuses the count");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(
             err.to_string()
                 .contains("header claims 1099511627776 records but body contains 1"),
             "{err}"
         );
-        let err = LoadedSstable::open_mmap(&path)
-            .err()
-            .expect("open_mmap refuses the count");
+        let err = LoadedSstable::open_mmap(&path).expect_err("open_mmap refuses the count");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(
             err.to_string()
@@ -1679,10 +1684,8 @@ mod tests {
         bytes[8..12].copy_from_slice(&6_u32.to_le_bytes());
         std::fs::write(&path, &bytes).unwrap();
         for err in [
-            BlobSstable::open(&path).err().expect("open refuses v6"),
-            LoadedSstable::open_mmap(&path)
-                .err()
-                .expect("open_mmap refuses v6"),
+            BlobSstable::open(&path).expect_err("open refuses v6"),
+            LoadedSstable::open_mmap(&path).expect_err("open_mmap refuses v6"),
         ] {
             assert_eq!(
                 err.to_string(),

@@ -1,13 +1,15 @@
-//! An SSTable whose header claims far more records than its body holds is refused without reserving memory for
+//! An `SSTable` whose header claims far more records than its body holds is refused without reserving memory for
 //! the claim
 //!
 //! oracle (from the format, not read from the code): a record is at least 13 bytes (9-byte header, empty key and
 //! value, 4-byte CRC), so a body of `n` bytes holds at most `n / 13` records and a reader never needs to reserve
-//! more. The file here is a v1 SSTable of one record (under 100 bytes) whose header claims 2^40 records; opening it
+//! more. The file here is a v1 `SSTable` of one record (under 100 bytes) whose header claims 2^40 records; opening it
 //! must fail as corrupt with a peak live allocation far below the claim. A reader that reserves the claimed count
 //! asks the allocator for terabytes (recorded here even where the OS overcommits, an abort where it does not).
 //! The allocator records the peak of live bytes; this file holds a single test so nothing else allocates while it
 //! measures.
+
+#![cfg(feature = "fs")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::ErrorKind;
@@ -73,9 +75,7 @@ fn a_claimed_record_count_is_not_reserved() {
 
     let before = LIVE.load(Relaxed);
     PEAK.store(before, Relaxed);
-    let err = BlobSstable::open(&path)
-        .err()
-        .expect("the claim is refused");
+    let err = BlobSstable::open(&path).expect_err("the claim is refused");
     let peak = PEAK.load(Relaxed) - before;
 
     assert_eq!(err.kind(), ErrorKind::InvalidData);

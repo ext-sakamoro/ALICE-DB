@@ -32,7 +32,10 @@ use crate::blob_store::StoreLock;
 use std::cell::RefCell;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+/// One step of the wait for another process's lease
+const WAIT_STEP: Duration = Duration::from_millis(2);
 
 pub(crate) const LEASE_FILE: &str = "blob.lease";
 const LEASE_TMP: &str = "blob.lease.tmp";
@@ -124,21 +127,26 @@ pub(crate) fn write_lease(dir: &Path, lease: Lease) -> io::Result<()> {
 
 /// `blob.lock` of `dir`, waiting up to `wait` while another handle holds it.
 ///
+/// The wait is counted in fixed steps of [`WAIT_STEP`] (the crate reads no clock, ALICE-Law G10): about
+/// `wait / WAIT_STEP` more attempts after the first.
+///
 /// # Errors
-/// `TimedOut` past `wait`; any other open or lock error.
+/// `TimedOut` once the steps are spent; any other open or lock error.
 pub(crate) fn acquire(dir: &Path, wait: Duration) -> io::Result<StoreLock> {
-    let deadline = Instant::now() + wait;
+    let steps = wait.as_micros() / WAIT_STEP.as_micros();
+    let mut attempt: u128 = 0;
     loop {
         match StoreLock::acquire(dir) {
             Ok(lock) => return Ok(lock),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
+                if attempt >= steps {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         format!("another process held blob.lock past the wait of {wait:?}"),
                     ));
                 }
-                std::thread::sleep(Duration::from_millis(2));
+                attempt += 1;
+                std::thread::sleep(WAIT_STEP);
             }
             Err(e) => return Err(e),
         }

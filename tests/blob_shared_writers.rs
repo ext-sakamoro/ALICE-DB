@@ -11,6 +11,12 @@
 //! Child processes are this test binary run again with `ROLE_ENV` set to a role and `--exact` naming the
 //! `child_entry` test, so the same code runs on every OS of the CI matrix (Windows included).
 
+#![cfg(feature = "fs")]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "the waits are what these tests measure: that a held lock is given up within its bound and that a killed writer's lock is gone at once; nothing the crate computes reads the clock"
+)]
+
 use alice_db::blob::{BlobStorage, BlobStorageConfig, SharedOptions};
 use alice_db::blob_sstable::FlushMode;
 use std::collections::BTreeSet;
@@ -195,9 +201,7 @@ fn a_killed_writer_keeps_what_was_acknowledged_and_the_other_goes_on_at_once() {
     let mut b = spawn("writer-b", &wal, 1_000_000, Some(&acks));
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let n = std::fs::read_to_string(&acks)
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
+        let n = std::fs::read_to_string(&acks).map_or(0, |s| s.lines().count());
         if n >= 20 {
             break;
         }
@@ -229,9 +233,7 @@ fn a_killed_writer_keeps_what_was_acknowledged_and_the_other_goes_on_at_once() {
     let seen = batches_of(&store, "b", max);
     assert!(
         acked.is_subset(&seen),
-        "acknowledged {:?} but present {:?}",
-        acked,
-        seen
+        "acknowledged {acked:?} but present {seen:?}"
     );
     // at most the one batch in flight at the kill went in beyond the acknowledged ones
     assert!(
@@ -393,4 +395,60 @@ fn copy_dir(from: &Path, to: &Path) {
         let entry = entry.unwrap();
         std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
     }
+}
+
+/// A writer killed in the middle of appending leaves part of a record at the end of the WAL; the next lease
+/// cuts it before appending, so the next write is read back (not hidden behind the broken bytes).
+#[test]
+fn a_record_cut_short_by_a_killed_writer_is_cut_off_before_the_next_append() {
+    let tmp = TempDir::new().unwrap();
+    let wal = tmp.path().join("blob.wal");
+    let store = open(&wal);
+    // both handles are open before the broken bytes appear (an open cuts a torn tail itself)
+    let other = open(&wal);
+    store.put(b"before", b"1").unwrap();
+    // the first bytes of a record header, as a write stopped after them would leave
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&wal).unwrap();
+        f.write_all(&[0x04, 0x20, 0, 0, 0, 0x30]).unwrap();
+        f.sync_all().unwrap();
+    }
+    other.put(b"after", b"2").unwrap();
+    drop((store, other));
+    let again = open(&wal);
+    assert_eq!(again.get(b"before").unwrap(), Some(b"1".to_vec()));
+    assert_eq!(
+        again.get(b"after").unwrap(),
+        Some(b"2".to_vec()),
+        "the write after the broken bytes"
+    );
+}
+
+/// A key deleted before a flush stays deleted after the next flush and a reopen: the flush that drops its
+/// tombstone removes the earlier files that still hold the key.
+#[test]
+fn a_key_deleted_and_flushed_does_not_come_back() {
+    let tmp = TempDir::new().unwrap();
+    let wal = tmp.path().join("blob.wal");
+    let store = open(&wal);
+    store.put(b"gone", b"1").unwrap();
+    store.put(b"kept", b"2").unwrap();
+    store.flush_to_sstable().unwrap();
+    store.delete(b"gone").unwrap();
+    store.flush_to_sstable().unwrap();
+    assert_eq!(store.get(b"gone").unwrap(), None);
+    drop(store);
+    let again = open(&wal);
+    assert_eq!(
+        again.get(b"gone").unwrap(),
+        None,
+        "a deleted key came back after a flush"
+    );
+    assert_eq!(again.get(b"kept").unwrap(), Some(b"2".to_vec()));
+    assert_eq!(
+        again.sstable_count().unwrap(),
+        1,
+        "every flush leaves one SSTable"
+    );
 }

@@ -41,6 +41,12 @@
 //! 10+N    M     value
 //! ```
 //!
+//! A batch written by a shared writer ([`crate::blob::BlobStorage::open_shared`]) is one record of type 0x04:
+//! the value is the generation of the lease it was written under (u64 LE) followed by the batch body above.
+//! Replay accepts a 0x04 record only when its generation is above every earlier 0x04 record's in the file,
+//! and refuses the WAL with `InvalidData` otherwise (a record written without the lease, or two stores' files
+//! mixed). Records of types 0x01 to 0x03 carry no generation and are not compared.
+//!
 //! The checksum is CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`,
 //! as computed by `crc32fast`), not CRC-32C.
 //!
@@ -101,8 +107,9 @@
 //! and a read-only open reads the WAL beside the writer, so the handle is opened
 //! with a share mode that lets others read and refuses other writers. Both belong
 //! to the file, not its name, and both end when the holder dies. Alpha-3 documents
-//! this as the canonical way to detect a running writer; multi-writer coordination
-//! (leases, coordinator process) is out of scope for alpha.
+//! this as the canonical way to detect a running writer. Several processes writing one store take turns
+//! through [`crate::blob::BlobStorage::open_shared`] instead: each opens the WAL only for the length of its
+//! lease on the store's `blob.lock`.
 
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};

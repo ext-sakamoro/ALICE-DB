@@ -215,6 +215,7 @@ mod blob_shared;
 pub mod blob_sstable;
 #[cfg(feature = "fs")]
 mod blob_store;
+mod blob_txn;
 #[cfg(feature = "fs")]
 pub mod blob_wal;
 pub mod bloom;

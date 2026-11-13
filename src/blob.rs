@@ -41,7 +41,7 @@ use crate::blob_dir::{BlobDir, StdDir};
 #[cfg(feature = "fs")]
 use crate::blob_shared::{read_lease, write_lease, Lease, LeaseGuard, Shared, LEASE_FILE};
 #[cfg(feature = "fs")]
-pub use crate::blob_shared::{SharedOptions, SharedStoreTooLarge};
+pub use crate::blob_shared::{SharedOptions, SharedStoreTooLarge, WriterBusy};
 #[cfg(feature = "fs")]
 use crate::blob_sstable::{
     enumerate_sstables, max_sstable_seq, remove_stale_tmp_files, sstable_filename_for_seq,
@@ -52,6 +52,7 @@ use crate::blob_store::{
     check_open, move_earlier_file, recorded_wal, source_files, store_dir, wal_name, writer_dir,
     Record, StoreLock,
 };
+pub use crate::blob_txn::{NestedTransaction, Txn};
 #[cfg(feature = "fs")]
 use crate::blob_wal::{BlobWal, SyncPolicy, WalRecord, WalRecovery};
 
@@ -963,6 +964,7 @@ impl BlobStorage {
     /// # Errors
     /// Propagates the underlying WAL / `SSTable` error.
     pub fn flush(&self) -> io::Result<()> {
+        crate::blob_txn::refuse_nested(self)?;
         // Without the `fs` feature the store is always the in-memory
         // variant, which has no WAL to sync.
         #[cfg(not(feature = "fs"))]
@@ -1018,6 +1020,7 @@ impl BlobStorage {
     /// error.
     #[cfg(feature = "fs")]
     pub fn flush_to_sstable(&self) -> io::Result<()> {
+        crate::blob_txn::refuse_nested(self)?;
         if let Some(shared) = &self.shared {
             let _gate = self.write_gate.write();
             let lease = shared.lease()?;
@@ -1150,6 +1153,7 @@ impl BlobStorage {
     /// would rename over or delete a file that is still mapped.
     #[cfg(feature = "fs")]
     pub fn compact_all_sstables(&self) -> io::Result<()> {
+        crate::blob_txn::refuse_nested(self)?;
         if self.shared.is_some() {
             // every shared flush already leaves one `SSTable`
             return self.flush_to_sstable();
@@ -1319,6 +1323,7 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if the WAL append fails.
     pub fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        crate::blob_txn::refuse_nested(self)?;
         #[cfg(feature = "fs")]
         self.check_writable()?;
         self.max_value.check(value.len())?;
@@ -1358,6 +1363,7 @@ impl BlobStorage {
     /// decompressed (which would indicate on-disk corruption once
     /// persistence lands in alpha-2).
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        crate::blob_txn::refuse_nested(self)?;
         #[cfg(feature = "fs")]
         self.shared_sync()?;
         // Memtable first: it always carries the freshest state, including
@@ -1395,6 +1401,7 @@ impl BlobStorage {
     /// the heap grew out of sync with the source vector, which the
     /// implementation forbids by construction.
     pub fn scan_prefix(&self, prefix: &[u8]) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        crate::blob_txn::refuse_nested(self)?;
         #[cfg(feature = "fs")]
         self.shared_sync()?;
         // v0.2.0-alpha.8: k-way merge across the memtable and every
@@ -1523,6 +1530,7 @@ impl BlobStorage {
         order: ScanOrder,
         limit: usize,
     ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        crate::blob_txn::refuse_nested(self)?;
         if range_is_empty(start, end) {
             return Ok(Vec::new());
         }
@@ -1555,6 +1563,7 @@ impl BlobStorage {
     /// # Errors
     /// `InvalidData` when a stored value kind of a key under the prefix is unknown.
     pub fn count_prefix(&self, prefix: &[u8]) -> io::Result<usize> {
+        crate::blob_txn::refuse_nested(self)?;
         #[cfg(feature = "fs")]
         self.shared_sync()?;
         let end = prefix_end(prefix);
@@ -1586,6 +1595,7 @@ impl BlobStorage {
     /// Any error of `out`; `InvalidData` for a stored value that cannot be read;
     /// `InvalidInput` for a key longer than the format holds.
     pub fn snapshot_to(&self, out: &mut impl io::Write) -> io::Result<()> {
+        crate::blob_txn::refuse_nested(self)?;
         #[cfg(feature = "fs")]
         self.shared_sync()?;
         #[cfg(feature = "fs")]
@@ -1638,6 +1648,7 @@ impl BlobStorage {
     /// # Errors
     /// Returns `io::Error` if the WAL append fails; nothing is applied then.
     pub fn write_batch(&self, batch: &WriteBatch) -> io::Result<()> {
+        crate::blob_txn::refuse_nested(self)?;
         {
             let _gate = self.write_gate.read();
             self.apply_batch(batch)?;
@@ -1645,6 +1656,37 @@ impl BlobStorage {
         #[cfg(feature = "fs")]
         self.maybe_auto_flush()?;
         Ok(())
+    }
+
+    /// Read the store and write one batch with every other writer of it kept out, the other processes of a
+    /// shared store included, so what `f` read still holds when its batch is written. `f` reads through the
+    /// [`Txn`] it is given and returns the batch to write and a value for the caller; the batch is written
+    /// as one record after `f` returns, and an `f` that returns `Err` or panics writes nothing.
+    ///
+    /// `f` runs while the store's writers (and, for a shared store, its lease) are held, so it must be short:
+    /// no I/O, no waiting on other processes or threads. Another process that wants the lease meanwhile waits
+    /// at most its [`SharedOptions::lock_wait`] and then fails with [`WriterBusy`]; a slow `f` delays everyone.
+    /// A call on this store from inside `f` (a nested `transact`, a write, a read not through the [`Txn`]) is
+    /// refused with [`NestedTransaction`] instead of waiting forever. A second handle of the same shared store
+    /// in this process is a different holder: from inside `f` it waits for the lease like another process.
+    ///
+    /// # Errors
+    /// Whatever `f` returns; `Deadlock` ([`NestedTransaction`]) when called from inside a transaction of this
+    /// store; as [`Self::write_batch`] for the batch; for a shared store, `TimedOut` ([`WriterBusy`]) when
+    /// another process held the lease past the wait.
+    pub fn transact<T>(
+        &self,
+        f: impl FnOnce(&Txn<'_>) -> io::Result<(WriteBatch, T)>,
+    ) -> io::Result<T> {
+        crate::blob_txn::refuse_nested(self)?;
+        self.exclusive(|| {
+            let (batch, out) = {
+                let _inside = crate::blob_txn::Inside::enter(self);
+                f(&Txn { store: self })?
+            };
+            self.apply_exclusive(&batch)?;
+            Ok(out)
+        })
     }
 
     /// Run `f` with every other writer and flush of this store kept out, so what
@@ -1742,6 +1784,7 @@ impl BlobStorage {
     /// `Result` in alpha-2 to surface WAL failures instead of dropping
     /// them silently.
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
+        crate::blob_txn::refuse_nested(self)?;
         #[cfg(feature = "fs")]
         self.check_writable()?;
         #[cfg(feature = "fs")]

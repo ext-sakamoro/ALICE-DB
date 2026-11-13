@@ -153,7 +153,7 @@ const _: () = alice_det_math::assert_function_pins(DET_MATH_PINS);
 /// toolchain move cannot ship without re-running the recorded-bit tests and
 /// then updating these two values (or the pins and the identifier, if a
 /// recorded scenario moved).
-pub const DB_SEMANTICS_CHECKED_AT: (&str, &str) = ("0.7.1", "1.98.1");
+pub const DB_SEMANTICS_CHECKED_AT: (&str, &str) = ("0.7.2", "1.98.1");
 
 /// [`DB_SEMANTICS_ID`] for each `alice-zip` generation this crate knows:
 /// `(alice_core::law::SEMANTICS_ID, fold of DB_SEMANTICS_PINS with that

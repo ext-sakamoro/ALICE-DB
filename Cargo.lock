@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "alice-db"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "alice-analytics",
  "alice-crypto",

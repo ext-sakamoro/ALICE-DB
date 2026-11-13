@@ -52,7 +52,8 @@ pub struct SharedOptions {
     /// compressed value counts its stored bytes), default 256 MiB. A shared handle holds the whole store in
     /// memory, plus about 110 bytes per entry for the map (measured: 10 000 and 50 000 entries of 24-byte keys
     /// and 100-byte values held 2.3 MB and 11.6 MB). A write that would take the store past it, and an open
-    /// or a refresh that finds the store past it, fail with [`SharedStoreTooLarge`].
+    /// or a refresh that finds the store past it, fail with [`SharedStoreTooLarge`]. Values a read returns
+    /// (`get`, `scan_*`) are decoded copies the caller holds: they are not counted.
     pub max_bytes: u64,
 }
 
@@ -78,6 +79,28 @@ impl std::fmt::Display for SharedStoreTooLarge {
 }
 
 impl std::error::Error for SharedStoreTooLarge {}
+
+/// Another holder (another process, or another handle of the same store) kept the shared store's lease past
+/// this handle's [`SharedOptions::lock_wait`]: carried inside an `io::Error` of kind `TimedOut`. Nothing of the
+/// refused operation was written; it can be tried again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WriterBusy {
+    /// How long this handle waited
+    pub waited: Duration,
+}
+
+impl std::fmt::Display for WriterBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "another holder kept blob.lock past the wait of {:?}",
+            self.waited
+        )
+    }
+}
+
+impl std::error::Error for WriterBusy {}
 
 /// `SharedStoreTooLarge` as an `io::Error`, or nothing when `bytes` is within `limit`.
 pub(crate) fn check_size(bytes: u64, limit: u64) -> io::Result<()> {
@@ -196,7 +219,7 @@ pub(crate) fn acquire(dir: &Path, wait: Duration) -> io::Result<StoreLock> {
                 if attempt >= steps {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
-                        format!("another process held blob.lock past the wait of {wait:?}"),
+                        WriterBusy { waited: wait },
                     ));
                 }
                 attempt += 1;

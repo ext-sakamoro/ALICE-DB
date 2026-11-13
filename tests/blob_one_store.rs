@@ -20,10 +20,7 @@ use tempfile::TempDir;
 const MODES: [FlushMode; 2] = [FlushMode::Overwrite, FlushMode::Append];
 
 fn config(flush_mode: FlushMode) -> BlobStorageConfig {
-    BlobStorageConfig {
-        flush_mode,
-        ..BlobStorageConfig::default()
-    }
+    BlobStorageConfig::default().with_flush_mode(flush_mode)
 }
 
 fn open(path: &Path, mode: FlushMode) -> BlobStorage {

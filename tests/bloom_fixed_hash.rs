@@ -96,7 +96,7 @@ fn stored_bits(file: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn a_new_file_is_v4_and_its_filter_is_used_as_stored() {
+fn a_new_file_is_v5_and_its_filter_is_used_as_stored() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let path = tmp.path().join("blob.sst");
     let values: Vec<(Vec<u8>, BlobValue)> = fixture_keys()
@@ -110,7 +110,7 @@ fn a_new_file_is_v4_and_its_filter_is_used_as_stored() {
     let bytes = std::fs::read(&path).expect("read");
     assert_eq!(
         u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
-        4
+        5
     );
     let loaded = BlobSstable::open(&path).expect("open").expect("present");
     let mapped = LoadedSstable::open_mmap(&path)

@@ -107,12 +107,12 @@ fn copy_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 fn open(dir: &Path, use_mmap: bool) -> AliceDB {
-    AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        enable_wal: false,
-        use_mmap,
-        ..StorageConfig::default()
-    })
+    AliceDB::with_config(
+        StorageConfig::default()
+            .with_data_dir(dir.to_path_buf())
+            .with_enable_wal(false)
+            .with_use_mmap(use_mmap),
+    )
     .expect("open")
 }
 

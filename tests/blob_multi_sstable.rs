@@ -66,11 +66,9 @@ fn parse_sstable_seq_rejects_unrelated_filenames() {
 // -------------------------------------------------------------------------
 
 fn open_append(tmp: &TempDir) -> AliceDB {
-    let cfg = BlobStorageConfig {
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: usize::MAX, // disable auto-compact for this test
-        ..BlobStorageConfig::default()
-    };
+    let cfg = BlobStorageConfig::default()
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(usize::MAX);
     AliceDB::open_with_blob_config(tmp.path(), cfg).unwrap()
 }
 
@@ -168,12 +166,10 @@ fn manual_compaction_merges_every_sstable_into_one() {
 #[test]
 fn auto_compaction_fires_when_sstable_count_reaches_threshold() {
     let tmp = TempDir::new().unwrap();
-    let cfg = BlobStorageConfig {
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: 3,
-        wal_flush_threshold_bytes: 64, // tiny so each put drives a flush
-        ..BlobStorageConfig::default()
-    };
+    let cfg = BlobStorageConfig::default()
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(3)
+        .with_wal_flush_threshold_bytes(64);
     let db = AliceDB::open_with_blob_config(tmp.path(), cfg).unwrap();
 
     // Every put crosses the WAL threshold and rolls into a new SSTable.
@@ -270,11 +266,9 @@ fn corrupted_sequential_sstable_surfaces_on_open() {
 
 // Test-only helper: open in append mode returning the Result unwrapped.
 fn open_append_result(tmp: &TempDir) -> std::io::Result<AliceDB> {
-    let cfg = BlobStorageConfig {
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: usize::MAX,
-        ..BlobStorageConfig::default()
-    };
+    let cfg = BlobStorageConfig::default()
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(usize::MAX);
     AliceDB::open_with_blob_config(tmp.path(), cfg)
 }
 

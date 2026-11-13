@@ -68,13 +68,11 @@ fn flush_then_reopen_serves_compressed_value_via_mmap() {
 #[test]
 fn append_mode_multi_sstable_read_returns_newest_wins_via_mmap() {
     let tmp = TempDir::new().unwrap();
-    let config = BlobStorageConfig {
-        sync_policy: SyncPolicy::EveryWrite,
-        wal_flush_threshold_bytes: u64::MAX,
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: usize::MAX,
-        ..BlobStorageConfig::default()
-    };
+    let config = BlobStorageConfig::default()
+        .with_sync_policy(SyncPolicy::EveryWrite)
+        .with_wal_flush_threshold_bytes(u64::MAX)
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(usize::MAX);
     let db = AliceDB::open_with_blob_config(tmp.path(), config).unwrap();
 
     // Round 1: put "shared" -> v1 and "only-in-1" -> "a", then flush.
@@ -174,13 +172,11 @@ fn absent_key_is_bloom_rejected_on_v2_sstable() {
 #[test]
 fn scan_prefix_merges_memtable_and_multiple_sstables() {
     let tmp = TempDir::new().unwrap();
-    let config = BlobStorageConfig {
-        sync_policy: SyncPolicy::EveryWrite,
-        wal_flush_threshold_bytes: u64::MAX,
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: usize::MAX,
-        ..BlobStorageConfig::default()
-    };
+    let config = BlobStorageConfig::default()
+        .with_sync_policy(SyncPolicy::EveryWrite)
+        .with_wal_flush_threshold_bytes(u64::MAX)
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(usize::MAX);
     let db = AliceDB::open_with_blob_config(tmp.path(), config).unwrap();
 
     // SSTable 0.
@@ -215,13 +211,11 @@ fn scan_prefix_merges_memtable_and_multiple_sstables() {
 #[test]
 fn compact_all_after_multi_sstable_preserves_every_live_key() {
     let tmp = TempDir::new().unwrap();
-    let config = BlobStorageConfig {
-        sync_policy: SyncPolicy::EveryWrite,
-        wal_flush_threshold_bytes: u64::MAX,
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: usize::MAX,
-        ..BlobStorageConfig::default()
-    };
+    let config = BlobStorageConfig::default()
+        .with_sync_policy(SyncPolicy::EveryWrite)
+        .with_wal_flush_threshold_bytes(u64::MAX)
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(usize::MAX);
     let db = AliceDB::open_with_blob_config(tmp.path(), config).unwrap();
 
     for round in 0..4 {

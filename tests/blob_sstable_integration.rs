@@ -123,11 +123,9 @@ fn compact_then_wal_diff_reopens_with_sstable_plus_wal_replay() {
 fn auto_flush_triggers_after_wal_crosses_threshold() {
     let tmp = TempDir::new().unwrap();
     // Absurdly small threshold so a handful of puts crosses it.
-    let cfg = BlobStorageConfig {
-        sync_policy: SyncPolicy::EveryWrite,
-        wal_flush_threshold_bytes: 256,
-        ..BlobStorageConfig::default()
-    };
+    let cfg = BlobStorageConfig::default()
+        .with_sync_policy(SyncPolicy::EveryWrite)
+        .with_wal_flush_threshold_bytes(256);
     let db = AliceDB::open_with_blob_config(tmp.path(), cfg).unwrap();
 
     // Each 100-byte-ish record easily crosses 256 bytes within a few puts.

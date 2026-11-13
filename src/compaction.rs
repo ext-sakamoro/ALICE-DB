@@ -34,6 +34,7 @@ impl std::fmt::Display for CompactionStrategy {
 
 /// コンパクション設定。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CompactionConfig {
     /// 戦略。
     pub strategy: CompactionStrategy,
@@ -49,6 +50,57 @@ pub struct CompactionConfig {
     pub tiered_min_merge: usize,
     /// `SizeTiered`: サイズ類似度閾値 (0.0-1.0)。
     pub size_ratio_threshold: f64,
+}
+
+impl CompactionConfig {
+    /// This value with `strategy` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_strategy(mut self, strategy: CompactionStrategy) -> Self {
+        self.strategy = strategy;
+        self
+    }
+
+    /// This value with `max_levels` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_max_levels(mut self, max_levels: usize) -> Self {
+        self.max_levels = max_levels;
+        self
+    }
+
+    /// This value with `level_size_ratio` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_level_size_ratio(mut self, level_size_ratio: usize) -> Self {
+        self.level_size_ratio = level_size_ratio;
+        self
+    }
+
+    /// This value with `l0_compaction_trigger` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_l0_compaction_trigger(mut self, l0_compaction_trigger: usize) -> Self {
+        self.l0_compaction_trigger = l0_compaction_trigger;
+        self
+    }
+
+    /// This value with `max_segment_size` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_max_segment_size(mut self, max_segment_size: u64) -> Self {
+        self.max_segment_size = max_segment_size;
+        self
+    }
+
+    /// This value with `tiered_min_merge` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_tiered_min_merge(mut self, tiered_min_merge: usize) -> Self {
+        self.tiered_min_merge = tiered_min_merge;
+        self
+    }
+
+    /// This value with `size_ratio_threshold` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_size_ratio_threshold(mut self, size_ratio_threshold: f64) -> Self {
+        self.size_ratio_threshold = size_ratio_threshold;
+        self
+    }
 }
 
 impl Default for CompactionConfig {

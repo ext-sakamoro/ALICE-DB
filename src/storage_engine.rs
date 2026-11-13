@@ -377,6 +377,7 @@ enum FlushJob {
 /// Storage Engine configuration
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)]
+#[non_exhaustive]
 pub struct StorageConfig {
     /// Directory for data files
     pub data_dir: PathBuf,
@@ -410,6 +411,86 @@ pub struct StorageConfig {
     /// reads back identically on another). Supply the value your own
     /// application sourced if you want a real timestamp; the default is `0`.
     pub created_at: u64,
+}
+
+impl StorageConfig {
+    /// This value with `data_dir` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_data_dir(mut self, data_dir: PathBuf) -> Self {
+        self.data_dir = data_dir;
+        self
+    }
+
+    /// This value with `memtable_capacity` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_memtable_capacity(mut self, memtable_capacity: usize) -> Self {
+        self.memtable_capacity = memtable_capacity;
+        self
+    }
+
+    /// This value with `fit_config` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_fit_config(mut self, fit_config: FitConfig) -> Self {
+        self.fit_config = fit_config;
+        self
+    }
+
+    /// This value with `enable_wal` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_enable_wal(mut self, enable_wal: bool) -> Self {
+        self.enable_wal = enable_wal;
+        self
+    }
+
+    /// This value with `sync_writes` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_sync_writes(mut self, sync_writes: bool) -> Self {
+        self.sync_writes = sync_writes;
+        self
+    }
+
+    /// This value with `compaction_threshold` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_compaction_threshold(mut self, compaction_threshold: usize) -> Self {
+        self.compaction_threshold = compaction_threshold;
+        self
+    }
+
+    /// This value with `use_mmap` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_use_mmap(mut self, use_mmap: bool) -> Self {
+        self.use_mmap = use_mmap;
+        self
+    }
+
+    /// This value with `enable_background_flush` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_enable_background_flush(mut self, enable_background_flush: bool) -> Self {
+        self.enable_background_flush = enable_background_flush;
+        self
+    }
+
+    #[cfg(feature = "crypto")]
+    /// This value with `encryption_key` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_encryption_key(mut self, encryption_key: Option<alice_crypto::Key>) -> Self {
+        self.encryption_key = encryption_key;
+        self
+    }
+
+    /// This value with `residual_policy` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_residual_policy(mut self, residual_policy: ResidualPolicy) -> Self {
+        self.residual_policy = residual_policy;
+        self
+    }
+
+    /// This value with `created_at` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_created_at(mut self, created_at: u64) -> Self {
+        self.created_at = created_at;
+        self
+    }
 }
 
 /// What a read does with a lossless residual measured against a different

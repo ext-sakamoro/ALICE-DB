@@ -40,13 +40,13 @@ fn legacy_store(dir: &Path, start: i64, end: i64, model: &str, bytes: &[u8]) {
 }
 
 fn open(dir: &Path) -> AliceDB {
-    AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        enable_wal: false,
-        use_mmap: false,
-        residual_policy: ResidualPolicy::AcceptUnpinned,
-        ..StorageConfig::default()
-    })
+    AliceDB::with_config(
+        StorageConfig::default()
+            .with_data_dir(dir.to_path_buf())
+            .with_enable_wal(false)
+            .with_use_mmap(false)
+            .with_residual_policy(ResidualPolicy::AcceptUnpinned),
+    )
     .expect("open")
 }
 

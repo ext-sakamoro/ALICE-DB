@@ -16,13 +16,11 @@ use alice_db::AliceDB;
 use std::path::Path;
 
 fn config() -> BlobStorageConfig {
-    BlobStorageConfig {
-        sync_policy: SyncPolicy::Manual,
-        wal_flush_threshold_bytes: u64::MAX,
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: usize::MAX,
-        ..BlobStorageConfig::default()
-    }
+    BlobStorageConfig::default()
+        .with_sync_policy(SyncPolicy::Manual)
+        .with_wal_flush_threshold_bytes(u64::MAX)
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(usize::MAX)
 }
 
 fn open(dir: &Path) -> AliceDB {

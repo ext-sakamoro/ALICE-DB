@@ -73,6 +73,7 @@ pub const DEFAULT_MAX_SSTABLES_BEFORE_COMPACTION: usize = 4;
 /// v0.2.0-alpha.5 for the multi-`SSTable` path.
 #[cfg(feature = "fs")]
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct BlobStorageConfig {
     /// See [`crate::blob_wal::SyncPolicy`].
     pub sync_policy: SyncPolicy,
@@ -94,6 +95,46 @@ pub struct BlobStorageConfig {
     /// and `write_batch` refuse a longer value with [`ValueTooLarge`], and a stored compressed value is
     /// decompressed only up to it (a longer one is refused when read)
     pub max_value_bytes: usize,
+}
+#[cfg(feature = "fs")]
+impl BlobStorageConfig {
+    /// This value with `sync_policy` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_sync_policy(mut self, sync_policy: SyncPolicy) -> Self {
+        self.sync_policy = sync_policy;
+        self
+    }
+
+    /// This value with `wal_flush_threshold_bytes` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_wal_flush_threshold_bytes(mut self, wal_flush_threshold_bytes: u64) -> Self {
+        self.wal_flush_threshold_bytes = wal_flush_threshold_bytes;
+        self
+    }
+
+    /// This value with `flush_mode` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_flush_mode(mut self, flush_mode: FlushMode) -> Self {
+        self.flush_mode = flush_mode;
+        self
+    }
+
+    /// This value with `max_sstables_before_compaction` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_max_sstables_before_compaction(
+        mut self,
+        max_sstables_before_compaction: usize,
+    ) -> Self {
+        self.max_sstables_before_compaction = max_sstables_before_compaction;
+        self
+    }
+
+    /// This value with `max_value_bytes` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_max_value_bytes(mut self, max_value_bytes: usize) -> Self {
+        self.max_value_bytes = max_value_bytes;
+        self
+    }
 }
 
 #[cfg(feature = "fs")]
@@ -173,6 +214,68 @@ impl ValueLimit {
     fn decompress(self, bytes: &[u8]) -> io::Result<Vec<u8>> {
         zlib_decompress(bytes, self.0)
     }
+
+    /// A stored value with its recorded length: refused before decoding when the length passes the limit, and
+    /// decoded to exactly that length (a payload decoding to more or less is refused)
+    fn decompress_sized(self, original_len: u64, bytes: &[u8]) -> io::Result<Vec<u8>> {
+        let len = usize::try_from(original_len).unwrap_or(usize::MAX);
+        if len > self.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                ValueTooLarge { len, limit: self.0 },
+            ));
+        }
+        let mismatch = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                StoredLengthMismatch {
+                    stated: original_len,
+                },
+            )
+        };
+        let out = zlib_decompress(bytes, len).map_err(|e| {
+            if e.get_ref()
+                .is_some_and(|i| i.is::<alice_core::compression::DecompressError>())
+            {
+                mismatch()
+            } else {
+                e
+            }
+        })?;
+        if out.len() != len {
+            return Err(mismatch());
+        }
+        Ok(out)
+    }
+
+    /// The bytes of a live stored value (`None` for a tombstone)
+    fn read(self, value: BlobValue) -> io::Result<Option<Vec<u8>>> {
+        match value {
+            BlobValue::Tombstone => Ok(None),
+            BlobValue::Raw(bytes) => Ok(Some(bytes)),
+            BlobValue::Compressed(bytes) => self.decompress(&bytes).map(Some),
+            BlobValue::CompressedSized {
+                original_len,
+                bytes,
+            } => self.decompress_sized(original_len, &bytes).map(Some),
+        }
+    }
+
+    #[cfg(feature = "fs")]
+    /// `value` in the form written now: a length-free payload that decodes within the limit gains its length
+    /// (one that does not is kept as it is, unreadable here but not lost)
+    fn upgrade(self, value: BlobValue) -> BlobValue {
+        match value {
+            BlobValue::Compressed(bytes) => match self.decompress(&bytes) {
+                Ok(out) => BlobValue::CompressedSized {
+                    original_len: out.len() as u64,
+                    bytes,
+                },
+                Err(_) => BlobValue::Compressed(bytes),
+            },
+            other => other,
+        }
+    }
 }
 
 /// The physical representation of a stored blob value.
@@ -188,11 +291,90 @@ impl ValueLimit {
 pub enum BlobValue {
     /// Value stored verbatim (short payloads or high-entropy data).
     Raw(Vec<u8>),
-    /// Value stored as an ALICE-Zip zlib payload.
+    /// A zlib payload without its original length, as 0.6 and earlier wrote it (kind 0x01): read only up to
+    /// the store's `max_value_bytes`, and rewritten as [`Self::CompressedSized`] by a flush or compaction
     Compressed(Vec<u8>),
+    /// A zlib payload with the length it decodes to (kind 0x03, stored as the length in u64 LE then the
+    /// payload): read only when the length is within the store's limit, and refused with
+    /// [`StoredLengthMismatch`] when the payload decodes to another length
+    CompressedSized {
+        /// Bytes the payload decodes to
+        original_len: u64,
+        /// The zlib payload
+        bytes: Vec<u8>,
+    },
     /// Deletion marker.
     Tombstone,
 }
+
+#[cfg(feature = "fs")]
+/// Stored kind of [`BlobValue::Raw`] (WAL and `SSTable`)
+pub(crate) const KIND_RAW: u8 = 0x00;
+#[cfg(feature = "fs")]
+/// Stored kind of [`BlobValue::Compressed`]
+pub(crate) const KIND_COMPRESSED: u8 = 0x01;
+#[cfg(feature = "fs")]
+/// Stored kind of [`BlobValue::CompressedSized`]
+pub(crate) const KIND_COMPRESSED_SIZED: u8 = 0x03;
+
+#[cfg(feature = "fs")]
+impl BlobValue {
+    /// The stored kind and payload of a value (`None` for a tombstone, which has no payload)
+    pub(crate) fn stored(&self) -> Option<(u8, std::borrow::Cow<'_, [u8]>)> {
+        use std::borrow::Cow;
+        match self {
+            Self::Raw(b) => Some((KIND_RAW, Cow::Borrowed(b))),
+            Self::Compressed(b) => Some((KIND_COMPRESSED, Cow::Borrowed(b))),
+            Self::CompressedSized {
+                original_len,
+                bytes,
+            } => {
+                let mut v = Vec::with_capacity(8 + bytes.len());
+                v.extend_from_slice(&original_len.to_le_bytes());
+                v.extend_from_slice(bytes);
+                Some((KIND_COMPRESSED_SIZED, Cow::Owned(v)))
+            }
+            Self::Tombstone => None,
+        }
+    }
+
+    /// The value a stored kind and payload encode, or `None` for an unknown kind or a sized payload shorter
+    /// than its length field
+    pub(crate) fn from_stored(kind: u8, payload: Vec<u8>) -> Option<Self> {
+        match kind {
+            KIND_RAW => Some(Self::Raw(payload)),
+            KIND_COMPRESSED => Some(Self::Compressed(payload)),
+            KIND_COMPRESSED_SIZED => {
+                let len: [u8; 8] = payload.get(..8)?.try_into().ok()?;
+                Some(Self::CompressedSized {
+                    original_len: u64::from_le_bytes(len),
+                    bytes: payload[8..].to_vec(),
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A stored value whose payload decodes to another length than the one it records (the record is refused).
+/// Carried inside the [`io::Error`]; read it back with `err.get_ref().and_then(|e| e.downcast_ref::<StoredLengthMismatch>())`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredLengthMismatch {
+    /// The length the record states
+    pub stated: u64,
+}
+
+impl std::fmt::Display for StoredLengthMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a stored blob value states {} bytes but its payload decodes to another length",
+            self.stated
+        )
+    }
+}
+
+impl std::error::Error for StoredLengthMismatch {}
 
 /// Return the compressed payload for `value` if compression is expected
 /// to shrink it, otherwise return `None`.
@@ -587,7 +769,8 @@ impl BlobStorage {
                 let memtable = self.memtable.read();
                 let entries: Vec<(Vec<u8>, BlobValue)> = memtable
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
+                    // a record without its length gains it here (see `ValueLimit::upgrade`)
+                    .map(|(k, v)| (k.clone(), self.max_value.upgrade(v.clone())))
                     .collect();
                 drop(memtable);
 
@@ -725,6 +908,8 @@ impl BlobStorage {
         let entries: Vec<(Vec<u8>, BlobValue)> = merged
             .into_iter()
             .filter(|(_, v)| !matches!(v, BlobValue::Tombstone))
+            // a record without its length gains it here (see `ValueLimit::upgrade`)
+            .map(|(k, v)| (k, self.max_value.upgrade(v)))
             .collect();
 
         // Files on disk now, oldest first. These are what step 4 deletes.
@@ -844,7 +1029,10 @@ impl BlobStorage {
         self.check_writable()?;
         self.max_value.check(value.len())?;
         let stored = match compress_if_worthwhile(value) {
-            Some(bytes) => BlobValue::Compressed(bytes),
+            Some(bytes) => BlobValue::CompressedSized {
+                original_len: value.len() as u64,
+                bytes,
+            },
             None => BlobValue::Raw(value.to_vec()),
         };
         {
@@ -876,14 +1064,7 @@ impl BlobStorage {
         {
             let memtable = self.memtable.read();
             if let Some(v) = memtable.get(key) {
-                return match v {
-                    BlobValue::Tombstone => Ok(None),
-                    BlobValue::Raw(bytes) => Ok(Some(bytes.clone())),
-                    BlobValue::Compressed(bytes) => {
-                        let raw = self.max_value.decompress(bytes)?;
-                        Ok(Some(raw))
-                    }
-                };
+                return self.max_value.read(v.clone());
             }
         }
         // SSTable fallback. Snapshot the list (cheap: `Vec<Arc<...>>`)
@@ -891,14 +1072,7 @@ impl BlobStorage {
         #[cfg(feature = "fs")]
         for sst in self.sstables.read().iter() {
             if let Some(v) = sst.get(key) {
-                return match v {
-                    BlobValue::Tombstone => Ok(None),
-                    BlobValue::Raw(bytes) => Ok(Some(bytes)),
-                    BlobValue::Compressed(bytes) => {
-                        let raw = self.max_value.decompress(&bytes)?;
-                        Ok(Some(raw))
-                    }
-                };
+                return self.max_value.read(v);
             }
         }
         Ok(None)
@@ -1011,13 +1185,8 @@ impl BlobStorage {
             }
 
             // Emit the winner if it is a live value.
-            match winner_value {
-                BlobValue::Tombstone => {}
-                BlobValue::Raw(bytes) => out.push((winner_key, bytes)),
-                BlobValue::Compressed(bytes) => {
-                    let raw = self.max_value.decompress(&bytes)?;
-                    out.push((winner_key, raw));
-                }
+            if let Some(raw) = self.max_value.read(winner_value)? {
+                out.push((winner_key, raw));
             }
         }
         Ok(out)
@@ -1210,8 +1379,13 @@ impl BlobStorage {
             .iter()
             .map(|(key, value)| {
                 let stored = value.as_deref().map_or(BlobValue::Tombstone, |v| {
-                    compress_if_worthwhile(v)
-                        .map_or_else(|| BlobValue::Raw(v.to_vec()), BlobValue::Compressed)
+                    compress_if_worthwhile(v).map_or_else(
+                        || BlobValue::Raw(v.to_vec()),
+                        |bytes| BlobValue::CompressedSized {
+                            original_len: v.len() as u64,
+                            bytes,
+                        },
+                    )
                 });
                 (key.as_slice(), stored)
             })
@@ -1440,17 +1614,11 @@ impl WriteBatch {
 }
 
 /// A live value on its way out of a merge: decompressed only when asked for.
-enum LiveValue {
-    Raw(Vec<u8>),
-    Compressed(Vec<u8>),
-}
+struct LiveValue(BlobValue);
 
 impl LiveValue {
     fn into_bytes(self, limit: ValueLimit) -> io::Result<Vec<u8>> {
-        match self {
-            Self::Raw(bytes) => Ok(bytes),
-            Self::Compressed(bytes) => limit.decompress(&bytes),
-        }
+        Ok(limit.read(self.0)?.unwrap_or_default())
     }
 }
 
@@ -1526,8 +1694,7 @@ fn merge_live(
                 ))
             }
             Some(BlobValue::Tombstone) => continue,
-            Some(BlobValue::Raw(bytes)) => LiveValue::Raw(bytes),
-            Some(BlobValue::Compressed(bytes)) => LiveValue::Compressed(bytes),
+            Some(stored) => LiveValue(stored),
         };
         if !visit(key, live)? {
             return Ok(());

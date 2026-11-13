@@ -23,13 +23,11 @@ use alice_db::AliceDB;
 use tempfile::TempDir;
 
 fn append_config() -> BlobStorageConfig {
-    BlobStorageConfig {
-        sync_policy: SyncPolicy::EveryWrite,
-        wal_flush_threshold_bytes: u64::MAX,
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: usize::MAX,
-        ..BlobStorageConfig::default()
-    }
+    BlobStorageConfig::default()
+        .with_sync_policy(SyncPolicy::EveryWrite)
+        .with_wal_flush_threshold_bytes(u64::MAX)
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(usize::MAX)
 }
 
 #[test]

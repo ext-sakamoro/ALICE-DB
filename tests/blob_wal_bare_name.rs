@@ -13,10 +13,7 @@ fn a_bare_name_keeps_its_flushed_data() {
         for wal in ["blob.wal", "x.wal"] {
             let tmp = TempDir::new().unwrap();
             std::env::set_current_dir(tmp.path()).unwrap();
-            let config = BlobStorageConfig {
-                flush_mode,
-                ..BlobStorageConfig::default()
-            };
+            let config = BlobStorageConfig::default().with_flush_mode(flush_mode);
             {
                 let store = BlobStorage::open_with_config(wal, config).unwrap();
                 store.put(b"k", b"v").unwrap();

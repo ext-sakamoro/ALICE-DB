@@ -33,17 +33,12 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn config(dir: &std::path::Path, background: bool) -> StorageConfig {
-    StorageConfig {
-        data_dir: dir.to_path_buf(),
-        memtable_capacity: usize::try_from(CAP).unwrap(),
-        fit_config: FitConfig {
-            lossless: true,
-            ..FitConfig::default()
-        },
-        sync_writes: true,
-        enable_background_flush: background,
-        ..StorageConfig::default()
-    }
+    StorageConfig::default()
+        .with_data_dir(dir.to_path_buf())
+        .with_memtable_capacity(usize::try_from(CAP).unwrap())
+        .with_fit_config(FitConfig::default().with_lossless(true))
+        .with_sync_writes(true)
+        .with_enable_background_flush(background)
 }
 
 fn value(t: i64) -> f32 {

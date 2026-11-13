@@ -40,13 +40,7 @@ fuzz_target!(|data: &[u8]| {
 
     let tmp = tempfile::tempdir().expect("temp dir");
     legacy_store(tmp.path(), data);
-    let db = AliceDB::with_config(StorageConfig {
-        data_dir: tmp.path().to_path_buf(),
-        enable_wal: false,
-        use_mmap: false,
-        residual_policy: ResidualPolicy::AcceptUnpinned,
-        ..StorageConfig::default()
-    })
+    let db = AliceDB::with_config(StorageConfig::default().with_data_dir(tmp.path().to_path_buf()).with_enable_wal(false).with_use_mmap(false).with_residual_policy(ResidualPolicy::AcceptUnpinned))
     .expect("open");
     let _ = db.scan(0, 63);
     drop(db);

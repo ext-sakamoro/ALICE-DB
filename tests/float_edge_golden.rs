@@ -35,13 +35,9 @@ fn db() -> AliceDB {
 }
 
 fn lossless_db() -> AliceDB {
-    AliceDB::in_memory(StorageConfig {
-        fit_config: FitConfig {
-            lossless: true,
-            ..FitConfig::default()
-        },
-        ..StorageConfig::default()
-    })
+    AliceDB::in_memory(
+        StorageConfig::default().with_fit_config(FitConfig::default().with_lossless(true)),
+    )
     .unwrap()
 }
 

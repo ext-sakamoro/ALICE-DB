@@ -65,13 +65,13 @@ fn the_fuzz_input_reserves_nothing_near_its_point_count() {
     let tmp = tempfile::tempdir().unwrap();
     legacy_store(tmp.path(), bytes);
     LARGEST.store(0, Ordering::Relaxed);
-    let db = AliceDB::with_config(StorageConfig {
-        data_dir: tmp.path().to_path_buf(),
-        enable_wal: false,
-        use_mmap: false,
-        residual_policy: ResidualPolicy::AcceptUnpinned,
-        ..StorageConfig::default()
-    })
+    let db = AliceDB::with_config(
+        StorageConfig::default()
+            .with_data_dir(tmp.path().to_path_buf())
+            .with_enable_wal(false)
+            .with_use_mmap(false)
+            .with_residual_policy(ResidualPolicy::AcceptUnpinned),
+    )
     .unwrap();
     let scanned = db.scan(0, 63);
     let largest = LARGEST.load(Ordering::Relaxed);

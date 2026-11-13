@@ -36,13 +36,11 @@ const CRASH_POINTS: [&str; 5] = [
 ];
 
 fn config(flush_mode: FlushMode) -> BlobStorageConfig {
-    BlobStorageConfig {
-        sync_policy: SyncPolicy::EveryWrite,
-        wal_flush_threshold_bytes: u64::MAX,
-        flush_mode,
-        max_sstables_before_compaction: usize::MAX,
-        ..BlobStorageConfig::default()
-    }
+    BlobStorageConfig::default()
+        .with_sync_policy(SyncPolicy::EveryWrite)
+        .with_wal_flush_threshold_bytes(u64::MAX)
+        .with_flush_mode(flush_mode)
+        .with_max_sstables_before_compaction(usize::MAX)
 }
 
 /// `(key, expected value)` for every key a scenario touches; `None`

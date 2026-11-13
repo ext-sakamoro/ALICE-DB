@@ -318,12 +318,12 @@ fn every_identifier_in_the_history_reads_as_its_row_says() {
         }
         let mut compared = 0;
         for use_mmap in [false, true] {
-            let db = AliceDB::with_config(StorageConfig {
-                data_dir: dir.clone(),
-                enable_wal: false,
-                use_mmap,
-                ..StorageConfig::default()
-            })
+            let db = AliceDB::with_config(
+                StorageConfig::default()
+                    .with_data_dir(dir.clone())
+                    .with_enable_wal(false)
+                    .with_use_mmap(use_mmap),
+            )
             .expect("open");
             for k in 0..64_i64 {
                 let what = format!("{name} (alice-db {release}) mmap {use_mmap} key {k}");

@@ -7,15 +7,12 @@
 use alice_db::{AliceDB, FitConfig, StorageConfig};
 
 fn open(dir: &std::path::Path) -> AliceDB {
-    AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        memtable_capacity: 64,
-        fit_config: FitConfig {
-            lossless: true,
-            ..FitConfig::default()
-        },
-        ..StorageConfig::default()
-    })
+    AliceDB::with_config(
+        StorageConfig::default()
+            .with_data_dir(dir.to_path_buf())
+            .with_memtable_capacity(64)
+            .with_fit_config(FitConfig::default().with_lossless(true)),
+    )
     .unwrap()
 }
 

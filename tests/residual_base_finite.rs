@@ -61,14 +61,8 @@ fn series() -> Vec<(&'static str, Vec<(i64, f32)>)> {
 
 /// one segment holding `points`, written by a lossy (default) and a lossless memtable
 fn flushed(points: &[(i64, f32)], lossless: bool) -> DataSegment {
-    let table = MemTable::with_config_and_created_at(
-        1024,
-        FitConfig {
-            lossless,
-            ..FitConfig::default()
-        },
-        0,
-    );
+    let table =
+        MemTable::with_config_and_created_at(1024, FitConfig::default().with_lossless(lossless), 0);
     assert!(
         table.put_batch(points).is_empty(),
         "no flush before the end"

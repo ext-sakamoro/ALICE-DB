@@ -258,13 +258,8 @@ fn fit_all(lossless: bool) -> Vec<Fitted> {
         .into_iter()
         .map(|(name, data)| {
             // one more than the series, so the batch never flushes on its own
-            let memtable = MemTable::with_config(
-                data.len() + 1,
-                FitConfig {
-                    lossless,
-                    ..FitConfig::default()
-                },
-            );
+            let memtable =
+                MemTable::with_config(data.len() + 1, FitConfig::default().with_lossless(lossless));
             assert!(memtable.put_batch(&data).is_empty());
             let segment = memtable.force_flush().expect("the series is not empty");
             (name, data, segment)

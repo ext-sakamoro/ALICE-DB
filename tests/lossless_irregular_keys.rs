@@ -1,7 +1,7 @@
 //! Lossless mode through the plain `put` / `get` / `scan` with irregular keys
 //!
 //! A physics sink records one value per simulation step with
-//! `FitConfig { lossless: true }`. With sparse steps (0, 1, 2^20, 2^40,
+//! `FitConfig::default().with_lossless(true)`. With sparse steps (0, 1, 2^20, 2^40,
 //! 2^53 − 1) the model-based store read back the same value for most of
 //! them, and a range over half of them returned one row: a segment keeps no
 //! per-point keys and reads its points back on the even grid between its
@@ -22,13 +22,7 @@ use alice_db::{AliceDB, FitConfig, LosslessKeyOrderError, StorageConfig};
 const SPARSE: [i64; 5] = [0, 1, 1 << 20, 1 << 40, (1 << 53) - 1];
 
 fn lossless() -> StorageConfig {
-    StorageConfig {
-        fit_config: FitConfig {
-            lossless: true,
-            ..FitConfig::default()
-        },
-        ..StorageConfig::default()
-    }
+    StorageConfig::default().with_fit_config(FitConfig::default().with_lossless(true))
 }
 
 /// Distinct, non-model-like values (the repro wrote 0.1 + step-dependent
@@ -99,11 +93,7 @@ fn both_signs_and_batches_read_back_exact() {
         i64::MAX,
     ];
     for capacity in [2, 3, 5, 1000] {
-        let db = AliceDB::in_memory(StorageConfig {
-            memtable_capacity: capacity,
-            ..lossless()
-        })
-        .unwrap();
+        let db = AliceDB::in_memory(lossless().with_memtable_capacity(capacity)).unwrap();
         db.put_batch(&data(&keys)).unwrap();
         assert_exact(&db, &keys, &format!("capacity {capacity}, buffered"));
         db.flush().unwrap();
@@ -115,10 +105,7 @@ fn both_signs_and_batches_read_back_exact() {
 #[test]
 fn sparse_steps_survive_reopen() {
     let dir = tempfile::tempdir().unwrap();
-    let config = || StorageConfig {
-        data_dir: dir.path().to_path_buf(),
-        ..lossless()
-    };
+    let config = || lossless().with_data_dir(dir.path().to_path_buf());
     {
         let db = AliceDB::with_config(config()).unwrap();
         for (k, v) in data(&SPARSE[..3]) {
@@ -214,10 +201,7 @@ fn last_key_is_restored_on_reopen() {
     let keys: Vec<i64> = (0..=K).step_by(2).collect();
     for explicit_flush in [true, false] {
         let dir = tempfile::tempdir().unwrap();
-        let config = || StorageConfig {
-            data_dir: dir.path().to_path_buf(),
-            ..lossless()
-        };
+        let config = || lossless().with_data_dir(dir.path().to_path_buf());
         {
             let db = AliceDB::with_config(config()).unwrap();
             for (k, v) in data(&keys) {

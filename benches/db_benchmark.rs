@@ -25,12 +25,10 @@ fn benchmark_insert(c: &mut Criterion) {
             b.iter_with_setup(
                 || {
                     let dir = tempdir().unwrap();
-                    let config = StorageConfig {
-                        data_dir: dir.path().to_path_buf(),
-                        memtable_capacity: size * 2, // Avoid flush during benchmark
-                        enable_wal: false,
-                        ..Default::default()
-                    };
+                    let config = StorageConfig::default()
+                        .with_data_dir(dir.path().to_path_buf())
+                        .with_memtable_capacity(size * 2)
+                        .with_enable_wal(false);
                     (dir, AliceDB::with_config(config).unwrap())
                 },
                 |(_dir, db)| {
@@ -54,12 +52,10 @@ fn benchmark_flush(c: &mut Criterion) {
             b.iter_with_setup(
                 || {
                     let dir = tempdir().unwrap();
-                    let config = StorageConfig {
-                        data_dir: dir.path().to_path_buf(),
-                        memtable_capacity: size * 2,
-                        enable_wal: false,
-                        ..Default::default()
-                    };
+                    let config = StorageConfig::default()
+                        .with_data_dir(dir.path().to_path_buf())
+                        .with_memtable_capacity(size * 2)
+                        .with_enable_wal(false);
                     let db = AliceDB::with_config(config).unwrap();
 
                     // Pre-insert data
@@ -82,12 +78,10 @@ fn benchmark_flush(c: &mut Criterion) {
 
 fn benchmark_query_point(c: &mut Criterion) {
     let dir = tempdir().unwrap();
-    let config = StorageConfig {
-        data_dir: dir.path().to_path_buf(),
-        memtable_capacity: 10000,
-        enable_wal: false,
-        ..Default::default()
-    };
+    let config = StorageConfig::default()
+        .with_data_dir(dir.path().to_path_buf())
+        .with_memtable_capacity(10000)
+        .with_enable_wal(false);
     let db = AliceDB::with_config(config).unwrap();
 
     // Insert and flush linear data
@@ -107,12 +101,10 @@ fn benchmark_query_point(c: &mut Criterion) {
 
 fn benchmark_query_range(c: &mut Criterion) {
     let dir = tempdir().unwrap();
-    let config = StorageConfig {
-        data_dir: dir.path().to_path_buf(),
-        memtable_capacity: 10000,
-        enable_wal: false,
-        ..Default::default()
-    };
+    let config = StorageConfig::default()
+        .with_data_dir(dir.path().to_path_buf())
+        .with_memtable_capacity(10000)
+        .with_enable_wal(false);
     let db = AliceDB::with_config(config).unwrap();
 
     // Insert and flush
@@ -143,12 +135,10 @@ fn benchmark_query_range(c: &mut Criterion) {
 
 fn benchmark_aggregation(c: &mut Criterion) {
     let dir = tempdir().unwrap();
-    let config = StorageConfig {
-        data_dir: dir.path().to_path_buf(),
-        memtable_capacity: 10000,
-        enable_wal: false,
-        ..Default::default()
-    };
+    let config = StorageConfig::default()
+        .with_data_dir(dir.path().to_path_buf())
+        .with_memtable_capacity(10000)
+        .with_enable_wal(false);
     let db = AliceDB::with_config(config).unwrap();
 
     // Insert and flush
@@ -192,12 +182,10 @@ fn benchmark_compression_ratio(c: &mut Criterion) {
         b.iter_with_setup(
             || {
                 let dir = tempdir().unwrap();
-                let config = StorageConfig {
-                    data_dir: dir.path().to_path_buf(),
-                    memtable_capacity: 10000,
-                    enable_wal: false,
-                    ..Default::default()
-                };
+                let config = StorageConfig::default()
+                    .with_data_dir(dir.path().to_path_buf())
+                    .with_memtable_capacity(10000)
+                    .with_enable_wal(false);
                 (dir, AliceDB::with_config(config).unwrap())
             },
             |(_dir, db)| {
@@ -216,12 +204,10 @@ fn benchmark_compression_ratio(c: &mut Criterion) {
         b.iter_with_setup(
             || {
                 let dir = tempdir().unwrap();
-                let config = StorageConfig {
-                    data_dir: dir.path().to_path_buf(),
-                    memtable_capacity: 10000,
-                    enable_wal: false,
-                    ..Default::default()
-                };
+                let config = StorageConfig::default()
+                    .with_data_dir(dir.path().to_path_buf())
+                    .with_memtable_capacity(10000)
+                    .with_enable_wal(false);
                 (dir, AliceDB::with_config(config).unwrap())
             },
             |(_dir, db)| {
@@ -241,12 +227,10 @@ fn benchmark_compression_ratio(c: &mut Criterion) {
         b.iter_with_setup(
             || {
                 let dir = tempdir().unwrap();
-                let config = StorageConfig {
-                    data_dir: dir.path().to_path_buf(),
-                    memtable_capacity: 10000,
-                    enable_wal: false,
-                    ..Default::default()
-                };
+                let config = StorageConfig::default()
+                    .with_data_dir(dir.path().to_path_buf())
+                    .with_memtable_capacity(10000)
+                    .with_enable_wal(false);
                 (dir, AliceDB::with_config(config).unwrap())
             },
             |(_dir, db)| {

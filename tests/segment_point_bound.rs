@@ -81,10 +81,10 @@ fn a_raw_payload_of_another_length_is_refused() {
 #[test]
 fn a_memtable_that_could_seal_more_does_not_open() {
     let tmp = tempfile::tempdir().unwrap();
-    let config = |capacity| StorageConfig {
-        data_dir: tmp.path().to_path_buf(),
-        memtable_capacity: capacity,
-        ..StorageConfig::default()
+    let config = |capacity| {
+        StorageConfig::default()
+            .with_data_dir(tmp.path().to_path_buf())
+            .with_memtable_capacity(capacity)
     };
     assert!(AliceDB::with_config(config(MAX_SEGMENT_POINTS)).is_ok());
     let Err(refused) = AliceDB::with_config(config(MAX_SEGMENT_POINTS + 1)) else {

@@ -36,13 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const KEYS: [&[u8]; 7] = [b"a", b"b", b"\x00", b"\xff", b"aa", b"ab", b"ba"];
 
 fn config() -> BlobStorageConfig {
-    BlobStorageConfig {
-        sync_policy: SyncPolicy::Manual,
-        wal_flush_threshold_bytes: u64::MAX,
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: usize::MAX,
-        ..BlobStorageConfig::default()
-    }
+    BlobStorageConfig::default().with_sync_policy(SyncPolicy::Manual).with_wal_flush_threshold_bytes(u64::MAX).with_flush_mode(FlushMode::Append).with_max_sstables_before_compaction(usize::MAX)
 }
 
 /// Every key ever touched read back one by one (a `get` that resolves the

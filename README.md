@@ -312,7 +312,7 @@ db.close()
 `open` defaults to the lossy model store (`lossless=False`): a series whose
 timestamps have gaps reads back on an even grid, so a gapped point can change
 after a flush. Pass `lossless=True` to store residuals and read increasing
-timestamps back exactly (the same promise as the Rust `FitConfig { lossless: true }`):
+timestamps back exactly (the same promise as the Rust `FitConfig::default().with_lossless(true)`):
 
 ```python
 db = alice_db.open("./exact", lossless=True)

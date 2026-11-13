@@ -55,18 +55,12 @@ fn frame(t: i64, v: f32) -> Vec<u8> {
 }
 
 fn config(dir: &Path) -> StorageConfig {
-    StorageConfig {
-        data_dir: dir.to_path_buf(),
-        // nothing is sealed before the "crash": every value read back comes from the WAL
-        memtable_capacity: 100_000,
-        enable_wal: true,
-        sync_writes: true,
-        fit_config: FitConfig {
-            lossless: true,
-            ..FitConfig::default()
-        },
-        ..StorageConfig::default()
-    }
+    StorageConfig::default()
+        .with_data_dir(dir.to_path_buf())
+        .with_memtable_capacity(100_000)
+        .with_enable_wal(true)
+        .with_sync_writes(true)
+        .with_fit_config(FitConfig::default().with_lossless(true))
 }
 
 fn value(t: i64) -> f32 {
@@ -121,11 +115,9 @@ fn an_old_sealed_wal_is_replayed() {
         old.extend_from_slice(&sealed);
     }
     std::fs::write(dir.path().join("wal.alice"), &old).unwrap();
-    let cfg = StorageConfig {
-        encryption_key: Some(key),
-        use_mmap: false,
-        ..config(dir.path())
-    };
+    let cfg = config(dir.path())
+        .with_encryption_key(Some(key))
+        .with_use_mmap(false);
     let db = StorageEngine::new(cfg.clone()).unwrap();
     assert_eq!(bits(&db.query_range(0, 100).unwrap()), expected(0..6));
     db.put(6, value(6)).unwrap();
@@ -266,10 +258,10 @@ fn a_crash_at_each_step_of_a_replay_loses_no_point() {
 #[test]
 fn an_open_that_cannot_replay_the_wal_refuses_and_leaves_the_wal_whole() {
     let dir = tempfile::tempdir().unwrap();
-    let keyed = |b: u8| StorageConfig {
-        encryption_key: Some(alice_crypto::Key::from_bytes([b; 32])),
-        use_mmap: false,
-        ..config(dir.path())
+    let keyed = |b: u8| {
+        config(dir.path())
+            .with_encryption_key(Some(alice_crypto::Key::from_bytes([b; 32])))
+            .with_use_mmap(false)
     };
     let db = StorageEngine::new(keyed(0x5a)).unwrap();
     for t in 0..4 {

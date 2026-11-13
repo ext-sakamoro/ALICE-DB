@@ -13,10 +13,7 @@ use alice_db::blob::{
 use tempfile::TempDir;
 
 fn config(max_value_bytes: usize) -> BlobStorageConfig {
-    BlobStorageConfig {
-        max_value_bytes,
-        ..BlobStorageConfig::default()
-    }
+    BlobStorageConfig::default().with_max_value_bytes(max_value_bytes)
 }
 
 fn too_large(e: &std::io::Error) -> Option<(usize, usize)> {

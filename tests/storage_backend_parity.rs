@@ -91,14 +91,9 @@ fn series() -> Vec<(i64, f32)> {
 }
 
 fn config(lossless: bool) -> StorageConfig {
-    StorageConfig {
-        memtable_capacity: CAPACITY,
-        fit_config: FitConfig {
-            lossless,
-            ..FitConfig::default()
-        },
-        ..StorageConfig::default()
-    }
+    StorageConfig::default()
+        .with_memtable_capacity(CAPACITY)
+        .with_fit_config(FitConfig::default().with_lossless(lossless))
 }
 
 /// Apply the same writes to `db`: alternating single puts and batches, plus
@@ -266,11 +261,7 @@ fn assert_bounded(obs: &Observed, data: &[(i64, f32)]) -> usize {
 
 #[cfg(feature = "fs")]
 fn file_db(dir: &std::path::Path, lossless: bool) -> AliceDB {
-    AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        ..config(lossless)
-    })
-    .unwrap()
+    AliceDB::with_config(config(lossless).with_data_dir(dir.to_path_buf())).unwrap()
 }
 
 /// File backend vs memory backend vs memory round trip vs file round trip,
@@ -359,11 +350,7 @@ fn file_and_memory_backends_read_identical_bits_lossy() {
 fn memory_backend_does_not_touch_data_dir() {
     let dir = tempfile::tempdir().unwrap();
     let data_dir = dir.path().join("must-not-exist");
-    let db = AliceDB::in_memory(StorageConfig {
-        data_dir: data_dir.clone(),
-        ..config(false)
-    })
-    .unwrap();
+    let db = AliceDB::in_memory(config(false).with_data_dir(data_dir.clone())).unwrap();
     write_all(&db, &series());
     let _ = db.to_bytes().unwrap();
     db.close().unwrap();

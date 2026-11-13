@@ -51,10 +51,7 @@ fn a_stored_value_past_the_limit_is_refused_within_twice_the_limit() {
     }
     let store = BlobStorage::open_with_config(
         &wal,
-        BlobStorageConfig {
-            max_value_bytes: LIMIT,
-            ..BlobStorageConfig::default()
-        },
+        BlobStorageConfig::default().with_max_value_bytes(LIMIT),
     )
     .unwrap();
     let before = LIVE.load(Relaxed);

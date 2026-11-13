@@ -17,7 +17,8 @@
 //!  0      1     type            0x01 = Put, 0x02 = Delete
 //!  1      4     key_len (u32)   payload key length in bytes
 //!  5      4     value_len (u32) payload value length; 0 for Delete
-//!  9      1     value_kind      0x00 = Raw, 0x01 = Compressed; ignored on Delete
+//!  9      1     value_kind      0x00 = Raw, 0x01 = Compressed, 0x03 = CompressedSized
+//!                               (the decoded length, u64 LE, then the zlib payload); ignored on Delete
 //! 10      N     key             key_len bytes
 //! 10+N    M     value           value_len bytes (absent on Delete)
 //! trailer 4     crc32           CRC-32 over everything from offset 0 upward
@@ -33,7 +34,7 @@
 //!  0      4     op_count (u32)  number of operations, at least 1
 //! then, op_count times:
 //!  0      1     type            0x01 = Put, 0x02 = Delete
-//!  1      1     value_kind      0x00 = Raw, 0x01 = Compressed; 0 on Delete
+//!  1      1     value_kind      0x00 = Raw, 0x01 = Compressed, 0x03 = CompressedSized; 0 on Delete
 //!  2      4     key_len (u32)
 //!  6      4     value_len (u32) 0 on Delete
 //! 10      N     key
@@ -145,7 +146,6 @@ const RECORD_TYPE_BATCH: u8 = 0x03;
 
 /// Value kind tag inside a Put record.
 const VALUE_KIND_RAW: u8 = 0x00;
-const VALUE_KIND_COMPRESSED: u8 = 0x01;
 
 /// Fixed prefix before the variable-length key/value bytes:
 ///   1 (type) + 4 (`key_len`) + 4 (`value_len`) + 1 (`value_kind`)
@@ -351,10 +351,10 @@ impl BlobWal {
     /// # Errors
     /// Any I/O failure from the underlying write or fsync propagates.
     pub fn append_put(&self, key: &[u8], value: &BlobValue) -> io::Result<()> {
-        let (kind, bytes): (u8, &[u8]) = match value {
-            BlobValue::Raw(b) => (VALUE_KIND_RAW, b.as_slice()),
-            BlobValue::Compressed(b) => (VALUE_KIND_COMPRESSED, b.as_slice()),
-            BlobValue::Tombstone => {
+        let stored = value.stored();
+        let (kind, bytes): (u8, &[u8]) = match &stored {
+            Some((kind, bytes)) => (*kind, bytes),
+            None => {
                 // Callers must convert Tombstone -> Delete before
                 // reaching the WAL; hitting this branch is a bug.
                 return Err(io::Error::new(
@@ -395,10 +395,10 @@ impl BlobWal {
             .to_le_bytes()
             .to_vec();
         for (key, value) in ops {
-            let (record_type, kind, bytes): (u8, u8, &[u8]) = match value {
-                BlobValue::Raw(b) => (RECORD_TYPE_PUT, VALUE_KIND_RAW, b),
-                BlobValue::Compressed(b) => (RECORD_TYPE_PUT, VALUE_KIND_COMPRESSED, b),
-                BlobValue::Tombstone => (RECORD_TYPE_DELETE, VALUE_KIND_RAW, &[]),
+            let stored = value.stored();
+            let (record_type, kind, bytes): (u8, u8, &[u8]) = match &stored {
+                Some((kind, bytes)) => (RECORD_TYPE_PUT, *kind, bytes),
+                None => (RECORD_TYPE_DELETE, VALUE_KIND_RAW, &[]),
             };
             body.push(record_type);
             body.push(kind);
@@ -790,10 +790,8 @@ fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
 
     match record_type {
         RECORD_TYPE_PUT => {
-            let value = match value_kind {
-                VALUE_KIND_RAW => BlobValue::Raw(value),
-                VALUE_KIND_COMPRESSED => BlobValue::Compressed(value),
-                unknown => return Err(unreadable(&format!("value kind {unknown:#04x}"))),
+            let Some(value) = BlobValue::from_stored(value_kind, value) else {
+                return Err(unreadable(&format!("value kind {value_kind:#04x}")));
             };
             Ok(ReadOutcome::Records(vec![WalRecord::Put(key, value)]))
         }
@@ -854,10 +852,7 @@ fn parse_batch(body: &[u8]) -> Option<Vec<WalRecord>> {
         let key = take(&mut rest, key_len)?.to_vec();
         let value = take(&mut rest, value_len)?.to_vec();
         out.push(match (record_type, kind) {
-            (RECORD_TYPE_PUT, VALUE_KIND_RAW) => WalRecord::Put(key, BlobValue::Raw(value)),
-            (RECORD_TYPE_PUT, VALUE_KIND_COMPRESSED) => {
-                WalRecord::Put(key, BlobValue::Compressed(value))
-            }
+            (RECORD_TYPE_PUT, kind) => WalRecord::Put(key, BlobValue::from_stored(kind, value)?),
             (RECORD_TYPE_DELETE, VALUE_KIND_RAW) if value.is_empty() => WalRecord::Delete(key),
             _ => return None,
         });

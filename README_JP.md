@@ -258,7 +258,7 @@ db.close()
 
 `open` の既定は lossy なモデル保存 (`lossless=False`) タイムスタンプに gap のある系列は
 等間隔 grid で読み戻されるため、flush 後に gap の点の値が変わることがある `lossless=True` を
-渡すと残差を保存し、増加するタイムスタンプを厳密に読み戻す (Rust の `FitConfig { lossless: true }`
+渡すと残差を保存し、増加するタイムスタンプを厳密に読み戻す (Rust の `FitConfig::default().with_lossless(true)`
 と同じ約束):
 
 ```python

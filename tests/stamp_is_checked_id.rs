@@ -17,16 +17,13 @@ use alice_det_math::SemanticsCheck;
 use std::path::Path;
 
 fn open(dir: &Path, lossless: bool, use_mmap: bool) -> AliceDB {
-    AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        enable_wal: false,
-        use_mmap,
-        fit_config: FitConfig {
-            lossless,
-            ..FitConfig::default()
-        },
-        ..StorageConfig::default()
-    })
+    AliceDB::with_config(
+        StorageConfig::default()
+            .with_data_dir(dir.to_path_buf())
+            .with_enable_wal(false)
+            .with_use_mmap(use_mmap)
+            .with_fit_config(FitConfig::default().with_lossless(lossless)),
+    )
     .expect("open")
 }
 

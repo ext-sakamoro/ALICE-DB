@@ -393,10 +393,7 @@ fn writes_during_an_appending_flush_are_not_lost() {
 fn writes_during_a_flush(flush_mode: FlushMode) {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.wal");
-    let config = || BlobStorageConfig {
-        flush_mode,
-        ..BlobStorageConfig::default()
-    };
+    let config = || BlobStorageConfig::default().with_flush_mode(flush_mode);
     let store = Arc::new(BlobStorage::open_with_config(&path, config()).unwrap());
     let flusher = {
         let store = Arc::clone(&store);

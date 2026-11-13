@@ -25,13 +25,13 @@ pub fn read_through_data_file(bytes: &[u8]) -> DataSegment {
     data.extend_from_slice(bytes);
     std::fs::write(dir.join("data.alice"), data).expect("data");
 
-    let db = AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        enable_wal: false,
-        use_mmap: false,
-        residual_policy: ResidualPolicy::AcceptUnpinned,
-        ..StorageConfig::default()
-    })
+    let db = AliceDB::with_config(
+        StorageConfig::default()
+            .with_data_dir(dir.to_path_buf())
+            .with_enable_wal(false)
+            .with_use_mmap(false)
+            .with_residual_policy(ResidualPolicy::AcceptUnpinned),
+    )
     .expect("open the legacy store");
     // reading the range loads the segment from data.alice and rewrites it; what the read
     // returns (a residual may be refused) does not matter here

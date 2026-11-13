@@ -19,13 +19,13 @@ fn payload_nan() -> f32 {
 }
 
 fn open(dir: &Path, use_mmap: bool) -> AliceDB {
-    AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        enable_wal: false,
-        use_mmap,
-        fit_config: FitConfig::default(),
-        ..StorageConfig::default()
-    })
+    AliceDB::with_config(
+        StorageConfig::default()
+            .with_data_dir(dir.to_path_buf())
+            .with_enable_wal(false)
+            .with_use_mmap(use_mmap)
+            .with_fit_config(FitConfig::default()),
+    )
     .expect("open")
 }
 
@@ -177,13 +177,13 @@ fn the_model_only_read_of_a_stored_nan_slot_is_the_canonical_nan() {
             0xffc0_dead,
             "mmap {use_mmap}: the stored bits"
         );
-        let model = AliceDB::with_config(StorageConfig {
-            data_dir: dir.clone(),
-            enable_wal: false,
-            use_mmap,
-            residual_policy: ResidualPolicy::ModelOnly,
-            ..StorageConfig::default()
-        })
+        let model = AliceDB::with_config(
+            StorageConfig::default()
+                .with_data_dir(dir.clone())
+                .with_enable_wal(false)
+                .with_use_mmap(use_mmap)
+                .with_residual_policy(ResidualPolicy::ModelOnly),
+        )
         .expect("open");
         let v = model.get(5).expect("read").expect("present");
         assert_eq!(

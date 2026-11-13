@@ -47,20 +47,19 @@ fn value(i: i64) -> f32 {
 }
 
 fn config(dir: &Path, encrypted: bool) -> StorageConfig {
-    StorageConfig {
-        data_dir: dir.to_path_buf(),
-        // large enough that nothing is flushed before the crash: every value
-        // the parent reads back comes from the WAL replay
-        memtable_capacity: 100_000,
-        enable_wal: true,
-        fit_config: FitConfig {
-            lossless: true,
-            ..FitConfig::default()
-        },
+    {
+        #[allow(unused_mut)]
+        let mut c = StorageConfig::default();
+        c = c.with_data_dir(dir.to_path_buf());
+        c = c.with_memtable_capacity(100_000);
+        c = c.with_enable_wal(true);
+        c = c.with_fit_config(FitConfig::default().with_lossless(true));
         #[cfg(feature = "crypto")]
-        encryption_key: encrypted.then(|| alice_crypto::Key::from_bytes([0x5a; 32])),
-        use_mmap: !encrypted,
-        ..StorageConfig::default()
+        {
+            c = c.with_encryption_key(encrypted.then(|| alice_crypto::Key::from_bytes([0x5a; 32])));
+        }
+        c = c.with_use_mmap(!encrypted);
+        c
     }
 }
 

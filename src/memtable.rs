@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Configuration for model fitting
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FitConfig {
     /// Maximum polynomial degree to try
     pub max_polynomial_degree: usize,
@@ -47,6 +48,57 @@ pub struct FitConfig {
     pub min_compression_ratio: f64,
     /// Enable lossless mode: store residuals for exact reconstruction
     pub lossless: bool,
+}
+
+impl FitConfig {
+    /// This value with `max_polynomial_degree` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_max_polynomial_degree(mut self, max_polynomial_degree: usize) -> Self {
+        self.max_polynomial_degree = max_polynomial_degree;
+        self
+    }
+
+    /// This value with `polynomial_error_threshold` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_polynomial_error_threshold(mut self, polynomial_error_threshold: f64) -> Self {
+        self.polynomial_error_threshold = polynomial_error_threshold;
+        self
+    }
+
+    /// This value with `max_fourier_coefficients` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_max_fourier_coefficients(mut self, max_fourier_coefficients: usize) -> Self {
+        self.max_fourier_coefficients = max_fourier_coefficients;
+        self
+    }
+
+    /// This value with `fourier_energy_threshold` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_fourier_energy_threshold(mut self, fourier_energy_threshold: f32) -> Self {
+        self.fourier_energy_threshold = fourier_energy_threshold;
+        self
+    }
+
+    /// This value with `exhaustive_search` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_exhaustive_search(mut self, exhaustive_search: bool) -> Self {
+        self.exhaustive_search = exhaustive_search;
+        self
+    }
+
+    /// This value with `min_compression_ratio` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_min_compression_ratio(mut self, min_compression_ratio: f64) -> Self {
+        self.min_compression_ratio = min_compression_ratio;
+        self
+    }
+
+    /// This value with `lossless` set (the struct is `#[non_exhaustive]`; start from `Default`)
+    #[must_use]
+    pub fn with_lossless(mut self, lossless: bool) -> Self {
+        self.lossless = lossless;
+        self
+    }
 }
 
 impl Default for FitConfig {

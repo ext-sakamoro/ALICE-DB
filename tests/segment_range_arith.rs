@@ -75,10 +75,7 @@ fn within_deadline<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send +
 }
 
 fn lossless() -> FitConfig {
-    FitConfig {
-        lossless: true,
-        ..FitConfig::default()
-    }
+    FitConfig::default().with_lossless(true)
 }
 
 /// Values that no model reproduces, so the lossless residual carries them
@@ -241,11 +238,8 @@ fn alice_db_scan_and_get_on_extreme_keys() {
         let got = within_deadline("AliceDB::scan", {
             let keys = keys.clone();
             move || {
-                let db = AliceDB::in_memory(StorageConfig {
-                    fit_config: lossless(),
-                    ..StorageConfig::default()
-                })
-                .unwrap();
+                let db = AliceDB::in_memory(StorageConfig::default().with_fit_config(lossless()))
+                    .unwrap();
                 let data: Vec<(i64, f32)> = keys
                     .iter()
                     .enumerate()

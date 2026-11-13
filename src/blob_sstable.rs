@@ -30,7 +30,7 @@
 //! ```text
 //! Header (24 bytes):
 //!   0   8   magic          "ALICEBBS"
-//!   8   4   version        u32 LE (written: 4; read: 1 to 4)
+//!   8   4   version        u32 LE (written: 5; read: 1 to 5)
 //!  12   8   num_records    u64 LE (may be zero for an empty snapshot)
 //!  20   4   reserved       u32 LE (written as zero)
 //!
@@ -40,7 +40,8 @@
 //! Each record:
 //!   0   4   key_len        u32 LE
 //!   4   4   value_len      u32 LE (0 for a tombstone)
-//!   8   1   value_kind     u8  (0x00 = Raw, 0x01 = Compressed, 0x02 = Tombstone)
+//!   8   1   value_kind     u8  (0x00 = Raw, 0x01 = Compressed, 0x02 = Tombstone, 0x03 = CompressedSized)
+//!                              (0x03: the value is the decoded length, u64 LE, then the zlib payload; v5)
 //!   9   key_len            key bytes
 //!   9+key_len   value_len  value bytes
 //!   trailer  4             CRC-32 over the entire record above
@@ -55,7 +56,7 @@
 //!
 //! Bloom section (v2 and v3): as v4 without `hash_id` (bits_len at 12, bits at 20)
 //!
-//! Footer, v2 to v4 (24 bytes, at end of file):
+//! Footer, v2 to v5 (24 bytes, at end of file):
 //!   ...  8   records_size   u64 LE (byte length of the records section)
 //!   ...  8   bloom_size     u64 LE (byte length of the bloom section)
 //!   ...  8   magic          "ALICEEND"
@@ -65,8 +66,8 @@
 //!   ...  8   magic          "ALICEEND"
 //! ```
 //!
-//! Versions 2 to 4 have the same layout but for the Bloom section's identifier, and the
-//! reader accepts tombstone records under every version. The writer stamps 4; the version
+//! Versions 2 to 5 have the same layout but for the Bloom section's identifier, and the
+//! reader accepts tombstone records under every version. The writer stamps 5; the version
 //! history is on the `FORMAT_VERSION_*` constants. A Bloom filter is used as stored only when
 //! its identifier is this build's; a v2 / v3 filter, or one under another identifier, is
 //! rebuilt from the file's keys and the reader says so (`BloomSource`).
@@ -119,8 +120,11 @@ const FORMAT_VERSION_V3: u32 = 3;
 /// fix between releases; they are never probed but rebuilt from the file's keys
 /// ([`BloomSource::Rebuilt`]).
 const FORMAT_VERSION_V4: u32 = 4;
-/// Every new write stamps this. Readers accept v1 to v4.
-const CURRENT_VERSION: u32 = FORMAT_VERSION_V4;
+/// 0.7.0+: same file layout as v4; a compressed value records the length it decodes to (`value_kind = 0x03`,
+/// the length in u64 LE then the zlib payload)
+const FORMAT_VERSION_V5: u32 = 5;
+/// Every new write stamps this. Readers accept v1 to v5.
+const CURRENT_VERSION: u32 = FORMAT_VERSION_V5;
 /// Bytes occupied by the fixed-size header.
 const HEADER_LEN: usize = 24;
 /// Bytes occupied by the v1 footer: `records_size (u64) + magic (8)`.
@@ -485,10 +489,10 @@ impl BlobSstable {
         // Records
         let mut records_size: u64 = 0;
         for (key, value) in entries {
-            let (kind, bytes): (u8, &[u8]) = match value {
-                BlobValue::Raw(b) => (VALUE_KIND_RAW, b.as_slice()),
-                BlobValue::Compressed(b) => (VALUE_KIND_COMPRESSED, b.as_slice()),
-                BlobValue::Tombstone => (VALUE_KIND_TOMBSTONE, &[]),
+            let stored = value.stored();
+            let (kind, bytes): (u8, &[u8]) = match &stored {
+                Some((kind, bytes)) => (*kind, bytes),
+                None => (VALUE_KIND_TOMBSTONE, &[]),
             };
             bloom.insert(key);
             let record = serialise_record(key, kind, bytes)?;
@@ -592,7 +596,7 @@ impl BlobSstable {
                 }
                 (records_slice, None)
             }
-            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 | FORMAT_VERSION_V4 => {
+            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 | FORMAT_VERSION_V4 | FORMAT_VERSION_V5 => {
                 // v2 and v3 share the on-disk layout (header + records
                 // + Bloom + 24-byte footer). Only the record encoding
                 // differs: v3 records may carry `value_kind = 0x02`
@@ -815,7 +819,7 @@ impl LoadedSstable {
                 }
                 (end, None)
             }
-            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 | FORMAT_VERSION_V4 => {
+            FORMAT_VERSION_V2 | FORMAT_VERSION_V3 | FORMAT_VERSION_V4 | FORMAT_VERSION_V5 => {
                 // v2 and v3 share the on-disk layout — see the matching
                 // branch in `BlobSstable::open` for the full rationale.
                 if mmap.len() < HEADER_LEN + FOOTER_LEN_V2 {
@@ -1010,11 +1014,7 @@ impl LoadedSstable {
             return Some(BlobValue::Tombstone);
         }
         let bytes = self.mmap.bytes()[value_start..value_end].to_vec();
-        match offset.value_kind {
-            VALUE_KIND_RAW => Some(BlobValue::Raw(bytes)),
-            VALUE_KIND_COMPRESSED => Some(BlobValue::Compressed(bytes)),
-            _ => None,
-        }
+        BlobValue::from_stored(offset.value_kind, bytes)
     }
 }
 
@@ -1081,6 +1081,7 @@ fn build_offset_index(
         if value_kind != VALUE_KIND_RAW
             && value_kind != VALUE_KIND_COMPRESSED
             && value_kind != VALUE_KIND_TOMBSTONE
+            && !(value_kind == crate::blob::KIND_COMPRESSED_SIZED && value_len >= 8)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1289,8 +1290,14 @@ fn parse_records(bytes: &[u8], expected_count: u64) -> io::Result<Vec<(Vec<u8>, 
         let key = bytes[cursor + 9..cursor + 9 + key_len].to_vec();
         let value_bytes = bytes[cursor + 9 + key_len..payload_end].to_vec();
         let value = match value_kind {
-            VALUE_KIND_RAW => BlobValue::Raw(value_bytes),
-            VALUE_KIND_COMPRESSED => BlobValue::Compressed(value_bytes),
+            VALUE_KIND_RAW | VALUE_KIND_COMPRESSED | crate::blob::KIND_COMPRESSED_SIZED => {
+                BlobValue::from_stored(value_kind, value_bytes).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sstable sized value shorter than its length",
+                    )
+                })?
+            }
             VALUE_KIND_TOMBSTONE => {
                 if value_len != 0 {
                     return Err(io::Error::new(

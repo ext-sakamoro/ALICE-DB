@@ -75,13 +75,11 @@ fn value(i: u32) -> Vec<u8> {
 
 fn workload(dir: &Path) {
     let wal = dir.join("store").join("blob.wal");
-    let append = BlobStorageConfig {
-        sync_policy: SyncPolicy::EveryWrite,
-        wal_flush_threshold_bytes: 4096,
-        flush_mode: FlushMode::Append,
-        max_sstables_before_compaction: 3,
-        ..BlobStorageConfig::default()
-    };
+    let append = BlobStorageConfig::default()
+        .with_sync_policy(SyncPolicy::EveryWrite)
+        .with_wal_flush_threshold_bytes(4096)
+        .with_flush_mode(FlushMode::Append)
+        .with_max_sstables_before_compaction(3);
     {
         let s = BlobStorage::open_with_config(&wal, append).unwrap();
         for i in 0..120u32 {
@@ -109,13 +107,11 @@ fn workload(dir: &Path) {
         s.flush_to_sstable().unwrap();
     }
     {
-        let overwrite = BlobStorageConfig {
-            sync_policy: SyncPolicy::EveryWrite,
-            wal_flush_threshold_bytes: u64::MAX,
-            flush_mode: FlushMode::Overwrite,
-            max_sstables_before_compaction: usize::MAX,
-            ..BlobStorageConfig::default()
-        };
+        let overwrite = BlobStorageConfig::default()
+            .with_sync_policy(SyncPolicy::EveryWrite)
+            .with_wal_flush_threshold_bytes(u64::MAX)
+            .with_flush_mode(FlushMode::Overwrite)
+            .with_max_sstables_before_compaction(usize::MAX);
         let s =
             BlobStorage::open_with_config(dir.join("canon").join("blob.wal"), overwrite).unwrap();
         for i in 0..40u32 {
@@ -128,7 +124,7 @@ fn workload(dir: &Path) {
 
 /// The digest and file count of the workload's tree on this revision of the store
 const PINNED: (&str, usize) = (
-    "a774004ab503c1eaac8eb9d9a28fc8a5b85b8c6034980db4dd4dc43f56b8d31e",
+    "21e7dfb0977141dbc8da17dc6bfac953c351ebe72e119caa622a85f257732aa3",
     7,
 );
 

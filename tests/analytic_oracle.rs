@@ -60,24 +60,17 @@ fn i_of(seg: &DataSegment, t: i64, n: usize) -> f64 {
 }
 
 fn lossless_db(dir: &std::path::Path, mmap: bool) -> AliceDB {
-    AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        fit_config: FitConfig {
-            lossless: true,
-            ..FitConfig::default()
-        },
-        use_mmap: mmap,
-        ..StorageConfig::default()
-    })
+    AliceDB::with_config(
+        StorageConfig::default()
+            .with_data_dir(dir.to_path_buf())
+            .with_fit_config(FitConfig::default().with_lossless(true))
+            .with_use_mmap(mmap),
+    )
     .unwrap()
 }
 
 fn default_db(dir: &std::path::Path) -> AliceDB {
-    AliceDB::with_config(StorageConfig {
-        data_dir: dir.to_path_buf(),
-        ..StorageConfig::default()
-    })
-    .unwrap()
+    AliceDB::with_config(StorageConfig::default().with_data_dir(dir.to_path_buf())).unwrap()
 }
 
 fn lcg(seed: &mut u64) -> f32 {

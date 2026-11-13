@@ -50,7 +50,7 @@ fn reference_crc_is_ieee_not_castagnoli() {
 }
 
 #[test]
-fn sstable_bytes_follow_the_documented_v4_layout() {
+fn sstable_bytes_follow_the_documented_v5_layout() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("blob.sst");
     let raw = BlobValue::Raw(b"v".to_vec());
@@ -59,7 +59,7 @@ fn sstable_bytes_follow_the_documented_v4_layout() {
 
     // Header (24 bytes).
     assert_eq!(&b[0..8], b"ALICEBBS");
-    assert_eq!(u32_at(&b, 8), 4, "header version");
+    assert_eq!(u32_at(&b, 8), 5, "header version");
     assert_eq!(u64_at(&b, 12), 1, "num_records");
     assert_eq!(u32_at(&b, 20), 0, "reserved");
 
@@ -118,6 +118,44 @@ fn wal_record_bytes_follow_the_documented_layout() {
     assert_eq!(b.len(), at + del.len() + 4, "two records and nothing else");
 }
 
+// oracle (the layout in the module docs): a sized compressed value is kind 0x03 whose value is the decoded length
+// (u64 LE) followed by the zlib payload, in the SSTable and in the WAL
+#[test]
+fn a_sized_compressed_value_is_kind_3_with_its_length_first() {
+    let tmp = TempDir::new().unwrap();
+    let sized = BlobValue::CompressedSized {
+        original_len: 0x0102_0304,
+        bytes: vec![0xAA, 0xBB],
+    };
+    let path = tmp.path().join("blob.sst");
+    BlobSstable::write_from_iter(&path, [(b"k".as_slice(), &sized)]).unwrap();
+    let b = std::fs::read(&path).unwrap();
+    let record = &b[24..24 + 9 + 1 + 10];
+    assert_eq!(
+        record,
+        &[1, 0, 0, 0, 10, 0, 0, 0, 0x03, b'k', 4, 3, 2, 1, 0, 0, 0, 0, 0xAA, 0xBB]
+    );
+    assert_eq!(u32_at(&b, 24 + record.len()), crc32_ieee(record));
+    let back = BlobSstable::open(&path).unwrap().unwrap();
+    assert_eq!(
+        back.iter().next().map(|(_, v)| v.clone()),
+        Some(sized.clone())
+    );
+
+    let wal_path = tmp.path().join("blob.wal");
+    BlobWal::open(&wal_path)
+        .unwrap()
+        .append_put(b"k", &sized)
+        .unwrap();
+    let w = std::fs::read(&wal_path).unwrap();
+    let put = &w[0..10 + 1 + 10];
+    assert_eq!(
+        put,
+        &[0x01, 1, 0, 0, 0, 10, 0, 0, 0, 0x03, b'k', 4, 3, 2, 1, 0, 0, 0, 0, 0xAA, 0xBB]
+    );
+    assert_eq!(u32_at(&w, put.len()), crc32_ieee(put));
+}
+
 fn module_doc(src: &str) -> String {
     src.lines()
         .filter_map(|l| l.trim_start().strip_prefix("//!"))
@@ -150,18 +188,18 @@ fn docs_name_the_checksum_that_the_code_computes() {
 fn sstable_doc_states_the_version_the_writer_stamps() {
     let doc = module_doc(SSTABLE_SRC);
     assert!(
-        doc.contains("version        u32 LE (written: 4; read: 1 to 4)"),
+        doc.contains("version        u32 LE (written: 5; read: 1 to 5)"),
         "header version line in the module doc"
     );
     for field in [
         "bloom_size",
         "trailer  4             CRC-32 over the entire record above",
         "trailer  4             CRC-32 over the bloom section above",
-        "Footer, v2 to v4 (24 bytes, at end of file)",
+        "Footer, v2 to v5 (24 bytes, at end of file)",
         "hash_id        the position derivation (crate::bloom::BLOOM_HASH_ID)",
         "Footer, v1 (16 bytes; v1 files have no bloom section)",
-        "Versions 2 to 4 have the same layout but for the Bloom section's identifier",
-        "value_kind     u8  (0x00 = Raw, 0x01 = Compressed, 0x02 = Tombstone)",
+        "Versions 2 to 5 have the same layout but for the Bloom section's identifier",
+        "value_kind     u8  (0x00 = Raw, 0x01 = Compressed, 0x02 = Tombstone, 0x03 = CompressedSized)",
     ] {
         assert!(doc.contains(field), "module doc lacks `{field}`");
     }

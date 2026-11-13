@@ -2,7 +2,7 @@
 //! at a time and as a range
 //!
 //! Keys 0, 1, 1000, 1 000 003, 2^40, 2^53 − 1 with values `0.1 + i·1.7`.
-//! Before 0.3.0 the plain path with `FitConfig { lossless: true }` returned
+//! Before 0.3.0 the plain path with `FitConfig::default().with_lossless(true)` returned
 //! 0.1 for every key up to 2^40, 8.6 for 2^53 − 1, and one row for the range
 //! 0 ..= 2^41 (five written). Both the plain lossless path (which now cuts a
 //! segment wherever the spacing changes) and the exact series must return
@@ -18,13 +18,7 @@ fn value(i: usize) -> f32 {
 }
 
 fn lossless(config: StorageConfig) -> StorageConfig {
-    StorageConfig {
-        fit_config: FitConfig {
-            lossless: true,
-            ..FitConfig::default()
-        },
-        ..config
-    }
+    config.with_fit_config(FitConfig::default().with_lossless(true))
 }
 
 /// Every point through `read(s, s)`, and the range 0 ..= 2^41
@@ -104,12 +98,7 @@ fn series_in_memory() {
 #[test]
 fn plain_lossless_file_backend_and_reopen() {
     let dir = tempfile::tempdir().unwrap();
-    let config = || {
-        lossless(StorageConfig {
-            data_dir: dir.path().to_path_buf(),
-            ..StorageConfig::default()
-        })
-    };
+    let config = || lossless(StorageConfig::default().with_data_dir(dir.path().to_path_buf()));
     {
         let db = AliceDB::with_config(config()).unwrap();
         plain(&db, "plain, file");

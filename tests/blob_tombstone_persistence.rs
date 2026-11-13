@@ -30,6 +30,7 @@ fn append_config() -> BlobStorageConfig {
         // Never auto-compact so we can observe the tombstone masking
         // across multiple SSTables in the tests below.
         max_sstables_before_compaction: usize::MAX,
+        ..BlobStorageConfig::default()
     }
 }
 

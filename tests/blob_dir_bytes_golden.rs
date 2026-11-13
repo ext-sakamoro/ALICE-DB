@@ -80,6 +80,7 @@ fn workload(dir: &Path) {
         wal_flush_threshold_bytes: 4096,
         flush_mode: FlushMode::Append,
         max_sstables_before_compaction: 3,
+        ..BlobStorageConfig::default()
     };
     {
         let s = BlobStorage::open_with_config(&wal, append).unwrap();
@@ -113,6 +114,7 @@ fn workload(dir: &Path) {
             wal_flush_threshold_bytes: u64::MAX,
             flush_mode: FlushMode::Overwrite,
             max_sstables_before_compaction: usize::MAX,
+            ..BlobStorageConfig::default()
         };
         let s =
             BlobStorage::open_with_config(dir.join("canon").join("blob.wal"), overwrite).unwrap();

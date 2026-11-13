@@ -28,6 +28,7 @@ fn append_config() -> BlobStorageConfig {
         wal_flush_threshold_bytes: u64::MAX,
         flush_mode: FlushMode::Append,
         max_sstables_before_compaction: usize::MAX,
+        ..BlobStorageConfig::default()
     }
 }
 

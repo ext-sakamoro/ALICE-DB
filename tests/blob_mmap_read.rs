@@ -73,6 +73,7 @@ fn append_mode_multi_sstable_read_returns_newest_wins_via_mmap() {
         wal_flush_threshold_bytes: u64::MAX,
         flush_mode: FlushMode::Append,
         max_sstables_before_compaction: usize::MAX,
+        ..BlobStorageConfig::default()
     };
     let db = AliceDB::open_with_blob_config(tmp.path(), config).unwrap();
 
@@ -178,6 +179,7 @@ fn scan_prefix_merges_memtable_and_multiple_sstables() {
         wal_flush_threshold_bytes: u64::MAX,
         flush_mode: FlushMode::Append,
         max_sstables_before_compaction: usize::MAX,
+        ..BlobStorageConfig::default()
     };
     let db = AliceDB::open_with_blob_config(tmp.path(), config).unwrap();
 
@@ -218,6 +220,7 @@ fn compact_all_after_multi_sstable_preserves_every_live_key() {
         wal_flush_threshold_bytes: u64::MAX,
         flush_mode: FlushMode::Append,
         max_sstables_before_compaction: usize::MAX,
+        ..BlobStorageConfig::default()
     };
     let db = AliceDB::open_with_blob_config(tmp.path(), config).unwrap();
 

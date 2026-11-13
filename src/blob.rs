@@ -90,6 +90,10 @@ pub struct BlobStorageConfig {
     /// auto-compaction and rely on manual
     /// [`BlobStorage::compact_all_sstables`] calls instead.
     pub max_sstables_before_compaction: usize,
+    /// The longest value the store takes and returns, in bytes ([`DEFAULT_MAX_VALUE_BYTES`] by default): `put`
+    /// and `write_batch` refuse a longer value with [`ValueTooLarge`], and a stored compressed value is
+    /// decompressed only up to it (a longer one is refused when read)
+    pub max_value_bytes: usize,
 }
 
 #[cfg(feature = "fs")]
@@ -100,6 +104,7 @@ impl Default for BlobStorageConfig {
             wal_flush_threshold_bytes: DEFAULT_WAL_FLUSH_THRESHOLD_BYTES,
             flush_mode: FlushMode::default(),
             max_sstables_before_compaction: DEFAULT_MAX_SSTABLES_BEFORE_COMPACTION,
+            max_value_bytes: DEFAULT_MAX_VALUE_BYTES,
         }
     }
 }
@@ -115,6 +120,60 @@ pub const COMPRESS_THRESHOLD_BYTES: usize = 200;
 
 /// zlib compression level (flate2 default; good ratio-vs-cpu balance).
 const ZLIB_LEVEL: u32 = 6;
+
+/// Default of [`BlobStorageConfig::max_value_bytes`]: 64 MiB
+pub const DEFAULT_MAX_VALUE_BYTES: usize = 64 << 20;
+
+/// A value longer than the store's [`BlobStorageConfig::max_value_bytes`]: refused by `put` and `write_batch`
+/// (nothing of the call is stored), and by a read of a stored value that expands past it. Carried inside the
+/// [`io::Error`]; read it back with `err.get_ref().and_then(|e| e.downcast_ref::<ValueTooLarge>())`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueTooLarge {
+    /// Bytes of the value
+    pub len: usize,
+    /// The store's limit
+    pub limit: usize,
+}
+
+impl std::fmt::Display for ValueTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a blob value of {} bytes, more than the limit of {} bytes",
+            self.len, self.limit
+        )
+    }
+}
+
+impl std::error::Error for ValueTooLarge {}
+
+/// The store's limit on one value, [`DEFAULT_MAX_VALUE_BYTES`] unless configured
+#[derive(Debug, Clone, Copy)]
+struct ValueLimit(usize);
+
+impl Default for ValueLimit {
+    fn default() -> Self {
+        Self(DEFAULT_MAX_VALUE_BYTES)
+    }
+}
+
+impl ValueLimit {
+    /// `ValueTooLarge` (in an [`io::Error`]) when `len` passes the limit
+    fn check(self, len: usize) -> io::Result<()> {
+        if len > self.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                ValueTooLarge { len, limit: self.0 },
+            ));
+        }
+        Ok(())
+    }
+
+    /// A stored compressed value, decompressed up to the limit (the record does not hold its original length)
+    fn decompress(self, bytes: &[u8]) -> io::Result<Vec<u8>> {
+        zlib_decompress(bytes, self.0)
+    }
+}
 
 /// The physical representation of a stored blob value.
 ///
@@ -249,6 +308,8 @@ pub struct BlobStorage {
     /// [`BlobWal::recover`]).
     #[cfg(feature = "fs")]
     wal_recovery: Option<WalRecovery>,
+    /// See [`BlobStorageConfig::max_value_bytes`]
+    max_value: ValueLimit,
 }
 
 impl BlobStorage {
@@ -432,6 +493,7 @@ impl BlobStorage {
             wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
             flush_mode: config.flush_mode,
             max_sstables_before_compaction: config.max_sstables_before_compaction,
+            max_value: ValueLimit(config.max_value_bytes),
             next_sstable_seq: Arc::new(parking_lot::Mutex::new(next_seq)),
             wal_recovery,
         })
@@ -780,6 +842,7 @@ impl BlobStorage {
     pub fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
         #[cfg(feature = "fs")]
         self.check_writable()?;
+        self.max_value.check(value.len())?;
         let stored = match compress_if_worthwhile(value) {
             Some(bytes) => BlobValue::Compressed(bytes),
             None => BlobValue::Raw(value.to_vec()),
@@ -817,7 +880,7 @@ impl BlobStorage {
                     BlobValue::Tombstone => Ok(None),
                     BlobValue::Raw(bytes) => Ok(Some(bytes.clone())),
                     BlobValue::Compressed(bytes) => {
-                        let raw = zlib_decompress(bytes)?;
+                        let raw = self.max_value.decompress(bytes)?;
                         Ok(Some(raw))
                     }
                 };
@@ -832,7 +895,7 @@ impl BlobStorage {
                     BlobValue::Tombstone => Ok(None),
                     BlobValue::Raw(bytes) => Ok(Some(bytes)),
                     BlobValue::Compressed(bytes) => {
-                        let raw = zlib_decompress(&bytes)?;
+                        let raw = self.max_value.decompress(&bytes)?;
                         Ok(Some(raw))
                     }
                 };
@@ -952,7 +1015,7 @@ impl BlobStorage {
                 BlobValue::Tombstone => {}
                 BlobValue::Raw(bytes) => out.push((winner_key, bytes)),
                 BlobValue::Compressed(bytes) => {
-                    let raw = zlib_decompress(&bytes)?;
+                    let raw = self.max_value.decompress(&bytes)?;
                     out.push((winner_key, raw));
                 }
             }
@@ -1006,7 +1069,7 @@ impl BlobStorage {
         let mut out = Vec::new();
         if limit > 0 {
             merge_live(sources, order, |key, value| {
-                out.push((key, value.into_bytes()?));
+                out.push((key, value.into_bytes(self.max_value)?));
                 Ok(out.len() < limit)
             })?;
         }
@@ -1079,7 +1142,7 @@ impl BlobStorage {
             let key_len = u32::try_from(key.len()).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "blob key exceeds u32::MAX")
             })?;
-            let value = value.into_bytes()?;
+            let value = value.into_bytes(self.max_value)?;
             put(&key_len.to_le_bytes())?;
             put(&key)?;
             put(&(value.len() as u64).to_le_bytes())?;
@@ -1137,6 +1200,10 @@ impl BlobStorage {
         self.check_writable()?;
         if batch.is_empty() {
             return Ok(());
+        }
+        // every value is checked before anything of the batch is stored
+        for value in batch.ops.iter().filter_map(|(_, v)| v.as_deref()) {
+            self.max_value.check(value.len())?;
         }
         let stored: Vec<(&[u8], BlobValue)> = batch
             .ops
@@ -1379,10 +1446,10 @@ enum LiveValue {
 }
 
 impl LiveValue {
-    fn into_bytes(self) -> io::Result<Vec<u8>> {
+    fn into_bytes(self, limit: ValueLimit) -> io::Result<Vec<u8>> {
         match self {
             Self::Raw(bytes) => Ok(bytes),
-            Self::Compressed(bytes) => zlib_decompress(&bytes),
+            Self::Compressed(bytes) => limit.decompress(&bytes),
         }
     }
 }

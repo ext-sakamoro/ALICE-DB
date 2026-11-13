@@ -5,6 +5,8 @@ All notable changes to ALICE-DB will be documented in this file.
 ## [Unreleased]
 
 ### Security
+- **Breaking:** 展開は上限付きだけ (版を 0.7.0 に上げた、依存 alice-zip 0.12) blob の値は store の `max_value_bytes` (`BlobStorageConfig`、既定 64 MiB) まで: `put` と `write_batch` は長い値を型付きの `blob::ValueTooLarge` で拒み (batch は何も書かない)、保存済みの圧縮値は上限までしか展開しない segment の残差は点の数が要る長さ (`MAX_SEGMENT_POINTS` が天井) までで展開する (`segment::decompress_residual(blob, max_len)`、上限を超える LZMA stream は raw の形として読まず、その segment は corrupt) LZMA の窓は上限で止め、header が宣言する辞書を確保しない (`tests/bounded_residual_memory.rs` / `tests/blob_value_memory.rs` が確保の最大値を数える)
+- **Breaking (格納形式):** 圧縮した blob の値は展開後の長さを記録する (WAL と `SSTable` の `value_kind = 0x03`、値は長さ u64 LE と zlib の payload、`BlobValue::CompressedSized`、`SSTable` は版 5) 読む時は記録した長さが上限を超えれば展開の前に `ValueTooLarge`、展開は記録した長さちょうどまでで、違う長さに展開される record は型付きの `blob::StoredLengthMismatch` で拒む 0.6 以前が書いた長さの無い record (`0x01`) は store の上限まで読め、flush と compaction で `0x03` に書き直す (上限で読めない値は書き直さず残す) 0.6 の書いた fixture (`tests/data/blob_v06`) を読む試験がある 0.6 以前の build は版 5 の `SSTable` と `0x03` の WAL record を読まない DB の識別子 (`DB_SEMANTICS_ID`) は動かない (blob の格納形式を含まない)
 - 依存 `bincode` (1.3、RUSTSEC-2025-0141 unmaintained) を外し、`deny.toml` と cargo audit (`security-audit.yml` と preflight) のその ignore を削除
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
@@ -40,6 +42,8 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- **Breaking:** `BlobStorageConfig` / `StorageConfig` / `FitConfig` / `CompactionConfig` を `#[non_exhaustive]` にし、`Default` と field ごとの `with_*` で組み立てる (例 `StorageConfig::default().with_memtable_capacity(100)`) 以後 field を足しても破壊的変更にならない 移行: struct literal は `Default` から `with_*` に書き換える
+- `put` / `write_batch` は 64 MiB (`max_value_bytes` の既定) を超える値を拒むようになった (以前は record の長さ u32 まで受け付けた) 大きな値を書く store は `BlobStorageConfig::default().with_max_value_bytes(n)` で上限を上げる
 - CI: lock 間の一致の検査を共有の `scripts/lock_sources_check.py` と試験 (ALICE-Edge と同じ bytes、git から取ることと lock 間の source の一致、exempt は `scripts/lock_sources.toml`) に移し、この crate だけの `scripts/lock_sibling_agreement.py` と試験を削除した (CI の test job と preflight の step を置き換え)
 - CI: `scripts/lock_sibling_agreement.py` を ALICE の他の crate にも写せる形にした 追跡している lock が 1 本も無ければ失敗 (従来どおり)、lock 間で共有する alice-* が無い repo は失敗にせず「比較なし」と出す、意図して別の source を持つ lock は `scripts/lock_agreement.toml` の `[[exempt]]` (lock / crate / 理由 / それを要る試験の path) で比較から外す その entry は lock が追跡されていない・crate が無い・試験の file が無い・理由が空・外さなくても一致する、のどれでも失敗 試験 `scripts/test_lock_sibling_agreement.py` に registry と git の食い違い、exempt の 5 通りを足した (13 件)
 - blob 層の file 操作 (WAL、SSTable、store の記録、`BlobStorage`) をすべて `blob_dir::BlobDir` / `BlobFile` / `BlobBytes` (native の実装は `StdDir`) を通す 振る舞いと保存する bytes は変えない (試験 `tests/blob_dir_bytes_golden.rs` が決まった操作列の残す file の bytes を固定する) browser の永続 backend を同じ口に足すための準備

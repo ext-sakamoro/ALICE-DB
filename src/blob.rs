@@ -39,6 +39,10 @@ use parking_lot::RwLock;
 #[cfg(feature = "fs")]
 use crate::blob_dir::{BlobDir, StdDir};
 #[cfg(feature = "fs")]
+pub use crate::blob_shared::SharedOptions;
+#[cfg(feature = "fs")]
+use crate::blob_shared::{read_lease, write_lease, Lease, LeaseGuard, Shared, LEASE_FILE};
+#[cfg(feature = "fs")]
 use crate::blob_sstable::{
     enumerate_sstables, max_sstable_seq, remove_stale_tmp_files, sstable_filename_for_seq,
     BlobSstable, FlushMode, LoadedSstable,
@@ -493,6 +497,9 @@ pub struct BlobStorage {
     wal_recovery: Option<WalRecovery>,
     /// See [`BlobStorageConfig::max_value_bytes`]
     max_value: ValueLimit,
+    /// Set by [`Self::open_shared`]: every operation takes the lease
+    #[cfg(feature = "fs")]
+    shared: Option<Arc<Shared>>,
 }
 
 impl BlobStorage {
@@ -631,6 +638,12 @@ impl BlobStorage {
             .map_or_else(|| wal_path.clone(), |file_name| dir.join(file_name));
         let sstable_path = dir.join("blob.sst");
         let mut store_lock = StoreLock::acquire(&dir)?;
+        if StdDir.file_len(&dir.join(LEASE_FILE)).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "this blob store is written by shared writers: open it with BlobStorage::open_shared",
+            ));
+        }
         let record = check_open(&dir, &wal_path, &name, recorded_wal(&dir)?.as_deref())?;
         let wal = BlobWal::open_with_policy(&wal_path, config.sync_policy)?;
         move_earlier_file(&dir, &name)?;
@@ -679,7 +692,215 @@ impl BlobStorage {
             max_value: ValueLimit(config.max_value_bytes),
             next_sstable_seq: Arc::new(parking_lot::Mutex::new(next_seq)),
             wal_recovery,
+            shared: None,
         })
+    }
+
+    /// Open a durable blob store that other processes may write at the same time, each through its own
+    /// `open_shared`.
+    ///
+    /// Each operation takes the store's lease (`blob.lock`, the lock an exclusive writer holds for as long
+    /// as it is open) for its own length: it reads what the other processes wrote since this handle's last
+    /// operation, then reads or writes, then lets go. A write is acknowledged once its record is in the WAL
+    /// under the lease; a batch is one record, seen whole or not at all. A process killed during its lease
+    /// releases the lock with its death (no timer), and a write cut short is cut off by the next lease. An
+    /// operation that waits longer than [`SharedOptions::lock_wait`] for another process's lease is
+    /// `TimedOut`. Every lease that writes raises the generation in `blob.lease` and stamps its record with
+    /// it ([`Self::lease_generation`]).
+    ///
+    /// The handle holds the store's live entries in memory and no file open or mapped between operations (a
+    /// mapping would stop another process's flush on Windows). A flush writes every live entry into one new
+    /// `SSTable`, removes the others and empties the WAL; the other handles read the new files at their next
+    /// operation. `FlushMode` and the compaction count of `config` do not apply: every flush compacts.
+    ///
+    /// A store opened shared once is refused by [`Self::open`] from then on; an exclusive writer that holds
+    /// the store makes `open_shared` wait and end `TimedOut`. A store written by an exclusive writer of
+    /// alice-db 0.7.0 opens shared as it is. Records written by shared writers are not readable by alice-db
+    /// 0.7.0 (it refuses the store with `InvalidData`).
+    ///
+    /// # Errors
+    /// `Unsupported` when the file system's locks do not keep a second handle out (nothing is written);
+    /// `TimedOut` past the wait; as [`Self::open`] otherwise.
+    #[cfg(feature = "fs")]
+    pub fn open_shared(
+        wal_path: impl AsRef<Path>,
+        config: BlobStorageConfig,
+        options: SharedOptions,
+    ) -> io::Result<Self> {
+        let wal_path = wal_path.as_ref().to_path_buf();
+        let name = wal_name(&wal_path)?;
+        let dir = writer_dir(&wal_path)?;
+        let wal_path = wal_path
+            .file_name()
+            .map_or_else(|| wal_path.clone(), |file_name| dir.join(file_name));
+        {
+            let mut lock = crate::blob_shared::acquire(&dir, options.lock_wait)?;
+            if !crate::blob_shared::locks_hold(&dir)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the file system's locks do not keep a second handle out, which shared writers need",
+                ));
+            }
+            let record = check_open(&dir, &wal_path, &name, recorded_wal(&dir)?.as_deref())?;
+            {
+                let wal = BlobWal::open_with_policy(&wal_path, config.sync_policy)?;
+                wal.recover()?;
+            }
+            move_earlier_file(&dir, &name)?;
+            if record == Record::Write {
+                lock.record(&name)?;
+            }
+            if read_lease(&dir)?.is_none() {
+                write_lease(
+                    &dir,
+                    Lease {
+                        generation: 0,
+                        epoch: 0,
+                    },
+                )?;
+            }
+        }
+        let store = Self {
+            wal_flush_threshold_bytes: config.wal_flush_threshold_bytes,
+            max_value: ValueLimit(config.max_value_bytes),
+            shared: Some(Arc::new(Shared {
+                dir,
+                wal_path,
+                wal_name: name,
+                wait: options.lock_wait,
+                sync_policy: config.sync_policy,
+                slot: parking_lot::ReentrantMutex::new(std::cell::RefCell::new(
+                    crate::blob_shared::Slot::default(),
+                )),
+                view: parking_lot::Mutex::new(crate::blob_shared::View::default()),
+            })),
+            ..Self::default()
+        };
+        store.shared_sync()?;
+        Ok(store)
+    }
+
+    /// The generation in `blob.lease`: raised once by every lease that wrote, by any handle of any process.
+    ///
+    /// # Errors
+    /// `InvalidInput` for a store not opened with [`Self::open_shared`]; read errors.
+    #[cfg(feature = "fs")]
+    pub fn lease_generation(&self) -> io::Result<u64> {
+        let shared = self.shared.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the store was not opened shared",
+            )
+        })?;
+        Ok(read_lease(&shared.dir)?.map_or(0, |lease| lease.generation))
+    }
+
+    /// Bring this handle's view up to the store's files: under the lease, read the WAL records the other
+    /// handles wrote since this handle's last operation, or every file again after a flush.
+    #[cfg(feature = "fs")]
+    fn shared_sync(&self) -> io::Result<()> {
+        let Some(shared) = &self.shared else {
+            return Ok(());
+        };
+        let _lease = shared.lease()?;
+        self.shared_refresh(shared)
+    }
+
+    /// The caller holds the lease.
+    #[cfg(feature = "fs")]
+    fn shared_refresh(&self, shared: &Shared) -> io::Result<()> {
+        let lease = read_lease(&shared.dir)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "blob.lease is missing"))?;
+        let records = crate::blob_wal::read_existing(&shared.wal_path)?
+            .ok_or_else(|| io::Error::other("the WAL changed while the lease was held"))?;
+        let mut view = shared.view.lock();
+        let mut memtable = self.memtable.write();
+        if view.epoch != Some(lease.epoch) || records.len() < view.applied {
+            let mut fresh = BTreeMap::new();
+            for path in source_files(&shared.dir, &shared.wal_name)? {
+                if let Some(sst) = BlobSstable::open(&path)? {
+                    fresh.extend(sst.into_records());
+                }
+            }
+            *memtable = fresh;
+            view.applied = 0;
+        }
+        let total = records.len();
+        for record in records.into_iter().skip(view.applied) {
+            match record {
+                WalRecord::Put(key, value) => {
+                    memtable.insert(key, value);
+                }
+                WalRecord::Delete(key) => {
+                    memtable.insert(key, BlobValue::Tombstone);
+                }
+            }
+        }
+        view.applied = total;
+        view.epoch = Some(lease.epoch);
+        Ok(())
+    }
+
+    /// One write of a shared handle: under the lease, catch up, append `ops` as one record stamped with the
+    /// lease's generation, apply them, and flush when the WAL passed its threshold.
+    #[cfg(feature = "fs")]
+    fn shared_write(&self, shared: &Shared, ops: Vec<(Vec<u8>, BlobValue)>) -> io::Result<()> {
+        if ops.is_empty() {
+            return Ok(());
+        }
+        let lease = shared.lease()?;
+        self.shared_refresh(shared)?;
+        let generation = lease.generation()?;
+        let size = {
+            let wal = BlobWal::open_with_policy(&shared.wal_path, shared.sync_policy)?;
+            // a writer killed inside its lease may have left part of a record: cut it before appending
+            wal.recover()?;
+            let refs: Vec<(&[u8], &BlobValue)> =
+                ops.iter().map(|(k, v)| (k.as_slice(), v)).collect();
+            wal.append_fenced_batch(generation, &refs)?;
+            wal.size_on_disk()?
+        };
+        {
+            let n = ops.len();
+            let mut memtable = self.memtable.write();
+            for (key, value) in ops {
+                memtable.insert(key, value);
+            }
+            shared.view.lock().applied += n;
+        }
+        if size >= self.wal_flush_threshold_bytes {
+            self.shared_flush(shared, &lease)?;
+        }
+        Ok(())
+    }
+
+    /// Write every live entry into one new `SSTable`, remove the others, empty the WAL and raise the epoch.
+    /// The caller holds the lease and has refreshed. The new file is the newest, so a crash before the others
+    /// are removed or the WAL emptied reads the same entries.
+    #[cfg(feature = "fs")]
+    fn shared_flush(&self, shared: &Shared, lease: &LeaseGuard<'_>) -> io::Result<()> {
+        let generation = lease.generation()?;
+        let dir = &shared.dir;
+        let next = max_sstable_seq(dir)?.map_or(1, |s| s.saturating_add(1));
+        let path = dir.join(sstable_filename_for_seq(next));
+        {
+            let mut memtable = self.memtable.write();
+            memtable.retain(|_, value| !matches!(value, BlobValue::Tombstone));
+            BlobSstable::write_from_iter(&path, memtable.iter().map(|(k, v)| (k.as_slice(), v)))?;
+        }
+        for old in source_files(dir, &shared.wal_name)? {
+            if old != path {
+                StdDir.remove(&old)?;
+            }
+        }
+        StdDir.sync_parent(&path, "store-dir")?;
+        BlobWal::open_with_policy(&shared.wal_path, shared.sync_policy)?.truncate()?;
+        let epoch = read_lease(dir)?.map_or(0, |l| l.epoch).saturating_add(1);
+        write_lease(dir, Lease { generation, epoch })?;
+        let mut view = shared.view.lock();
+        view.epoch = Some(epoch);
+        view.applied = 0;
+        Ok(())
     }
 
     /// Force a durable fsync of the WAL and, if the WAL has grown past
@@ -700,6 +921,15 @@ impl BlobStorage {
         // variant, which has no WAL to sync.
         #[cfg(not(feature = "fs"))]
         return Ok(());
+        #[cfg(feature = "fs")]
+        if let Some(shared) = &self.shared {
+            let lease = shared.lease()?;
+            self.shared_refresh(shared)?;
+            if StdDir.file_len(&shared.wal_path)? >= self.wal_flush_threshold_bytes {
+                self.shared_flush(shared, &lease)?;
+            }
+            return Ok(());
+        }
         #[cfg(feature = "fs")]
         let Some(wal) = &self.wal
         else {
@@ -742,6 +972,12 @@ impl BlobStorage {
     /// error.
     #[cfg(feature = "fs")]
     pub fn flush_to_sstable(&self) -> io::Result<()> {
+        if let Some(shared) = &self.shared {
+            let _gate = self.write_gate.write();
+            let lease = shared.lease()?;
+            self.shared_refresh(shared)?;
+            return self.shared_flush(shared, &lease);
+        }
         let Some(sstable_path) = &self.sstable_path else {
             return Ok(());
         };
@@ -868,6 +1104,10 @@ impl BlobStorage {
     /// would rename over or delete a file that is still mapped.
     #[cfg(feature = "fs")]
     pub fn compact_all_sstables(&self) -> io::Result<()> {
+        if self.shared.is_some() {
+            // every shared flush already leaves one `SSTable`
+            return self.flush_to_sstable();
+        }
         let Some(sstable_path) = &self.sstable_path else {
             return Ok(());
         };
@@ -997,6 +1237,10 @@ impl BlobStorage {
     /// Propagates the underlying directory scan error.
     #[cfg(feature = "fs")]
     pub fn sstable_count(&self) -> io::Result<usize> {
+        if let Some(shared) = &self.shared {
+            let _lease = shared.lease()?;
+            return Ok(enumerate_sstables(&shared.dir)?.len());
+        }
         // v0.2.0-alpha.7: the authoritative count is the loaded list.
         // We keep the same signature for callers still passing through
         // `io::Result` — an in-memory read cannot fail.
@@ -1011,6 +1255,9 @@ impl BlobStorage {
     /// Propagates the underlying WAL size query.
     #[cfg(feature = "fs")]
     pub fn wal_needs_flush(&self) -> io::Result<bool> {
+        if let Some(shared) = &self.shared {
+            return Ok(StdDir.file_len(&shared.wal_path)? >= self.wal_flush_threshold_bytes);
+        }
         let Some(wal) = &self.wal else {
             return Ok(false);
         };
@@ -1036,6 +1283,11 @@ impl BlobStorage {
             },
             None => BlobValue::Raw(value.to_vec()),
         };
+        #[cfg(feature = "fs")]
+        if let Some(shared) = &self.shared {
+            let _gate = self.write_gate.read();
+            return self.shared_write(shared, vec![(key.to_vec(), stored)]);
+        }
         {
             let _gate = self.write_gate.read();
             #[cfg(feature = "fs")]
@@ -1060,6 +1312,8 @@ impl BlobStorage {
     /// decompressed (which would indicate on-disk corruption once
     /// persistence lands in alpha-2).
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        #[cfg(feature = "fs")]
+        self.shared_sync()?;
         // Memtable first: it always carries the freshest state, including
         // tombstones that must mask any older SSTable value.
         {
@@ -1095,6 +1349,8 @@ impl BlobStorage {
     /// the heap grew out of sync with the source vector, which the
     /// implementation forbids by construction.
     pub fn scan_prefix(&self, prefix: &[u8]) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        #[cfg(feature = "fs")]
+        self.shared_sync()?;
         // v0.2.0-alpha.8: k-way merge across the memtable and every
         // mmap'd SSTable, priority-ordered so that the newest observation
         // of each key wins. The heap holds one `(key, source_index)`
@@ -1224,6 +1480,8 @@ impl BlobStorage {
         if range_is_empty(start, end) {
             return Ok(Vec::new());
         }
+        #[cfg(feature = "fs")]
+        self.shared_sync()?;
         // The same order as `scan_prefix` and compaction: the list first, then the memtable.
         #[cfg(feature = "fs")]
         let sstables = self.sstables.read();
@@ -1251,6 +1509,8 @@ impl BlobStorage {
     /// # Errors
     /// `InvalidData` when a stored value kind of a key under the prefix is unknown.
     pub fn count_prefix(&self, prefix: &[u8]) -> io::Result<usize> {
+        #[cfg(feature = "fs")]
+        self.shared_sync()?;
         let end = prefix_end(prefix);
         #[cfg(feature = "fs")]
         let sstables = self.sstables.read();
@@ -1280,6 +1540,8 @@ impl BlobStorage {
     /// Any error of `out`; `InvalidData` for a stored value that cannot be read;
     /// `InvalidInput` for a key longer than the format holds.
     pub fn snapshot_to(&self, out: &mut impl io::Write) -> io::Result<()> {
+        #[cfg(feature = "fs")]
+        self.shared_sync()?;
         #[cfg(feature = "fs")]
         let sstables = self.sstables.read();
         let memtable = self.memtable.read();
@@ -1349,6 +1611,16 @@ impl BlobStorage {
     ) -> Result<T, E> {
         let out = {
             let _gate = self.write_gate.write();
+            // a shared handle holds the lease across `f`, so what it read still holds when it writes
+            #[cfg(feature = "fs")]
+            let _lease = match &self.shared {
+                Some(shared) => {
+                    let lease = shared.lease()?;
+                    self.shared_refresh(shared)?;
+                    Some(lease)
+                }
+                None => None,
+            };
             f()
         };
         #[cfg(feature = "fs")]
@@ -1392,6 +1664,11 @@ impl BlobStorage {
             })
             .collect();
         #[cfg(feature = "fs")]
+        if let Some(shared) = &self.shared {
+            let ops = stored.into_iter().map(|(k, v)| (k.to_vec(), v)).collect();
+            return self.shared_write(shared, ops);
+        }
+        #[cfg(feature = "fs")]
         if let Some(wal) = &self.wal {
             let ops: Vec<(&[u8], &BlobValue)> = stored.iter().map(|(k, v)| (*k, v)).collect();
             wal.append_batch(&ops)?;
@@ -1421,6 +1698,11 @@ impl BlobStorage {
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
         #[cfg(feature = "fs")]
         self.check_writable()?;
+        #[cfg(feature = "fs")]
+        if let Some(shared) = &self.shared {
+            let _gate = self.write_gate.read();
+            return self.shared_write(shared, vec![(key.to_vec(), BlobValue::Tombstone)]);
+        }
         {
             let _gate = self.write_gate.read();
             #[cfg(feature = "fs")]
@@ -1445,6 +1727,10 @@ impl BlobStorage {
     /// cheaper heuristic (per-record counter) alongside compaction.
     #[cfg(feature = "fs")]
     fn maybe_auto_flush(&self) -> io::Result<()> {
+        // a shared write flushes inside its own lease
+        if self.shared.is_some() {
+            return Ok(());
+        }
         if self.wal_needs_flush()? {
             self.flush_to_sstable()?;
         }
@@ -1470,6 +1756,9 @@ impl BlobStorage {
         // Reuse the scan_prefix merge logic, but stay in-memory:
         // materialising values is what makes scan_prefix expensive, so
         // do the merge without decompressing.
+        // a shared handle that cannot take the lease counts what it last read
+        #[cfg(feature = "fs")]
+        let _ = self.shared_sync();
         let mut seen: BTreeMap<Vec<u8>, bool> = BTreeMap::new(); // key → is_live
         #[cfg(feature = "fs")]
         let sstables = self.sstables.read();

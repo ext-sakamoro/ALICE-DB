@@ -143,6 +143,9 @@ pub enum SyncPolicy {
 const RECORD_TYPE_PUT: u8 = 0x01;
 const RECORD_TYPE_DELETE: u8 = 0x02;
 const RECORD_TYPE_BATCH: u8 = 0x03;
+/// A batch written under a shared writer's lease: the value is the lease's
+/// generation (u64 LE) followed by a batch body
+const RECORD_TYPE_FENCED_BATCH: u8 = 0x04;
 
 /// Value kind tag inside a Put record.
 const VALUE_KIND_RAW: u8 = 0x00;
@@ -389,6 +392,36 @@ impl BlobWal {
                 "BlobWal::append_batch received an empty batch",
             ));
         }
+        let body = Self::batch_body(ops)?;
+        let frame = serialise_record(RECORD_TYPE_BATCH, &[], VALUE_KIND_RAW, &body)?;
+        self.write_frame(&frame)
+    }
+
+    /// [`Self::append_batch`] for a shared writer: the record carries the
+    /// generation of the lease it was written under, and replay refuses a
+    /// generation that is not above every earlier one in the file.
+    ///
+    /// # Errors
+    /// As [`Self::append_batch`].
+    pub fn append_fenced_batch(
+        &self,
+        generation: u64,
+        ops: &[(&[u8], &BlobValue)],
+    ) -> io::Result<()> {
+        if ops.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "BlobWal::append_fenced_batch received an empty batch",
+            ));
+        }
+        let mut value = generation.to_le_bytes().to_vec();
+        value.extend_from_slice(&Self::batch_body(ops)?);
+        let frame = serialise_record(RECORD_TYPE_FENCED_BATCH, &[], VALUE_KIND_RAW, &value)?;
+        self.write_frame(&frame)
+    }
+
+    /// The body of a batch record: the operation count, then each operation
+    fn batch_body(ops: &[(&[u8], &BlobValue)]) -> io::Result<Vec<u8>> {
         let too_long = |what| move |_| io::Error::new(io::ErrorKind::InvalidInput, what);
         let mut body = u32::try_from(ops.len())
             .map_err(too_long("batch has more than u32::MAX operations"))?
@@ -410,8 +443,7 @@ impl BlobWal {
             body.extend_from_slice(key);
             body.extend_from_slice(bytes);
         }
-        let frame = serialise_record(RECORD_TYPE_BATCH, &[], VALUE_KIND_RAW, &body)?;
-        self.write_frame(&frame)
+        Ok(body)
     }
 
     fn write_frame(&self, frame: &[u8]) -> io::Result<()> {
@@ -479,7 +511,8 @@ impl BlobWal {
         });
 
         let mut out = Vec::new();
-        while let ReadOutcome::Records(records) = read_one(&mut reader)? {
+        let mut fence = Fence::default();
+        while let ReadOutcome::Records(records) = read_one(&mut reader, &mut fence)? {
             out.extend(records);
         }
         Ok(out)
@@ -509,8 +542,9 @@ impl BlobWal {
         };
         let mut out = Vec::new();
         let mut good_end = 0_u64;
+        let mut fence = Fence::default();
         let tail = loop {
-            match read_one(&mut reader)? {
+            match read_one(&mut reader, &mut fence)? {
                 ReadOutcome::Records(records) => {
                     out.extend(records);
                     good_end = reader.pos;
@@ -708,7 +742,8 @@ fn stable_records(
     };
     let mut out = Vec::new();
     let mut good_end = 0;
-    while let ReadOutcome::Records(records) = read_one(&mut reader)? {
+    let mut fence = Fence::default();
+    while let ReadOutcome::Records(records) = read_one(&mut reader, &mut fence)? {
         out.extend(records);
         good_end = reader.pos;
     }
@@ -753,7 +788,31 @@ enum ReadOutcome {
     BadChecksum,
 }
 
-fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
+/// The generations of the fenced records read so far: each must be above the last
+#[derive(Default)]
+struct Fence(Option<u64>);
+
+impl Fence {
+    /// The checksum holds, so a generation at or below the last one is no torn
+    /// tail: a writer without the lease appended it, or the files of two stores
+    /// were mixed. Replaying it would interleave two writers' histories.
+    fn admit(&mut self, generation: u64) -> io::Result<()> {
+        if let Some(last) = self.0 {
+            if generation <= last {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "blob WAL record of lease generation {generation} after generation {last}"
+                    ),
+                ));
+            }
+        }
+        self.0 = Some(generation);
+        Ok(())
+    }
+}
+
+fn read_one<R: Read>(reader: &mut R, fence: &mut Fence) -> io::Result<ReadOutcome> {
     let mut header = [0_u8; HEADER_LEN];
     match read_exact_or_eof(reader, &mut header)? {
         ReadResult::Full => {}
@@ -799,6 +858,14 @@ fn read_one<R: Read>(reader: &mut R) -> io::Result<ReadOutcome> {
         RECORD_TYPE_BATCH => parse_batch(&value)
             .map(ReadOutcome::Records)
             .ok_or_else(|| unreadable("batch body")),
+        RECORD_TYPE_FENCED_BATCH => {
+            let (generation, body) = value
+                .split_first_chunk::<8>()
+                .ok_or_else(|| unreadable("fenced batch without its generation"))?;
+            let records = parse_batch(body).ok_or_else(|| unreadable("fenced batch body"))?;
+            fence.admit(u64::from_le_bytes(*generation))?;
+            Ok(ReadOutcome::Records(records))
+        }
         unknown => Err(unreadable(&format!("record type {unknown:#04x}"))),
     }
 }
@@ -923,6 +990,59 @@ mod tests {
 
     fn wal_path(dir: &TempDir) -> PathBuf {
         dir.path().join("blob.wal")
+    }
+
+    /// oracle (from the fencing rule): a record written under a lease carries its generation, and replay
+    /// accepts only generations above every earlier one in the file; a record at or below is refused as
+    /// `InvalidData` by every reader (replay, recover, the lock-free read), never mixed in, and recover leaves
+    /// the file as it was. Unfenced records (an exclusive writer's) do not count.
+    #[test]
+    fn a_fenced_record_whose_generation_does_not_rise_is_refused() {
+        let raw = |b: &[u8]| BlobValue::Raw(b.to_vec());
+        let rising = TempDir::new().unwrap();
+        {
+            let wal = BlobWal::open(wal_path(&rising)).unwrap();
+            wal.append_fenced_batch(5, &[(b"a", &raw(b"1"))]).unwrap();
+            wal.append_put(b"x", &raw(b"unfenced")).unwrap();
+            wal.append_fenced_batch(9, &[(b"b", &raw(b"2")), (b"c", &raw(b"3"))])
+                .unwrap();
+            assert_eq!(wal.replay().unwrap().len(), 4);
+        }
+        assert_eq!(read_existing(&wal_path(&rising)).unwrap().unwrap().len(), 4);
+
+        for (first, second) in [(7_u64, 6_u64), (7, 7)] {
+            let tmp = TempDir::new().unwrap();
+            let path = wal_path(&tmp);
+            {
+                let wal = BlobWal::open(&path).unwrap();
+                wal.append_fenced_batch(first, &[(b"a", &raw(b"1"))])
+                    .unwrap();
+                wal.append_fenced_batch(second, &[(b"b", &raw(b"2"))])
+                    .unwrap();
+            }
+            let before = std::fs::read(&path).unwrap();
+            let err = read_existing(&path).expect_err("generation does not rise");
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::InvalidData,
+                "{first} then {second}: {err}"
+            );
+            let wal = BlobWal::open(&path).unwrap();
+            assert_eq!(
+                wal.replay().expect_err("replay").kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert_eq!(
+                wal.recover().expect_err("recover").kind(),
+                io::ErrorKind::InvalidData
+            );
+            drop(wal);
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                before,
+                "recover changed the file"
+            );
+        }
     }
 
     #[test]

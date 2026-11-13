@@ -351,6 +351,29 @@ pub fn disarm_all_crash_points() {
     imp::disarm_all_crash_points();
 }
 
+#[cfg(feature = "open-file-audit")]
+thread_local! {
+    static LOCK_PROBE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make the shared-writer open's lock probe on the current thread report that the file system's locks do
+/// not hold between handles (as on a network file system that accepts a lock and enforces nothing), until
+/// set back. Thread-local like the crash points, so tests running beside it are not affected. Tests of the
+/// refusal path only.
+#[cfg(feature = "open-file-audit")]
+pub fn force_lock_probe_failure(on: bool) {
+    LOCK_PROBE_FAILS.with(|f| f.set(on));
+}
+
+/// Whether [`force_lock_probe_failure`] is on. Always `false` without `open-file-audit`.
+#[inline]
+pub(crate) fn lock_probe_forced_failure() -> bool {
+    #[cfg(feature = "open-file-audit")]
+    return LOCK_PROBE_FAILS.with(std::cell::Cell::get);
+    #[cfg(not(feature = "open-file-audit"))]
+    false
+}
+
 #[cfg(all(test, feature = "open-file-audit"))]
 mod tests {
     use super::{note_close, note_open};

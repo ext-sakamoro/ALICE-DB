@@ -11,7 +11,8 @@
 //! Child processes are this test binary run again with `ROLE_ENV` set to a role and `--exact` naming the
 //! `child_entry` test, so the same code runs on every OS of the CI matrix (Windows included).
 
-use alice_db::blob::{BlobStorage, BlobStorageConfig, FlushMode, SharedOptions};
+use alice_db::blob::{BlobStorage, BlobStorageConfig, SharedOptions};
+use alice_db::blob_sstable::FlushMode;
 use std::collections::BTreeSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};

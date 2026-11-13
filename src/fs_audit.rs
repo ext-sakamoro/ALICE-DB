@@ -324,7 +324,7 @@ pub fn is_open(path: &Path) -> bool {
 /// `compact:before_remove`, `compact:after_first_remove`,
 /// `compact:before_wal_truncate`, `wal_recover:before_cut`, `segment:before_write`, `segment:before_sync`,
 /// `segment:before_index`, `ts_wal:mid_frame`, `ts_wal:before_sync`, `replay:before_segment_sync`,
-/// `replay:before_wal_truncate`, `index:mid_write`, `index:before_sync`, `index:before_rename`,
+/// `replay:before_wal_truncate`, `shared_flush:before_wal_truncate`, `index:mid_write`, `index:before_sync`, `index:before_rename`,
 /// `index:before_dir_sync`.
 #[cfg(feature = "open-file-audit")]
 pub fn arm_crash_point(name: &str) {

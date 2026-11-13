@@ -712,8 +712,10 @@ impl BlobStorage {
     /// would stop another process's flush on Windows). That is the limit of shared mode: every process holds
     /// every key and stored value, plus about 110 bytes per entry, up to [`SharedOptions::max_bytes`] (default
     /// 256 MiB of keys and stored values); a write past it, and an open or a refresh that finds the store past
-    /// it, fail with [`SharedStoreTooLarge`] (kind `FileTooLarge`, nothing written). A store larger than that
-    /// belongs to one exclusive writer ([`Self::open`]). A flush writes every live entry into one new
+    /// it, fail with [`SharedStoreTooLarge`] (kind `FileTooLarge`, nothing written). The open and the reading
+    /// after a flush check after each `SSTable` file they load, so a handle that refuses a store has held at
+    /// most its limit plus one file (a shared flush leaves one file, the whole store). A store larger than
+    /// the limit belongs to one exclusive writer ([`Self::open`]). A flush writes every live entry into one new
     /// `SSTable`, removes the others and empties the WAL; the other handles read the new files at their next
     /// operation. `FlushMode` and the compaction count of `config` do not apply: every flush compacts.
     ///
@@ -826,6 +828,12 @@ impl BlobStorage {
             for path in source_files(&shared.dir, &shared.wal_name)? {
                 if let Some(sst) = BlobSstable::open(&path)? {
                     fresh.extend(sst.into_records());
+                    // stop at the first file that takes the store past the limit
+                    let bytes: u64 = fresh
+                        .iter()
+                        .map(|(k, v)| crate::blob_shared::entry_bytes(k, v))
+                        .sum();
+                    crate::blob_shared::check_size(bytes, shared.max_bytes)?;
                 }
             }
             view.bytes = fresh
@@ -877,7 +885,7 @@ impl BlobStorage {
             })
         };
         crate::blob_shared::check_size(projected, shared.max_bytes)?;
-        let generation = lease.generation()?;
+        let generation = lease.next_generation()?;
         let size = {
             let wal = BlobWal::open_with_policy(&shared.wal_path, shared.sync_policy)?;
             // a writer killed inside its lease may have left part of a record: cut it before appending
@@ -927,9 +935,14 @@ impl BlobStorage {
             }
         }
         StdDir.sync_parent(&path, "store-dir")?;
-        BlobWal::open_with_policy(&shared.wal_path, shared.sync_policy)?.truncate()?;
+        // the epoch rises before the WAL is emptied: a crash between the two makes every handle read the new
+        // file and replay the old WAL on top of it (the same entries again); emptying first would leave a
+        // handle at the old epoch with nothing to read, and its next flush would remove the only file holding
+        // what it missed
         let epoch = read_lease(dir)?.map_or(0, |l| l.epoch).saturating_add(1);
         write_lease(dir, Lease { generation, epoch })?;
+        crate::fs_audit::crash_point("shared_flush:before_wal_truncate")?;
+        BlobWal::open_with_policy(&shared.wal_path, shared.sync_policy)?.truncate()?;
         let mut view = shared.view.lock();
         view.epoch = Some(epoch);
         view.applied = 0;

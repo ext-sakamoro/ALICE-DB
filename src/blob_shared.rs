@@ -314,6 +314,18 @@ impl LeaseGuard<'_> {
     }
 }
 
+impl LeaseGuard<'_> {
+    /// A generation for one more WAL record of this lease: raised in `blob.lease` every time, so two records
+    /// of one lease never carry the same generation (replay refuses a generation that does not rise).
+    ///
+    /// # Errors
+    /// As [`Self::generation`].
+    pub(crate) fn next_generation(&self) -> io::Result<u64> {
+        self.slot.borrow_mut().generation = None;
+        self.generation()
+    }
+}
+
 impl Drop for LeaseGuard<'_> {
     fn drop(&mut self) {
         let mut s = self.slot.borrow_mut();

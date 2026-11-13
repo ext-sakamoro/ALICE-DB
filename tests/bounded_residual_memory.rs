@@ -5,7 +5,7 @@
 //! within twice the limit plus a small constant, under both LZMA residual forms; a decoder that reserves the
 //! declared dictionary makes this red even though it still refuses. The allocator records the peak of live
 //! bytes; this file holds a single test so nothing else allocates while it measures. Fixture:
-//! tests/data/make_residual_bomb.py (liblzma).
+//! `tests/data/make_residual_bomb.py` (liblzma).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};

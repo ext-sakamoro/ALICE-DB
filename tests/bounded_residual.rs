@@ -4,7 +4,7 @@
 //! the decoder is given `4 * points` as its limit; a stream of exactly that length decodes back, one byte more
 //! is refused (never read as the legacy raw form), and a read of such a segment reports it as corrupt. The
 //! memory bound for a small stream that expands far past the limit is measured in
-//! tests/bounded_residual_memory.rs.
+//! `tests/bounded_residual_memory.rs`.
 
 use alice_db::segment::{
     compress_residual_xor, decompress_residual, residual_status, ResidualStatus,

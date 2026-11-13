@@ -234,9 +234,10 @@ impl ValueLimit {
             )
         };
         let out = zlib_decompress(bytes, len).map_err(|e| {
-            if e.get_ref()
-                .is_some_and(|i| i.is::<alice_core::compression::DecompressError>())
-            {
+            if e.get_ref().is_some_and(|i| {
+                i.downcast_ref::<alice_core::compression::DecompressError>()
+                    .is_some()
+            }) {
                 mismatch()
             } else {
                 e

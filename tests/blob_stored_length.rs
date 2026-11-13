@@ -4,7 +4,7 @@
 //! length, then the zlib stream) and reads back exactly; a record whose stated length is shorter or longer than
 //! what its stream decodes to is refused with `StoredLengthMismatch`, and one stating more than the store's limit
 //! with `ValueTooLarge` before anything is decoded; records written by 0.6 (kind 0x01, no length; fixture
-//! tests/data/blob_v06, written by alice-db 0.6.0) still read, and a flush rewrites them in the new form; a 0.6
+//! `tests/data/blob_v06`, written by alice-db 0.6.0) still read, and a flush rewrites them in the new form; a 0.6
 //! record that expands past the limit is refused at the limit.
 
 #![cfg(feature = "fs")]

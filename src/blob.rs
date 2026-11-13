@@ -39,9 +39,9 @@ use parking_lot::RwLock;
 #[cfg(feature = "fs")]
 use crate::blob_dir::{BlobDir, StdDir};
 #[cfg(feature = "fs")]
-pub use crate::blob_shared::SharedOptions;
-#[cfg(feature = "fs")]
 use crate::blob_shared::{read_lease, write_lease, Lease, LeaseGuard, Shared, LEASE_FILE};
+#[cfg(feature = "fs")]
+pub use crate::blob_shared::{SharedOptions, SharedStoreTooLarge};
 #[cfg(feature = "fs")]
 use crate::blob_sstable::{
     enumerate_sstables, max_sstable_seq, remove_stale_tmp_files, sstable_filename_for_seq,
@@ -708,8 +708,12 @@ impl BlobStorage {
     /// `TimedOut`. Every lease that writes raises the generation in `blob.lease` and stamps its record with
     /// it ([`Self::lease_generation`]).
     ///
-    /// The handle holds the store's live entries in memory and no file open or mapped between operations (a
-    /// mapping would stop another process's flush on Windows). A flush writes every live entry into one new
+    /// The handle holds the whole store in memory and no file open or mapped between operations (a mapping
+    /// would stop another process's flush on Windows). That is the limit of shared mode: every process holds
+    /// every key and stored value, plus about 110 bytes per entry, up to [`SharedOptions::max_bytes`] (default
+    /// 256 MiB of keys and stored values); a write past it, and an open or a refresh that finds the store past
+    /// it, fail with [`SharedStoreTooLarge`] (kind `FileTooLarge`, nothing written). A store larger than that
+    /// belongs to one exclusive writer ([`Self::open`]). A flush writes every live entry into one new
     /// `SSTable`, removes the others and empties the WAL; the other handles read the new files at their next
     /// operation. `FlushMode` and the compaction count of `config` do not apply: every flush compacts.
     ///
@@ -720,7 +724,8 @@ impl BlobStorage {
     ///
     /// # Errors
     /// `Unsupported` when the file system's locks do not keep a second handle out (nothing is written);
-    /// `TimedOut` past the wait; as [`Self::open`] otherwise.
+    /// `TimedOut` past the wait; `FileTooLarge` ([`SharedStoreTooLarge`]) past the memory limit; as
+    /// [`Self::open`] otherwise.
     #[cfg(feature = "fs")]
     pub fn open_shared(
         wal_path: impl AsRef<Path>,
@@ -768,6 +773,7 @@ impl BlobStorage {
                 wal_path,
                 wal_name: name,
                 wait: options.lock_wait,
+                max_bytes: options.max_bytes,
                 sync_policy: config.sync_policy,
                 slot: parking_lot::ReentrantMutex::new(std::cell::RefCell::new(
                     crate::blob_shared::Slot::default(),
@@ -822,23 +828,28 @@ impl BlobStorage {
                     fresh.extend(sst.into_records());
                 }
             }
+            view.bytes = fresh
+                .iter()
+                .map(|(k, v)| crate::blob_shared::entry_bytes(k, v))
+                .sum();
             *memtable = fresh;
             view.applied = 0;
         }
         let total = records.len();
         for record in records.into_iter().skip(view.applied) {
-            match record {
-                WalRecord::Put(key, value) => {
-                    memtable.insert(key, value);
-                }
-                WalRecord::Delete(key) => {
-                    memtable.insert(key, BlobValue::Tombstone);
-                }
+            let (key, value) = match record {
+                WalRecord::Put(key, value) => (key, value),
+                WalRecord::Delete(key) => (key, BlobValue::Tombstone),
+            };
+            view.bytes += crate::blob_shared::entry_bytes(&key, &value);
+            if let Some(old) = memtable.get(&key) {
+                view.bytes -= crate::blob_shared::entry_bytes(&key, old);
             }
+            memtable.insert(key, value);
         }
         view.applied = total;
         view.epoch = Some(lease.epoch);
-        Ok(())
+        crate::blob_shared::check_size(view.bytes, shared.max_bytes)
     }
 
     /// One write of a shared handle: under the lease, catch up, append `ops` as one record stamped with the
@@ -850,6 +861,22 @@ impl BlobStorage {
         }
         let lease = shared.lease()?;
         self.shared_refresh(shared)?;
+        // what the store would hold after this write, checked before anything is written
+        let projected = {
+            let view = shared.view.lock();
+            let memtable = self.memtable.read();
+            let mut after = BTreeMap::new();
+            for (key, value) in &ops {
+                after.insert(key.as_slice(), value);
+            }
+            after.iter().fold(view.bytes, |bytes, (key, value)| {
+                let old = memtable
+                    .get(*key)
+                    .map_or(0, |old| crate::blob_shared::entry_bytes(key, old));
+                bytes + crate::blob_shared::entry_bytes(key, value) - old
+            })
+        };
+        crate::blob_shared::check_size(projected, shared.max_bytes)?;
         let generation = lease.generation()?;
         let size = {
             let wal = BlobWal::open_with_policy(&shared.wal_path, shared.sync_policy)?;
@@ -866,7 +893,9 @@ impl BlobStorage {
             for (key, value) in ops {
                 memtable.insert(key, value);
             }
-            shared.view.lock().applied += n;
+            let mut view = shared.view.lock();
+            view.applied += n;
+            view.bytes = projected;
         }
         if size >= self.wal_flush_threshold_bytes {
             self.shared_flush(shared, &lease)?;
@@ -886,6 +915,10 @@ impl BlobStorage {
         {
             let mut memtable = self.memtable.write();
             memtable.retain(|_, value| !matches!(value, BlobValue::Tombstone));
+            shared.view.lock().bytes = memtable
+                .iter()
+                .map(|(k, v)| crate::blob_shared::entry_bytes(k, v))
+                .sum();
             BlobSstable::write_from_iter(&path, memtable.iter().map(|(k, v)| (k.as_slice(), v)))?;
         }
         for old in source_files(dir, &shared.wal_name)? {

@@ -452,3 +452,48 @@ fn a_key_deleted_and_flushed_does_not_come_back() {
         "every flush leaves one SSTable"
     );
 }
+
+/// A shared handle holds the whole store in memory, so it holds at most `SharedOptions::max_bytes` of keys and
+/// stored values: a write that would take the store past it is refused with a typed error and nothing is
+/// written, and a handle whose limit is below what the store already holds refuses to open it.
+#[test]
+fn a_store_past_the_handles_memory_limit_is_refused_with_a_typed_error() {
+    use alice_db::blob::SharedStoreTooLarge;
+    let tmp = TempDir::new().unwrap();
+    let wal = tmp.path().join("blob.wal");
+    let small = SharedOptions::default().with_max_bytes(4096);
+    let store = BlobStorage::open_shared(&wal, config(), small).unwrap();
+    // incompressible values (xorshift), so the stored bytes are the value's bytes: 3 × 1301 fit in 4096, 4 do not
+    let value = |seed: u64| -> Vec<u8> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..1300)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()[0]
+            })
+            .collect()
+    };
+    store.put(b"a", &value(1)).unwrap();
+    store.put(b"b", &value(2)).unwrap();
+    store.put(b"c", &value(3)).unwrap();
+    let err = store.put(b"d", &value(4)).expect_err("past 4096 bytes");
+    assert_eq!(err.kind(), ErrorKind::FileTooLarge, "{err}");
+    let too_large = err
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<SharedStoreTooLarge>())
+        .expect("typed error");
+    assert_eq!(too_large.limit, 4096);
+    assert!(too_large.bytes > 4096, "{too_large:?}");
+    // nothing of the refused write is in the store
+    let other = open(&wal);
+    assert_eq!(other.get(b"d").unwrap(), None);
+    // replacing a value with one of the same size stays within the limit
+    store.put(b"a", &value(9)).unwrap();
+    // a handle whose limit is below what the store holds does not open it
+    let tiny = SharedOptions::default().with_max_bytes(1024);
+    let err = BlobStorage::open_shared(&wal, config(), tiny)
+        .expect_err("the store holds more than 1024 bytes");
+    assert_eq!(err.kind(), ErrorKind::FileTooLarge, "{err}");
+}

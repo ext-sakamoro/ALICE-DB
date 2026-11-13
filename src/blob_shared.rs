@@ -48,12 +48,59 @@ const LEASE_LEN: usize = 8 + 8 + 8 + 4;
 pub struct SharedOptions {
     /// How long one operation waits for another process's lease before it is `TimedOut` (default 5 s)
     pub lock_wait: Duration,
+    /// The most a shared handle holds in memory, counted as the bytes of every key and stored value (a
+    /// compressed value counts its stored bytes), default 256 MiB. A shared handle holds the whole store in
+    /// memory, plus about 110 bytes per entry for the map (measured: 10 000 and 50 000 entries of 24-byte keys
+    /// and 100-byte values held 2.3 MB and 11.6 MB). A write that would take the store past it, and an open
+    /// or a refresh that finds the store past it, fail with [`SharedStoreTooLarge`].
+    pub max_bytes: u64,
+}
+
+/// A shared handle would hold more than its [`SharedOptions::max_bytes`]: carried inside an `io::Error` of kind
+/// `FileTooLarge`. A refused write wrote nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SharedStoreTooLarge {
+    /// The bytes of keys and stored values the store would hold
+    pub bytes: u64,
+    /// The handle's limit
+    pub limit: u64,
+}
+
+impl std::fmt::Display for SharedStoreTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the store would hold {} bytes of keys and values, past this shared handle's limit of {}",
+            self.bytes, self.limit
+        )
+    }
+}
+
+impl std::error::Error for SharedStoreTooLarge {}
+
+/// `SharedStoreTooLarge` as an `io::Error`, or nothing when `bytes` is within `limit`.
+pub(crate) fn check_size(bytes: u64, limit: u64) -> io::Result<()> {
+    if bytes > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            SharedStoreTooLarge { bytes, limit },
+        ));
+    }
+    Ok(())
+}
+
+/// What one entry counts towards [`SharedOptions::max_bytes`]: its key and its stored value.
+pub(crate) fn entry_bytes(key: &[u8], value: &crate::blob::BlobValue) -> u64 {
+    let stored = value.stored().map_or(0, |(_, bytes)| bytes.len());
+    (key.len() + stored) as u64
 }
 
 impl Default for SharedOptions {
     fn default() -> Self {
         Self {
             lock_wait: Duration::from_secs(5),
+            max_bytes: 256 << 20,
         }
     }
 }
@@ -63,6 +110,13 @@ impl SharedOptions {
     #[must_use]
     pub const fn with_lock_wait(mut self, lock_wait: Duration) -> Self {
         self.lock_wait = lock_wait;
+        self
+    }
+
+    /// Set [`Self::max_bytes`].
+    #[must_use]
+    pub const fn with_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_bytes = max_bytes;
         self
     }
 }
@@ -174,6 +228,8 @@ pub(crate) fn locks_hold(dir: &Path) -> io::Result<bool> {
 pub(crate) struct View {
     pub(crate) epoch: Option<u64>,
     pub(crate) applied: usize,
+    /// The bytes of keys and stored values the handle holds (see [`entry_bytes`])
+    pub(crate) bytes: u64,
 }
 
 /// The lease held by the current thread of one handle: the lock, how deep the nested leases are, and the
@@ -191,6 +247,7 @@ pub(crate) struct Shared {
     pub(crate) wal_path: PathBuf,
     pub(crate) wal_name: String,
     pub(crate) wait: Duration,
+    pub(crate) max_bytes: u64,
     pub(crate) sync_policy: crate::blob_wal::SyncPolicy,
     pub(crate) slot: parking_lot::ReentrantMutex<RefCell<Slot>>,
     pub(crate) view: parking_lot::Mutex<View>,

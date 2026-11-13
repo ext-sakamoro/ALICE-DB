@@ -497,3 +497,35 @@ fn a_store_past_the_handles_memory_limit_is_refused_with_a_typed_error() {
         .expect_err("the store holds more than 1024 bytes");
     assert_eq!(err.kind(), ErrorKind::FileTooLarge, "{err}");
 }
+
+/// A flush that stops between raising the epoch and emptying the WAL (a crash point there) leaves every other
+/// handle reading the other writer's records: a handle that had applied nothing of the WAL still sees them,
+/// and its own next flush keeps them. (Emptying the WAL before raising the epoch would leave that handle at
+/// the old epoch with nothing to read, and its next flush would remove the only file that holds them.)
+#[test]
+fn a_flush_cut_between_its_epoch_and_its_wal_truncate_loses_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let wal = tmp.path().join("blob.wal");
+    // `a` opens the empty store: epoch 0, nothing of the WAL applied
+    let a = open(&wal);
+    let b = open(&wal);
+    for batch in 0..5 {
+        write_batch(&b, "b", batch);
+    }
+    alice_db::fs_audit::arm_crash_point("shared_flush:before_wal_truncate");
+    let cut = b.flush_to_sstable();
+    alice_db::fs_audit::disarm_all_crash_points();
+    assert!(cut.is_err(), "the crash point fired");
+    assert_eq!(
+        batches_of(&a, "b", 5),
+        (0..5).collect(),
+        "a reads b's batches after b's cut flush"
+    );
+    a.flush_to_sstable().unwrap();
+    drop((a, b));
+    assert_eq!(
+        batches_of(&open(&wal), "b", 5),
+        (0..5).collect(),
+        "b's batches survive a's flush"
+    );
+}

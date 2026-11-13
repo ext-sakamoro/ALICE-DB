@@ -131,6 +131,26 @@ const CURRENT_VERSION: u32 = FORMAT_VERSION_V5;
 /// bytes holds at most `n / MIN_RECORD_LEN` records, so a reader reserves no
 /// more than that whatever the header claims.
 const MIN_RECORD_LEN: usize = 9 + 4;
+
+/// The `(key_end, payload_end, crc_end)` of the record at `cursor` with the
+/// given lengths, or `None` when the sum overflows `usize`. The lengths are
+/// read before the record's CRC can vouch for them, and on a 32-bit `usize`
+/// two `u32` lengths alone can wrap the sum below the section length.
+fn record_bounds(cursor: usize, key_len: u32, value_len: u32) -> Option<(usize, usize, usize)> {
+    let key_end = cursor
+        .checked_add(9)?
+        .checked_add(usize::try_from(key_len).ok()?)?;
+    let payload_end = key_end.checked_add(usize::try_from(value_len).ok()?)?;
+    let crc_end = payload_end.checked_add(4)?;
+    Some((key_end, payload_end, crc_end))
+}
+
+fn record_overflow() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "sstable record lengths overflow the address space",
+    )
+}
 /// Bytes occupied by the fixed-size header.
 const HEADER_LEN: usize = 24;
 /// Bytes occupied by the v1 footer: `records_size (u64) + magic (8)`.
@@ -1060,9 +1080,8 @@ fn build_offset_index(
         ]);
         let value_kind = records_slice[cursor + 8];
 
-        let key_end = cursor + 9 + key_len as usize;
-        let payload_end = key_end + value_len as usize;
-        let crc_end = payload_end + 4;
+        let (key_end, payload_end, crc_end) =
+            record_bounds(cursor, key_len, value_len).ok_or_else(record_overflow)?;
         if crc_end > records_slice.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1263,17 +1282,17 @@ fn parse_records(bytes: &[u8], expected_count: u64) -> io::Result<Vec<(Vec<u8>, 
             bytes[cursor + 1],
             bytes[cursor + 2],
             bytes[cursor + 3],
-        ]) as usize;
+        ]);
         let value_len = u32::from_le_bytes([
             bytes[cursor + 4],
             bytes[cursor + 5],
             bytes[cursor + 6],
             bytes[cursor + 7],
-        ]) as usize;
+        ]);
         let value_kind = bytes[cursor + 8];
 
-        let payload_end = cursor + 9 + key_len + value_len;
-        let crc_end = payload_end + 4;
+        let (key_end, payload_end, crc_end) =
+            record_bounds(cursor, key_len, value_len).ok_or_else(record_overflow)?;
         if crc_end > bytes.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1296,8 +1315,8 @@ fn parse_records(bytes: &[u8], expected_count: u64) -> io::Result<Vec<(Vec<u8>, 
             ));
         }
 
-        let key = bytes[cursor + 9..cursor + 9 + key_len].to_vec();
-        let value_bytes = bytes[cursor + 9 + key_len..payload_end].to_vec();
+        let key = bytes[cursor + 9..key_end].to_vec();
+        let value_bytes = bytes[key_end..payload_end].to_vec();
         let value = match value_kind {
             VALUE_KIND_RAW | VALUE_KIND_COMPRESSED | crate::blob::KIND_COMPRESSED_SIZED => {
                 BlobValue::from_stored(value_kind, value_bytes).ok_or_else(|| {
@@ -1672,6 +1691,52 @@ mod tests {
         // The count that matches the body still reads.
         write_v1_with_count(&path, 1);
         assert_eq!(BlobSstable::open(&path).unwrap().unwrap().len(), 1);
+    }
+
+    /// A record's lengths come from the file before its CRC can vouch for
+    /// them, so their sum is checked: where the record's end (the cursor, the
+    /// 9-byte header, both lengths and the 4-byte CRC) would wrap, the bounds
+    /// are refused instead of wrapping past the slice check. On a 32-bit
+    /// `usize` two `u32::MAX` lengths already wrap; here the cursor sits near
+    /// `usize::MAX` to take the same path on any target.
+    #[test]
+    fn record_bounds_refuse_a_wrapping_length_sum() {
+        assert_eq!(record_bounds(0, 1, 2), Some((10, 12, 16)));
+        assert_eq!(record_bounds(0, 0, 0), Some((9, 9, 13)));
+        let near = usize::MAX - 20;
+        assert_eq!(
+            record_bounds(near, 0, 0),
+            Some((near + 9, near + 9, near + 13))
+        );
+        assert_eq!(record_bounds(near, u32::MAX, u32::MAX), None);
+        // the key fits, the value's length wraps the sum
+        assert_eq!(record_bounds(usize::MAX - 13, 0, u32::MAX), None);
+        assert_eq!(record_bounds(usize::MAX - 8, 0, 0), None);
+        assert_eq!(record_bounds(usize::MAX - 12, 0, 0), None);
+        assert_eq!(
+            record_bounds(near, 8, 0),
+            None,
+            "the CRC's 4 bytes count too"
+        );
+    }
+
+    /// Both record readers refuse a record whose lengths run past the
+    /// section as corrupt (typed error), not by panicking.
+    #[test]
+    fn a_record_whose_lengths_run_past_the_section_is_corrupt() {
+        let tmp = TempDir::new().unwrap();
+        let path = sst_path(&tmp);
+        write_v1_with_count(&path, 1);
+        let mut bytes = std::fs::read(&path).unwrap();
+        // key_len and value_len of the one record = u32::MAX
+        bytes[HEADER_LEN..HEADER_LEN + 8].copy_from_slice(&[0xFF; 8]);
+        std::fs::write(&path, &bytes).unwrap();
+        for err in [
+            BlobSstable::open(&path).expect_err("open refuses"),
+            LoadedSstable::open_mmap(&path).expect_err("open_mmap refuses"),
+        ] {
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        }
     }
 
     /// The version error names the range this build reads (1 to 5).

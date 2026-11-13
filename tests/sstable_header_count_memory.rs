@@ -7,7 +7,7 @@
 //! must fail as corrupt with a peak live allocation far below the claim. A reader that reserves the claimed count
 //! asks the allocator for terabytes (recorded here even where the OS overcommits, an abort where it does not).
 //! The allocator records the peak of live bytes; this file holds a single test so nothing else allocates while it
-//! measures.
+//! measures. The same holds for a stored segment, whose stream states its byte length before the bytes.
 
 #![cfg(feature = "fs")]
 
@@ -16,6 +16,7 @@ use std::io::ErrorKind;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 use alice_db::blob_sstable::BlobSstable;
+use alice_db::DataSegment;
 
 struct Peak;
 
@@ -87,6 +88,21 @@ fn a_claimed_record_count_is_not_reserved() {
     assert!(
         peak < BOUND,
         "opening a <100-byte file reserved {peak} bytes (bound {BOUND})"
+    );
+
+    // A stored segment states its length (u64) before its bytes: a stream claiming 2^62 bytes with none behind
+    // it is truncated, and reading it reserves no more than what arrived.
+    let mut claim = Vec::from((1_u64 << 62).to_le_bytes());
+    claim.extend_from_slice(b"short");
+    let before = LIVE.load(Relaxed);
+    PEAK.store(before, Relaxed);
+    let err =
+        DataSegment::read_from(&mut claim.as_slice()).expect_err("the claimed length is refused");
+    let peak = PEAK.load(Relaxed) - before;
+    assert_eq!(err.kind(), ErrorKind::UnexpectedEof, "{err}");
+    assert!(
+        peak < BOUND,
+        "reading a 13-byte segment stream reserved {peak} bytes (bound {BOUND})"
     );
 
     // Control: the same file with the true count opens.

@@ -819,10 +819,19 @@ impl DataSegment {
     pub fn read_from<R: Read>(reader: &mut R) -> io::Result<Self> {
         let mut len_bytes = [0u8; 8];
         reader.read_exact(&mut len_bytes)?;
-        let len = u64::from_le_bytes(len_bytes) as usize;
+        let len = u64::from_le_bytes(len_bytes);
 
-        let mut data = vec![0u8; len];
-        reader.read_exact(&mut data)?;
+        // The length comes before the bytes it describes: grow with what
+        // arrives instead of reserving the claim (a stream claiming 2^62 bytes
+        // would otherwise abort the process on allocation).
+        let mut data = Vec::new();
+        let read = reader.by_ref().take(len).read_to_end(&mut data)?;
+        if u64::try_from(read) != Ok(len) {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("segment stream states {len} bytes but holds {read}"),
+            ));
+        }
         Self::from_bytes(&data)
     }
 

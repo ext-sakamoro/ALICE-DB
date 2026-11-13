@@ -72,6 +72,8 @@ python3 scripts/test_run_tests.py
 python3 scripts/test_fuzz_reach.py
 python3 scripts/test_lock_sources_check.py
 python3 scripts/lock_sources_check.py
+python3 scripts/test_upstream_previous_ids_check.py
+python3 scripts/upstream_previous_ids_check.py
 python3 scripts/test_tracked_binaries.py
 python3 scripts/tracked_binaries.py
 

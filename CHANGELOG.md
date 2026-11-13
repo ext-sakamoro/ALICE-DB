@@ -9,6 +9,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - 依存 `rkyv` を 0.7 から 0.8.18 に上げた (RUSTSEC-2026-0235: 0.7 の archive の検査は共有 pointer の metadata を見ず、細工した archive で検査つきの読み出しが範囲外を読む 0.7 系は修正されない) この crate の保存型は共有 pointer を持たないので、この欠陥に当たる archive は作れないが、0.7 は Cargo.lock から無くなった
 
 ### Added
+- CI: 他の crate の `PREVIOUS_*_SEMANTICS_IDS` は一覧全体としてだけ使える (`contains` / `len` / `is_empty`、全体を回す iterator や for、引数として丸ごと渡す) とし、添字・slice のパターン・`.first` / `next` / `take` などを拒む `scripts/upstream_previous_ids_check.py` と試験を足した (ALICE-Edge と同じ中身の共有 file) 上流は major で一覧を空にする 走査した .rs が 0 件なら失敗 (ci.yml と preflight)
 - 試験の open-file audit: `fs_audit::arm_crash_point_any_thread` / `is_armed_any_thread` (どの thread が先に当たっても発火する crash point、background flush の失敗の試験用) と crash point `segment:before_write` / `segment:before_sync` / `segment:before_index`
 - CI と preflight: `scripts/lock_sibling_agreement.py` (試験 `scripts/test_lock_sibling_agreement.py`) が、追跡している全ての Cargo.lock (root、fuzz/、tools/) で alice-* の各 crate が同じ source に解決しているかを比べる 根の lock だけ alice-zip を上げ fuzz/Cargo.lock が古いままだった時に fuzz の build が CI でだけ落ちた 比較 0 件で fail
 - `segment::MAX_SEGMENT_POINTS`: 1 つの segment が持てる点の数の上限 = 2^30 / 24 = 44 739 242 (segment を丸ごと読む時に 1 点が使う 24 bytes (再生成した `f32`、その正規化した写し、範囲の結果の `(i64, f32)`) で 1 GiB に収まる数) `memtable_capacity` がこれを超える store は `InvalidInput` で開かない

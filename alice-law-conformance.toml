@@ -199,6 +199,7 @@ evidence = [
     ".github/public-text-pin (rev 779fa443f95b..., sha256 e439fdd7495e...)",
     "scripts/test_public_text.py",
     ".public-text.toml",
+    "the public text check runs in CI: `.github/workflows/public-text.yml#- name: Public text (tree at HEAD, then the pushed commits)` (scripts/public_text.sh, ALICE-Law's checker at .github/public-text-pin) after its tests `.github/workflows/public-text.yml#- name: Tests of scripts/public_text.sh (no network)`",
 ]
 mutant = "a sentence naming a development-process role added to CONTRIBUTING.md in a local commit, then scripts/public_text.sh run against its parent: a finding naming CONTRIBUTING.md and the word (agent process), `public text: 1 findings in 142 files at HEAD`, exit 1; commit discarded. The unmodified tree reports `public text: 0 findings in 142 files at HEAD`"
 since = "f1847df"
@@ -227,6 +228,7 @@ evidence = [
     ".github/workflows/ci.yml (docs-lint job on ubuntu, macOS and Windows: the static guard and both test files)",
     ".github/workflows/release-profile.yml (ubuntu and macOS: the dynamic check for the default, all-features and no-default feature sets, in the shipped release profile)",
     "tests/float_environment.rs round_to_nearest_even and subnormals_are_not_flushed (named as `float_environment=2` in every run_tests.sh step of ci.yml's test job on the four OS, and in release-profile.yml's release-profile step: the step fails unless both pass, so an #[ignore], a #[cfg] that drops one, or a rename is red)",
+    "where it runs: the static guard `.github/workflows/ci.yml#python scripts/build_config_guard.py`, the dynamic check tests `.github/workflows/ci.yml#- name: Effective rustc flags check (tests)`, and the float environment (tests/float_environment.rs through scripts/run_tests.sh) in `.github/workflows/ci.yml#- name: Test (default = file backend)`",
 ]
 mutant = "measured 2026-10-16, each reverted: an #[ignore] on subnormals_are_not_flushed makes `scripts/run_tests.sh float_environment=2 -- cargo test --release --test float_environment` exit 1 with `float_environment passed 1 test(s), needs at least 2` (the same run with the bare name exits 0); ci.yml's env RUSTFLAGS (`.github/workflows/ci.yml#RUSTFLAGS: \"-Dwarnings\"`) set to `-C target-cpu=native` makes scripts/build_config_guard.py exit 1 naming that ci.yml line with `target-cpu-native: target-cpu=native`; RUSTFLAGS=$'-C target-cpu=nat\\x69ve', RUSTFLAGS=\"$(cat flags.txt)\" and a .cargo/config.toml rustflags entry spelled with a \\u0074 escape each make scripts/build_flags_check.py exit 1 with `alice_db: target-cpu-native: target-cpu=native` (87 of 106 rustc command lines); setting FPCR.FZ (flush-to-zero) at the start of both tests in tests/float_environment.rs fails subnormals_are_not_flushed, and setting FPCR.RMode to round-toward-plus-infinity fails round_to_nearest_even (aarch64, macOS)"
 since = ""

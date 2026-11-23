@@ -298,16 +298,16 @@ scripts/preflight.sh --quick    # static checks, clippy, wasm build, docs and `c
 | [ALICE-Crypto](https://github.com/ext-sakamoro/ALICE-Crypto) | 保存時暗号化 (`crypto` feature) |
 | [ALICE-Edge](https://github.com/ext-sakamoro/ALICE-Edge) | 組込み機器でのモデル当てはめ |
 
-<!-- law-integration:begin law=ffcc3d5a9395f4620aec29c5244fc2c528122fb0 -->
+<!-- law-integration:begin law=4bb6b5045e12169f6a7676ee606868b39332b6bc -->
 ## ALICE-Law との統合
 
-ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `ffcc3d5a9395` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
+ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `4bb6b5045e12` とこの repository の `alice-law-conformance.toml` から生成する 手で編集しない
 
 | | |
 |---|---|
-| release train | alice-db 0.5.1 (published)、Law への依存: あり |
-| 算術 | main branch の alice-det-math 0.6.1、算術の識別子 `6fc214e924c53557f33775df51f1f8dfe2f246d67a9e493d6fb5837d999022f2` (release train の alice-det-math は 0.5.1 で、測った版と違う) この crate の要求は `alice-det-math = "0.6"` |
-| end to end 検査 | 対象 (`alice-db` 0.6、main branch から)、値の digest `66b99010e871b2bc099ad5a4dd0f7c34cc5d6731f1c2a0459c0dd58284b081d7`、aarch64 と x86_64 で同じ |
+| release train | alice-db 0.7.2 (main 9d567a61a650)、Law への依存: あり |
+| 算術 | main branch の alice-det-math 0.6.1、算術の識別子 `6fc214e924c53557f33775df51f1f8dfe2f246d67a9e493d6fb5837d999022f2` この crate の要求は `alice-det-math = "0.6"` |
+| end to end 検査 | 対象 (`alice-db` 0.7、main branch から)、値の digest `d1a37d5f3bf2590657f8507277f1661ea9f7ea27bb0b492e7952add280f2a414`、aarch64 と x86_64 で同じ |
 
 ### 適合 (G1-G14)
 
@@ -323,7 +323,7 @@ ALICE-Law の `scripts/gen-law-readme-block.py` が ALICE-Law `ffcc3d5a9395` と
 | G8 persisted-semantics-id | 適合 | every durable form that carries a value computed under an arithmetic carries that arithmetic's identifier: lossless segment residuals since 0.3.0 (the … |
 | G9 persisted-meaning-change-is-major | 適合 | the audit covers the identifier this crate persists and finds no violation, and tests/identifier_history.rs reads a committed store stamped with each earlier … |
 | G10 no-run-varying-artifacts | 適合 | no ambient clock or OS-entropy read is known in a Law-bearing path: `python3 scripts/entropy_guard.py` reports `24 files, 10 patterns, 0 problems` … |
-| G11 gate-self-tests | 適合 | clause (c) passes per crate: every copy this crate carries is at the target ALICE-Law ffcc3d5a's shared-files table records (scripts/shared_files.sh: 0 … |
+| G11 gate-self-tests | 適合 | clause (c) passes per crate: every copy this crate carries is at the target ALICE-Law 4bb6b504's shared-files table records (scripts/shared_files.sh: 0 … |
 | G12 public-repo-text-rules | 適合 | the exemptions in .public-text.toml are counted per file and class (the documentation linter's own word list and its tests) |
 | G13 no-unspecified-order | 適合 | the order-dependent outputs found earlier (model_distribution, detect_deadlock) were fixed with an oracle each; the remaining HashMap / HashSet sites, … |
 | G14 float-environment-invariants | 適合 | the static scan covers the files of this repository and the dynamic check covers the builds CI runs on ubuntu and macOS; a flag passed by a build outside this … |

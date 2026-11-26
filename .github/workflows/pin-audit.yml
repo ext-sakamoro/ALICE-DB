@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pin-audit
+  group: ${{ github.event_name == 'workflow_dispatch' && format('pin-audit-dispatch-{0}', github.run_id) || 'pin-audit' }}
   cancel-in-progress: true
 
 jobs:

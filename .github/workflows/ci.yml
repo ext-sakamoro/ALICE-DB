@@ -373,9 +373,13 @@ jobs:
         run: |
           python scripts/test_release_lists_check.py
           python scripts/release_lists_check.py
-      # the preflight mirror of law-readme-block.yml (the check itself runs there, here its tests)
+      # the preflight mirror of law-readme-block.yml: its tests, then the check itself (the README
+      # block must name the .github/shared-files-pin revision; law-readme-block.yml regenerates at the
+      # revision the block names, so it cannot see a block left behind after a pin bump)
       - name: README ALICE-Law block preflight check (tests)
         run: python scripts/test_law_readme_block_check.py
+      - name: README ALICE-Law block names the pinned revision
+        run: python3 scripts/law_readme_block_check.py
       - name: changed_paths oracle (path filter decision, gate and trigger lint)
         run: python scripts/test_changed_paths.py
       - name: changed_paths sync (no on.push paths off main, pull_request paths = pattern file, 0 compared fails)

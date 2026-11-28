@@ -1126,6 +1126,12 @@ mod python {
         PyAliceDB::new(path, memtable_capacity, enable_wal, lossless)
     }
 
+    // CPython allocates every object (and the pyclass contents inside it) on a 16-byte boundary; a pyclass
+    // whose contents need a larger alignment is undefined behaviour (debug builds abort with a misaligned
+    // pointer dereference, release builds run silently on a misaligned address). Hold such data in a Box.
+    const _: () = assert!(core::mem::align_of::<PyAliceDB>() <= 16);
+    const _: () = assert!(core::mem::align_of::<PyStats>() <= 16);
+
     /// alice_db Python module
     #[pymodule]
     fn alice_db(m: &Bound<'_, PyModule>) -> PyResult<()> {

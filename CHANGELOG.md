@@ -51,6 +51,7 @@ All notable changes to ALICE-DB will be documented in this file.
 - `tests/float_environment.rs`: 丸めが round-to-nearest-even であること (f64 / f32 の tie の両方向) と、subnormal が 0 に flush されないこと (結果と入力の両方) を実行時に確かめる test test job の全 `run_tests.sh` step (4 OS) と release profile の step で必須にした `alice-law-conformance.toml` の G14 を pass にした
 
 ### Changed
+- CI (`python` job): Python の版を 3.11 に固定せず runner の python3 (venv) で wheel を作って試験する (runner の Python が pyo3 の対応より新しくなればこの job が落ちる) wheel は debug で作り、pyclass の中身が CPython の 16 byte 境界を超える時は pyo3 の検査が止める `src/lib.rs` の pyclass 2 型に `align_of <= 16` の compile 時 assert
 - `scripts/fneg_fma_ir_check.py` / `scripts/test_fneg_fma_ir_check.py` と `.github/workflows/public-text.yml` / `scripts/public_text.sh` / `scripts/test_public_text.py` / `scripts/test_shared_files.py` を ALICE-Law の表の target の bytes へ、`.github/shared-files-pin` と `.github/g11-table-pin` を ALICE-Law 4bb6b50、`.github/public-text-pin` を ALICE-Law a5824065 へ (G3 IR の検査器は crate の .ll を固定の release/deps でなく cargo の compiler-artifact の知らせから見つける 週次の g3-ir で .ll が 0 件になっていた)
 - **Breaking:** `BlobStorageConfig` / `StorageConfig` / `FitConfig` / `CompactionConfig` を `#[non_exhaustive]` にし、`Default` と field ごとの `with_*` で組み立てる (例 `StorageConfig::default().with_memtable_capacity(100)`) 以後 field を足しても破壊的変更にならない 移行: struct literal は `Default` から `with_*` に書き換える
 - `put` / `write_batch` は 64 MiB (`max_value_bytes` の既定) を超える値を拒むようになった (以前は record の長さ u32 まで受け付けた) 大きな値を書く store は `BlobStorageConfig::default().with_max_value_bytes(n)` で上限を上げる
